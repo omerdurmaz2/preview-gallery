@@ -18,5 +18,8 @@
 
     <extensions defaultExtensionNs="com.intellij">
         <fileBasedIndex implementation="com.devomer.previewgallery.index.PreviewIndex"/>
+        <toolWindow id="Compose Gallery"
+                    anchor="right"
+                    factoryClass="com.devomer.previewgallery.ui.PreviewGalleryToolWindowFactory"/>
     </extensions>
 </idea-plugin>
