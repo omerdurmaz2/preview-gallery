@@ -173,7 +173,7 @@ toolwindow.title=Compose Gallery
 
 - [ ] **Step 7: Rewrite `plugin.xml`**
 
-`src/main/resources/META-INF/plugin.xml`:
+`src/main/resources/META-INF/plugin.xml` (the `org.jetbrains.kotlin` K2 declaration below is required for the plugin to load at all in Android Studio 253; it was discovered when the Task 12 test suite first ran the plugin inside a real IDE):
 
 ```xml
 <idea-plugin>
@@ -193,6 +193,16 @@ toolwindow.title=Compose Gallery
     <depends>org.jetbrains.android</depends>
 
     <resource-bundle>messages.PreviewGalleryBundle</resource-bundle>
+
+    <!--
+        Required because this plugin depends on org.jetbrains.kotlin: in K2 mode (the default in Android
+        Studio 253) the Kotlin plugin refuses to load a dependent plugin that has not opted in, silently
+        dropping every extension. Accurate here - the scanner only reads the front-end-agnostic PSI tree
+        (KtFile, KtNamedFunction, imports, annotation entries), never the Analysis API (resolve/analyze).
+    -->
+    <extensions defaultExtensionNs="org.jetbrains.kotlin">
+        <supportsKotlinPluginMode supportsK2="true"/>
+    </extensions>
 </idea-plugin>
 ```
 
@@ -2638,9 +2648,9 @@ class PreviewIndexTest : BasePlatformTestCase() {
             fun BarPreview() {}
             """.trimIndent(),
         )
-        val keys = mutableListOf<String>()
-        FileBasedIndex.getInstance().processAllKeys(PreviewIndex.NAME, { keys += it; true }, project)
-        assertEquals(listOf("com.example.FooKt.BarPreview"), keys)
+        // Go through allValues(), which filters each key by scope: processAllKeys alone also returns keys left
+        // in the persistent enumerator by other test methods in this class, which BasePlatformTestCase shares.
+        assertEquals(listOf("com.example.FooKt.BarPreview"), allValues().map { it.composableFqn })
     }
 
     fun `test two previews in one file are both indexed`() {
