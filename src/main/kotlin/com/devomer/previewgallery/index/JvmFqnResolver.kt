@@ -6,17 +6,25 @@ package com.devomer.previewgallery.index
  */
 object JvmFqnResolver {
 
-    /** `foo.kt` -> `FooKt`, `foo-bar.kt` -> `Foo_barKt`. */
+    /**
+     * `foo.kt` -> `FooKt`, `foo-bar.kt` -> `Foo_barKt`, `1foo.kt` -> `_1fooKt`.
+     *
+     * Mirrors the compiler's own rule: characters that are not valid Java identifier *parts* become `_`, and a
+     * name that does not *start* with a valid identifier character is prefixed with `_` instead of being
+     * capitalized.
+     */
     fun facadeClassName(fileName: String): String {
         val base = fileName.substringBeforeLast('.')
         val sanitized = buildString {
-            base.forEachIndexed { index, char ->
-                val valid =
-                    if (index == 0) Character.isJavaIdentifierStart(char) else Character.isJavaIdentifierPart(char)
-                append(if (valid) char else '_')
-            }
+            base.forEach { char -> append(if (Character.isJavaIdentifierPart(char)) char else '_') }
         }
-        return sanitized.replaceFirstChar { it.uppercaseChar() } + "Kt"
+        val first = sanitized.firstOrNull() ?: return "_Kt"
+        val className = if (Character.isJavaIdentifierStart(first)) {
+            sanitized.replaceFirstChar { it.uppercaseChar() }
+        } else {
+            "_$sanitized"
+        }
+        return className + "Kt"
     }
 
     /**
