@@ -6,12 +6,27 @@ plugins {
     id("org.jetbrains.changelog")
 }
 
+kotlin {
+    jvmToolchain(21)
+}
+
 dependencies {
     testImplementation("junit:junit:4.13.2")
 
-    // IntelliJ Platform Gradle Plugin Dependencies Extension - read more: https://plugins.jetbrains.com/docs/intellij/tools-intellij-platform-gradle-plugin-dependencies-extension.html
     intellijPlatform {
-        intellijIdea("2025.2.6.2")
+        local(providers.gradleProperty("platformLocalPath"))
+        bundledPlugins("org.jetbrains.kotlin", "org.jetbrains.android")
         testFramework(TestFrameworkType.Platform)
+    }
+}
+
+intellijPlatform {
+    pluginConfiguration {
+        ideaVersion {
+            sinceBuild = "253"
+            // Left open on purpose: an aggressive untilBuild turns a soft
+            // rendering failure into a plugin that refuses to load.
+            untilBuild = provider { null }
+        }
     }
 }
