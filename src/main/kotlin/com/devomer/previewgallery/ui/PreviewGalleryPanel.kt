@@ -40,7 +40,7 @@ class PreviewGalleryPanel(
     private val parentDisposable: Disposable,
 ) : JBPanel<PreviewGalleryPanel>(BorderLayout()) {
 
-    enum class State { INDEXING, NO_PREVIEWS, NO_MATCH, LOADED }
+    enum class State { INDEXING, NO_PREVIEWS, NO_MATCH, NO_ACTIVE_MODULE, LOADED }
 
     var state: State = State.INDEXING
         private set
@@ -150,10 +150,11 @@ class PreviewGalleryPanel(
     }
 
     private fun applyFilter() {
+        val moduleFilterOn = ModuleFilterToggleAction.isEnabled(project)
         val visible = PreviewModuleFilter.apply(
             entries,
             moduleTracker.activeModuleName,
-            ModuleFilterToggleAction.isEnabled(project),
+            moduleFilterOn,
         )
         val modules = PreviewTreeModelBuilder.build(visible, searchField.text)
         treeRoot.removeAllChildren()
@@ -173,6 +174,7 @@ class PreviewGalleryPanel(
         setState(
             when {
                 entries.isEmpty() -> State.NO_PREVIEWS
+                moduleFilterOn && visible.isEmpty() -> State.NO_ACTIVE_MODULE
                 modules.isEmpty() -> State.NO_MATCH
                 else -> State.LOADED
             },
@@ -193,6 +195,7 @@ class PreviewGalleryPanel(
             State.INDEXING -> PreviewGalleryBundle.message("state.indexing")
             State.NO_PREVIEWS -> PreviewGalleryBundle.message("state.noPreviews")
             State.NO_MATCH -> PreviewGalleryBundle.message("state.noMatch", searchField.text)
+            State.NO_ACTIVE_MODULE -> PreviewGalleryBundle.message("state.noActiveModule")
             State.LOADED -> ""
         }
         statusLabel.isVisible = newState != State.LOADED
