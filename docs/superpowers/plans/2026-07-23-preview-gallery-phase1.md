@@ -1282,7 +1282,7 @@ package com.devomer.previewgallery.ui
 
 import com.devomer.previewgallery.PreviewGalleryBundle
 import com.devomer.previewgallery.model.PreviewEntry
-import com.intellij.ide.CopyPasteManager
+import com.intellij.openapi.ide.CopyPasteManager
 import com.intellij.openapi.fileEditor.OpenFileDescriptor
 import com.intellij.openapi.project.Project
 import com.intellij.ui.components.ActionLink
@@ -1436,6 +1436,7 @@ import java.awt.BorderLayout
 import java.awt.event.KeyAdapter
 import java.awt.event.KeyEvent
 import java.awt.event.MouseEvent
+import java.util.Collections
 import javax.swing.event.DocumentEvent
 import javax.swing.tree.DefaultMutableTreeNode
 import javax.swing.tree.DefaultTreeModel
@@ -1588,10 +1589,10 @@ class PreviewGalleryPanel(
     }
 
     private fun findPath(entryId: String): TreePath? {
-        val moduleNodes = treeRoot.children().toList().filterIsInstance<DefaultMutableTreeNode>()
+        val moduleNodes = Collections.list(treeRoot.children()).filterIsInstance<DefaultMutableTreeNode>()
         for (moduleNode in moduleNodes) {
-            for (packageNode in moduleNode.children().toList().filterIsInstance<DefaultMutableTreeNode>()) {
-                for (leafNode in packageNode.children().toList().filterIsInstance<DefaultMutableTreeNode>()) {
+            for (packageNode in Collections.list(moduleNode.children()).filterIsInstance<DefaultMutableTreeNode>()) {
+                for (leafNode in Collections.list(packageNode.children()).filterIsInstance<DefaultMutableTreeNode>()) {
                     val entry = (leafNode.userObject as? PreviewNode.PreviewLeaf)?.row as? PreviewEntry
                     if (entry?.id == entryId) return TreePath(leafNode.path)
                 }
