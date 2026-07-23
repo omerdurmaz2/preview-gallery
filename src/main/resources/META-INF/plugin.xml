@@ -21,5 +21,7 @@
         <toolWindow id="Compose Gallery"
                     anchor="right"
                     factoryClass="com.devomer.previewgallery.ui.PreviewGalleryToolWindowFactory"/>
+        <searchEverywhereContributor
+            implementation="com.devomer.previewgallery.searcheverywhere.PreviewSearchEverywhereContributorFactory"/>
     </extensions>
 </idea-plugin>
