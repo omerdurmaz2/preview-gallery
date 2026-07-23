@@ -228,7 +228,7 @@ fun findAll(): List<PreviewEntry>
 
 ### 4.1 Tool window
 
-`PreviewGalleryToolWindowFactory`, registered on the right anchor with id `Compose Gallery`. Not `DumbAware`: index queries need smart mode, and the factory defers its first load with `DumbService.smartInvokeLater`.
+`PreviewGalleryToolWindowFactory`, registered on the right anchor with id `Compose Gallery`. It **is** `DumbAware`, so the tool window opens during indexing and shows the `INDEXING` state (§4.7); the panel defers its first query with `DumbService.runWhenSmart` and reloads once indexing finishes.
 
 ```
 OnePixelSplitter(vertical = true)
@@ -319,7 +319,9 @@ One Kotlin fixture per case, asserting the resulting `IndexedPreview` values:
 
 androidx preview · JetBrains preview · `private` preview · `@PreviewParameter` · `@file:JvmName` · `object`-nested · class-nested (asserts `unsupportedReason`) · aliased import · star import · both packages star-imported (asserts `UNKNOWN`) · `@Preview(name=, group=)` · non-literal `name` argument (asserts fallback) · file with `@Composable` but no `@Preview` (asserts no entry) · multipreview wrapper usage (asserts **no** entry, per D4).
 
-A multi-module fixture asserts that `PreviewIndexService.findAll()` resolves module names correctly and that identical FQNs in two modules produce two distinct entries.
+A single-module fixture asserts that `PreviewIndexService.findAll()` resolves a module name and a file for every entry, and that entries come back sorted by module, package and display name.
+
+The light test fixture provides one module, so genuine multi-module behaviour — grouping, per-module counts, and identical FQNs in two modules producing two distinct entries — is covered two ways instead: `PreviewTreeModelBuilder` unit tests exercise the grouping logic against synthetic multi-module rows, and §6.4 verifies the real thing against a real project.
 
 ### 6.3 UI tests — headless
 
