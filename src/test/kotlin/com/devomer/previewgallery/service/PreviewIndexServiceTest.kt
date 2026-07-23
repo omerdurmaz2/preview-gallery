@@ -56,6 +56,37 @@ class PreviewIndexServiceTest : BasePlatformTestCase() {
         assertEquals(listOf("com.example.alpha", "com.example.zeta"), packages)
     }
 
+    fun `test entries are sorted case-insensitively`() {
+        myFixture.addFileToProject(
+            "Banana.kt",
+            """
+            package com.example.Banana
+
+            import androidx.compose.ui.tooling.preview.Preview
+
+            @Preview
+            fun BPreview() {}
+            """.trimIndent(),
+        )
+        myFixture.addFileToProject(
+            "Apple.kt",
+            """
+            package com.example.apple
+
+            import androidx.compose.ui.tooling.preview.Preview
+
+            @Preview
+            fun APreview() {}
+            """.trimIndent(),
+        )
+
+        val packages = PreviewIndexService.getInstance(project).findAll().map { it.indexed.packageName }
+
+        // A case-sensitive sort would put uppercase "Banana" before lowercase "apple"; case-insensitive puts
+        // "apple" first.
+        assertEquals(listOf("com.example.apple", "com.example.Banana"), packages)
+    }
+
     fun `test an empty project yields no entries`() {
         assertTrue(PreviewIndexService.getInstance(project).findAll().isEmpty())
     }

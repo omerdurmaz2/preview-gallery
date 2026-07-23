@@ -65,7 +65,9 @@ class PreviewIndexService(private val project: Project) {
         }, project)
 
         return entries.sortedWith(
-            compareBy({ it.moduleName }, { it.indexed.packageName }, { it.indexed.displayName }),
+            compareBy<PreviewEntry, String>(String.CASE_INSENSITIVE_ORDER) { it.moduleName }
+                .thenBy(String.CASE_INSENSITIVE_ORDER) { it.indexed.packageName }
+                .thenBy(String.CASE_INSENSITIVE_ORDER) { it.indexed.displayName },
         )
     }
 
