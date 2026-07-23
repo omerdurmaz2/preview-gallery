@@ -2648,9 +2648,20 @@ class PreviewIndexTest : BasePlatformTestCase() {
             fun BarPreview() {}
             """.trimIndent(),
         )
-        // Go through allValues(), which filters each key by scope: processAllKeys alone also returns keys left
-        // in the persistent enumerator by other test methods in this class, which BasePlatformTestCase shares.
-        assertEquals(listOf("com.example.FooKt.BarPreview"), allValues().map { it.composableFqn })
+        // Collect keys straight from the index, but keep only those with a live value in scope. Raw
+        // processAllKeys also returns keys left in the persistent enumerator by sibling test methods (the
+        // light project's key store is shared); scope-filtering drops them while still asserting on the real
+        // key the indexer produced - so a wrong key selector would still be caught.
+        val index = FileBasedIndex.getInstance()
+        val scope = GlobalSearchScope.allScope(project)
+        val liveKeys = mutableListOf<String>()
+        index.processAllKeys(PreviewIndex.NAME, { key ->
+            var live = false
+            index.processValues(PreviewIndex.NAME, key, null, { _, _ -> live = true; false }, scope)
+            if (live) liveKeys += key
+            true
+        }, project)
+        assertEquals(listOf("com.example.FooKt.BarPreview"), liveKeys)
     }
 
     fun `test two previews in one file are both indexed`() {
