@@ -54,6 +54,8 @@ object PreviewPsiScanner {
     ): IndexedPreview {
         val container = containerOf(function)
         val functionName = function.name ?: ""
+        // For an unsupported container this falls back to the file facade; `unsupportedReason` marks the entry,
+        // so the value is never authoritative.
         val jvmClassName = JvmFqnResolver.jvmClassName(
             packageName = packageName,
             fileName = fileName,
@@ -96,8 +98,9 @@ object PreviewPsiScanner {
                 is KtNamedFunction -> return Container.Unsupported(UNSUPPORTED_LOCAL)
                 is KtObjectDeclaration -> {
                     val name = current.name
-                    val isTopLevelObject = current.parent is KtFile ||
-                        (current.parent?.parent is KtFile && current.parent !is KtClass)
+                    // Only an object declared directly in the file has a plain JVM name. A nested one would need
+                    // `$` separators, which v1 does not derive.
+                    val isTopLevelObject = current.parent is KtFile
                     return if (name != null && isTopLevelObject && !current.isCompanion()) {
                         Container.InObject(name)
                     } else {
