@@ -17,7 +17,8 @@
 - `sinceBuild = "253"`, `untilBuild` left open.
 - Kotlin JVM toolchain 21.
 - **Never use the Kotlin `!!` operator.** Use `?:`, `requireNotNull`, `checkNotNull`, or an early return.
-- Every task ships tests. No task is complete with a failing or skipped test.
+- **Tests are written in Task 12, not per task.** Tasks 1-11 implement and must compile; Task 12 writes the
+  whole test suite and every test must pass before Task 13.
 - Commit message format: `[PG-N] - Task name`, where N is the task number in this plan.
 - All documentation, code comments, and commit messages in English.
 - The indexer must never resolve references outside the file being indexed.
@@ -228,7 +229,7 @@ at your own install if it is not at `~/Applications/Android Studio.app`, then:
 - [ ] **Step 9: Verify the build is green**
 
 Run: `./gradlew clean build`
-Expected: BUILD SUCCESSFUL. There are no tests yet, so the `test` task reports no test sources — that is expected at this point and is fixed by Task 2.
+Expected: BUILD SUCCESSFUL. There are no tests yet, so the `test` task reports no test sources — that is expected — the suite arrives in Task 12.
 
 - [ ] **Step 10: Verify no template identifiers survive**
 
@@ -251,7 +252,6 @@ git commit -m "[PG-1] - Bootstrap plugin project"
 - Create: `src/main/kotlin/com/devomer/previewgallery/model/IndexedPreview.kt`
 - Create: `src/main/kotlin/com/devomer/previewgallery/model/PreviewRow.kt`
 - Create: `src/main/kotlin/com/devomer/previewgallery/index/JvmFqnResolver.kt`
-- Test: `src/test/kotlin/com/devomer/previewgallery/index/JvmFqnResolverTest.kt`
 
 **Interfaces:**
 - Consumes: nothing.
@@ -263,74 +263,7 @@ git commit -m "[PG-1] - Bootstrap plugin project"
   - `JvmFqnResolver.jvmClassName(packageName: String, fileName: String, jvmNameOverride: String?, containerObjectName: String?): String`
   - `JvmFqnResolver.composableFqn(jvmClassName: String, functionName: String): String`
 
-- [ ] **Step 1: Write the failing test**
-
-`src/test/kotlin/com/devomer/previewgallery/index/JvmFqnResolverTest.kt`:
-
-```kotlin
-package com.devomer.previewgallery.index
-
-import org.junit.Assert.assertEquals
-import org.junit.Test
-
-class JvmFqnResolverTest {
-
-    @Test
-    fun `top-level function uses the file facade class`() {
-        val jvmClass = JvmFqnResolver.jvmClassName(
-            packageName = "com.example",
-            fileName = "Foo.kt",
-            jvmNameOverride = null,
-            containerObjectName = null,
-        )
-        assertEquals("com.example.FooKt", jvmClass)
-        assertEquals("com.example.FooKt.BarPreview", JvmFqnResolver.composableFqn(jvmClass, "BarPreview"))
-    }
-
-    @Test
-    fun `JvmName annotation replaces the facade name`() {
-        assertEquals(
-            "com.example.Custom",
-            JvmFqnResolver.jvmClassName("com.example", "Foo.kt", "Custom", null),
-        )
-    }
-
-    @Test
-    fun `object member uses the object class and ignores JvmName`() {
-        assertEquals(
-            "com.example.Previews",
-            JvmFqnResolver.jvmClassName("com.example", "Foo.kt", "Custom", "Previews"),
-        )
-    }
-
-    @Test
-    fun `default package has no prefix`() {
-        assertEquals("FooKt", JvmFqnResolver.jvmClassName("", "Foo.kt", null, null))
-    }
-
-    @Test
-    fun `file name is capitalized`() {
-        assertEquals("FooKt", JvmFqnResolver.facadeClassName("foo.kt"))
-    }
-
-    @Test
-    fun `invalid identifier characters become underscores`() {
-        assertEquals("Foo_barKt", JvmFqnResolver.facadeClassName("foo-bar.kt"))
-    }
-
-    @Test
-    fun `a leading digit becomes an underscore`() {
-        assertEquals("_1FooKt", JvmFqnResolver.facadeClassName("1foo.kt"))
-    }
-}
-```
-
-- [ ] **Step 2: Run the test to verify it fails**
-
-Run: `./gradlew test --tests "com.devomer.previewgallery.index.JvmFqnResolverTest"`
-Expected: FAIL — compilation error, `Unresolved reference: JvmFqnResolver`.
-
-- [ ] **Step 3: Write the model classes**
+- [ ] **Step 1: Write the model classes**
 
 `src/main/kotlin/com/devomer/previewgallery/model/AnnotationKind.kt`:
 
@@ -381,7 +314,7 @@ interface PreviewRow {
 }
 ```
 
-- [ ] **Step 4: Write the FQN resolver**
+- [ ] **Step 2: Write the FQN resolver**
 
 `src/main/kotlin/com/devomer/previewgallery/index/JvmFqnResolver.kt`:
 
@@ -426,15 +359,14 @@ object JvmFqnResolver {
 }
 ```
 
-- [ ] **Step 5: Run the test to verify it passes**
+- [ ] **Step 3: Verify it compiles**
+Run: `./gradlew compileKotlin`
+Expected: BUILD SUCCESSFUL.
 
-Run: `./gradlew test --tests "com.devomer.previewgallery.index.JvmFqnResolverTest"`
-Expected: PASS, 7 tests.
-
-- [ ] **Step 6: Commit**
+- [ ] **Step 4: Commit**
 
 ```bash
-git add src/main/kotlin/com/devomer/previewgallery/model src/main/kotlin/com/devomer/previewgallery/index src/test/kotlin/com/devomer/previewgallery/index
+git add src/main/kotlin/com/devomer/previewgallery/model src/main/kotlin/com/devomer/previewgallery/index
 git commit -m "[PG-2] - Preview data model and JVM FQN derivation"
 ```
 
@@ -445,7 +377,6 @@ git commit -m "[PG-2] - Preview data model and JVM FQN derivation"
 **Files:**
 - Create: `src/main/kotlin/com/devomer/previewgallery/index/ImportInfo.kt`
 - Create: `src/main/kotlin/com/devomer/previewgallery/index/PreviewAnnotationMatcher.kt`
-- Test: `src/test/kotlin/com/devomer/previewgallery/index/PreviewAnnotationMatcherTest.kt`
 
 **Interfaces:**
 - Consumes: `AnnotationKind` from Task 2.
@@ -456,104 +387,7 @@ git commit -m "[PG-2] - Preview data model and JVM FQN derivation"
 
 `reference` is the annotation's type reference exactly as written in source: `Preview`, `P`, or the fully qualified name.
 
-- [ ] **Step 1: Write the failing test**
-
-`src/test/kotlin/com/devomer/previewgallery/index/PreviewAnnotationMatcherTest.kt`:
-
-```kotlin
-package com.devomer.previewgallery.index
-
-import com.devomer.previewgallery.model.AnnotationKind
-import org.junit.Assert.assertEquals
-import org.junit.Assert.assertFalse
-import org.junit.Assert.assertNull
-import org.junit.Assert.assertTrue
-import org.junit.Test
-
-class PreviewAnnotationMatcherTest {
-
-    private val androidxImport = ImportInfo("androidx.compose.ui.tooling.preview.Preview", null, false)
-    private val jetbrainsImport = ImportInfo("org.jetbrains.compose.ui.tooling.preview.Preview", null, false)
-    private val androidxStar = ImportInfo("androidx.compose.ui.tooling.preview", null, true)
-    private val jetbrainsStar = ImportInfo("org.jetbrains.compose.ui.tooling.preview", null, true)
-
-    @Test
-    fun `fully qualified androidx reference`() {
-        assertEquals(
-            AnnotationKind.ANDROIDX,
-            PreviewAnnotationMatcher.matchPreview("androidx.compose.ui.tooling.preview.Preview", emptyList()),
-        )
-    }
-
-    @Test
-    fun `fully qualified jetbrains reference`() {
-        assertEquals(
-            AnnotationKind.JETBRAINS,
-            PreviewAnnotationMatcher.matchPreview("org.jetbrains.compose.ui.tooling.preview.Preview", emptyList()),
-        )
-    }
-
-    @Test
-    fun `explicit androidx import`() {
-        assertEquals(AnnotationKind.ANDROIDX, PreviewAnnotationMatcher.matchPreview("Preview", listOf(androidxImport)))
-    }
-
-    @Test
-    fun `explicit jetbrains import`() {
-        assertEquals(AnnotationKind.JETBRAINS, PreviewAnnotationMatcher.matchPreview("Preview", listOf(jetbrainsImport)))
-    }
-
-    @Test
-    fun `aliased import`() {
-        val aliased = ImportInfo("androidx.compose.ui.tooling.preview.Preview", "P", false)
-        assertEquals(AnnotationKind.ANDROIDX, PreviewAnnotationMatcher.matchPreview("P", listOf(aliased)))
-        assertNull(PreviewAnnotationMatcher.matchPreview("Preview", listOf(aliased)))
-    }
-
-    @Test
-    fun `star import`() {
-        assertEquals(AnnotationKind.ANDROIDX, PreviewAnnotationMatcher.matchPreview("Preview", listOf(androidxStar)))
-    }
-
-    @Test
-    fun `both packages star-imported is ambiguous`() {
-        assertEquals(
-            AnnotationKind.UNKNOWN,
-            PreviewAnnotationMatcher.matchPreview("Preview", listOf(androidxStar, jetbrainsStar)),
-        )
-    }
-
-    @Test
-    fun `short name with no matching import is unknown`() {
-        assertEquals(AnnotationKind.UNKNOWN, PreviewAnnotationMatcher.matchPreview("Preview", emptyList()))
-    }
-
-    @Test
-    fun `an unrelated Preview import is not a compose preview`() {
-        val unrelated = ImportInfo("com.example.Preview", null, false)
-        assertNull(PreviewAnnotationMatcher.matchPreview("Preview", listOf(unrelated)))
-    }
-
-    @Test
-    fun `an unrelated annotation is not a preview`() {
-        assertNull(PreviewAnnotationMatcher.matchPreview("Composable", listOf(androidxImport)))
-    }
-
-    @Test
-    fun `preview parameter is detected through its import`() {
-        val parameterImport = ImportInfo("androidx.compose.ui.tooling.preview.PreviewParameter", null, false)
-        assertTrue(PreviewAnnotationMatcher.isPreviewParameter("PreviewParameter", listOf(parameterImport)))
-        assertFalse(PreviewAnnotationMatcher.isPreviewParameter("Preview", listOf(parameterImport)))
-    }
-}
-```
-
-- [ ] **Step 2: Run the test to verify it fails**
-
-Run: `./gradlew test --tests "com.devomer.previewgallery.index.PreviewAnnotationMatcherTest"`
-Expected: FAIL — `Unresolved reference: ImportInfo`.
-
-- [ ] **Step 3: Write the implementation**
+- [ ] **Step 1: Write the implementation**
 
 `src/main/kotlin/com/devomer/previewgallery/index/ImportInfo.kt`:
 
@@ -647,15 +481,14 @@ object PreviewAnnotationMatcher {
 }
 ```
 
-- [ ] **Step 4: Run the test to verify it passes**
+- [ ] **Step 2: Verify it compiles**
+Run: `./gradlew compileKotlin`
+Expected: BUILD SUCCESSFUL.
 
-Run: `./gradlew test --tests "com.devomer.previewgallery.index.PreviewAnnotationMatcherTest"`
-Expected: PASS, 11 tests.
-
-- [ ] **Step 5: Commit**
+- [ ] **Step 3: Commit**
 
 ```bash
-git add src/main/kotlin/com/devomer/previewgallery/index src/test/kotlin/com/devomer/previewgallery/index
+git add src/main/kotlin/com/devomer/previewgallery/index
 git commit -m "[PG-3] - Import-driven Preview annotation matching"
 ```
 
@@ -665,13 +498,1685 @@ git commit -m "[PG-3] - Import-driven Preview annotation matching"
 
 **Files:**
 - Create: `src/main/kotlin/com/devomer/previewgallery/index/PreviewPsiScanner.kt`
-- Test: `src/test/kotlin/com/devomer/previewgallery/index/PreviewPsiScannerTest.kt`
 
 **Interfaces:**
 - Consumes: `JvmFqnResolver`, `PreviewAnnotationMatcher`, `ImportInfo`, `IndexedPreview`, `AnnotationKind`.
 - Produces: `PreviewPsiScanner.scan(file: KtFile): List<IndexedPreview>`
 
-- [ ] **Step 1: Write the failing test**
+- [ ] **Step 1: Write the scanner**
+
+`src/main/kotlin/com/devomer/previewgallery/index/PreviewPsiScanner.kt`:
+
+```kotlin
+package com.devomer.previewgallery.index
+
+import com.devomer.previewgallery.model.AnnotationKind
+import com.devomer.previewgallery.model.IndexedPreview
+import org.jetbrains.kotlin.lexer.KtTokens
+import org.jetbrains.kotlin.psi.KtAnnotationEntry
+import org.jetbrains.kotlin.psi.KtClass
+import org.jetbrains.kotlin.psi.KtFile
+import org.jetbrains.kotlin.psi.KtLiteralStringTemplateEntry
+import org.jetbrains.kotlin.psi.KtNamedFunction
+import org.jetbrains.kotlin.psi.KtObjectDeclaration
+import org.jetbrains.kotlin.psi.KtStringTemplateExpression
+import org.jetbrains.kotlin.psi.KtTreeVisitorVoid
+
+/** Extracts every directly `@Preview`-annotated function from a single Kotlin file. */
+object PreviewPsiScanner {
+
+    private const val UNSUPPORTED_IN_CLASS = "declared inside a class"
+    private const val UNSUPPORTED_LOCAL = "declared inside a local scope"
+    private const val JVM_NAME = "JvmName"
+
+    fun scan(file: KtFile): List<IndexedPreview> {
+        val imports = file.importDirectives.mapNotNull { directive ->
+            val fqn = directive.importedFqName?.asString() ?: return@mapNotNull null
+            ImportInfo(fqn, directive.aliasName, directive.isAllUnder)
+        }
+        val packageName = file.packageFqName.asString()
+        val jvmNameOverride = file.fileAnnotationList?.annotationEntries
+            ?.firstOrNull { it.shortName?.asString() == JVM_NAME }
+            ?.let { positionalString(it, 0) }
+
+        val result = mutableListOf<IndexedPreview>()
+        file.accept(object : KtTreeVisitorVoid() {
+            override fun visitNamedFunction(function: KtNamedFunction) {
+                super.visitNamedFunction(function)
+                val match = function.annotationEntries.firstNotNullOfOrNull { entry ->
+                    val reference = entry.referenceText() ?: return@firstNotNullOfOrNull null
+                    PreviewAnnotationMatcher.matchPreview(reference, imports)?.let { entry to it }
+                } ?: return
+                result += build(function, match.first, match.second, packageName, file.name, jvmNameOverride, imports)
+            }
+        })
+        return result
+    }
+
+    private fun build(
+        function: KtNamedFunction,
+        annotation: KtAnnotationEntry,
+        kind: AnnotationKind,
+        packageName: String,
+        fileName: String,
+        jvmNameOverride: String?,
+        imports: List<ImportInfo>,
+    ): IndexedPreview {
+        val container = containerOf(function)
+        val functionName = function.name ?: ""
+        val jvmClassName = JvmFqnResolver.jvmClassName(
+            packageName = packageName,
+            fileName = fileName,
+            jvmNameOverride = jvmNameOverride,
+            containerObjectName = (container as? Container.InObject)?.name,
+        )
+        val name = namedString(annotation, "name") ?: positionalString(annotation, 0) ?: functionName
+        return IndexedPreview(
+            displayName = name,
+            functionName = functionName,
+            packageName = packageName,
+            jvmClassName = jvmClassName,
+            composableFqn = JvmFqnResolver.composableFqn(jvmClassName, functionName),
+            offset = function.nameIdentifier?.textOffset ?: function.textOffset,
+            annotationKind = kind,
+            isPrivate = function.hasModifier(KtTokens.PRIVATE_KEYWORD),
+            hasPreviewParameter = function.valueParameters.any { parameter ->
+                parameter.annotationEntries.any { entry ->
+                    val reference = entry.referenceText() ?: return@any false
+                    PreviewAnnotationMatcher.isPreviewParameter(reference, imports)
+                }
+            },
+            previewGroup = namedString(annotation, "group"),
+            unsupportedReason = (container as? Container.Unsupported)?.reason,
+        )
+    }
+
+    private sealed interface Container {
+        data object TopLevel : Container
+        data class InObject(val name: String) : Container
+        data class Unsupported(val reason: String) : Container
+    }
+
+    private fun containerOf(function: KtNamedFunction): Container {
+        var current = function.parent
+        while (current != null) {
+            when (current) {
+                is KtFile -> return Container.TopLevel
+                is KtClass -> return Container.Unsupported(UNSUPPORTED_IN_CLASS)
+                is KtNamedFunction -> return Container.Unsupported(UNSUPPORTED_LOCAL)
+                is KtObjectDeclaration -> {
+                    val name = current.name
+                    val isTopLevelObject = current.parent is KtFile ||
+                        (current.parent?.parent is KtFile && current.parent !is KtClass)
+                    return if (name != null && isTopLevelObject && !current.isCompanion()) {
+                        Container.InObject(name)
+                    } else {
+                        Container.Unsupported(UNSUPPORTED_IN_CLASS)
+                    }
+                }
+            }
+            current = current.parent
+        }
+        return Container.TopLevel
+    }
+
+    /** The annotation's type reference as written, with any type arguments stripped. */
+    private fun KtAnnotationEntry.referenceText(): String? =
+        typeReference?.text?.substringBefore('<')?.trim()?.takeIf { it.isNotEmpty() }
+
+    private fun namedString(entry: KtAnnotationEntry, name: String): String? =
+        entry.valueArguments
+            .firstOrNull { it.getArgumentName()?.asName?.asString() == name }
+            ?.let { literalOf(it.getArgumentExpression()) }
+
+    private fun positionalString(entry: KtAnnotationEntry, index: Int): String? =
+        entry.valueArguments
+            .filter { it.getArgumentName() == null }
+            .getOrNull(index)
+            ?.let { literalOf(it.getArgumentExpression()) }
+
+    /** Only plain string literals are read — anything else would require resolution, which indexers must avoid. */
+    private fun literalOf(expression: com.intellij.psi.PsiElement?): String? {
+        val template = expression as? KtStringTemplateExpression ?: return null
+        val single = template.entries.singleOrNull() as? KtLiteralStringTemplateEntry ?: return null
+        return single.text
+    }
+}
+```
+
+The object-container check uses `isTopLevelObject` so that an object nested inside a class or another object falls back to `Unsupported` — its JVM name would need `$` separators, which v1 does not derive.
+
+If `KtObjectDeclaration.parent` turns out to be an object's body rather than the object itself, adjust `isTopLevelObject` until Task 12's `object member uses the object name` and `class member is indexed but unsupported` tests both pass. Do not weaken those tests.
+
+- [ ] **Step 2: Verify it compiles**
+Run: `./gradlew compileKotlin`
+Expected: BUILD SUCCESSFUL.
+
+- [ ] **Step 3: Commit**
+
+```bash
+git add src/main/kotlin/com/devomer/previewgallery/index/PreviewPsiScanner.kt
+git commit -m "[PG-4] - Preview PSI scanner"
+```
+
+---
+
+### Task 5: The file-based index
+
+**Files:**
+- Create: `src/main/kotlin/com/devomer/previewgallery/index/PreviewValueExternalizer.kt`
+- Create: `src/main/kotlin/com/devomer/previewgallery/index/PreviewIndex.kt`
+- Modify: `src/main/resources/META-INF/plugin.xml`
+
+**Interfaces:**
+- Consumes: `PreviewPsiScanner.scan`, `IndexedPreview`.
+- Produces:
+  - `PreviewValueExternalizer : DataExternalizer<List<IndexedPreview>>`
+  - `PreviewIndex.NAME: ID<String, List<IndexedPreview>>` — the index id later tasks query, keyed by `composableFqn`
+
+- [ ] **Step 1: Write the externalizer**
+
+`src/main/kotlin/com/devomer/previewgallery/index/PreviewValueExternalizer.kt`:
+
+```kotlin
+package com.devomer.previewgallery.index
+
+import com.devomer.previewgallery.model.AnnotationKind
+import com.devomer.previewgallery.model.IndexedPreview
+import com.intellij.util.io.DataExternalizer
+import com.intellij.util.io.DataInputOutputUtil
+import com.intellij.util.io.IOUtil
+import java.io.DataInput
+import java.io.DataOutput
+
+/**
+ * Field-by-field serialization of the index values. Any change to the layout requires bumping
+ * [PreviewIndex.VERSION], otherwise stale on-disk data is read with the new layout.
+ */
+object PreviewValueExternalizer : DataExternalizer<List<IndexedPreview>> {
+
+    override fun save(out: DataOutput, value: List<IndexedPreview>) {
+        DataInputOutputUtil.writeINT(out, value.size)
+        for (preview in value) {
+            IOUtil.writeUTF(out, preview.displayName)
+            IOUtil.writeUTF(out, preview.functionName)
+            IOUtil.writeUTF(out, preview.packageName)
+            IOUtil.writeUTF(out, preview.jvmClassName)
+            IOUtil.writeUTF(out, preview.composableFqn)
+            DataInputOutputUtil.writeINT(out, preview.offset)
+            DataInputOutputUtil.writeINT(out, preview.annotationKind.ordinal)
+            out.writeBoolean(preview.isPrivate)
+            out.writeBoolean(preview.hasPreviewParameter)
+            writeNullable(out, preview.previewGroup)
+            writeNullable(out, preview.unsupportedReason)
+        }
+    }
+
+    override fun read(input: DataInput): List<IndexedPreview> {
+        val size = DataInputOutputUtil.readINT(input)
+        val result = ArrayList<IndexedPreview>(size)
+        repeat(size) {
+            val displayName = IOUtil.readUTF(input)
+            val functionName = IOUtil.readUTF(input)
+            val packageName = IOUtil.readUTF(input)
+            val jvmClassName = IOUtil.readUTF(input)
+            val composableFqn = IOUtil.readUTF(input)
+            val offset = DataInputOutputUtil.readINT(input)
+            val kindOrdinal = DataInputOutputUtil.readINT(input)
+            val isPrivate = input.readBoolean()
+            val hasPreviewParameter = input.readBoolean()
+            val previewGroup = readNullable(input)
+            val unsupportedReason = readNullable(input)
+            result += IndexedPreview(
+                displayName = displayName,
+                functionName = functionName,
+                packageName = packageName,
+                jvmClassName = jvmClassName,
+                composableFqn = composableFqn,
+                offset = offset,
+                annotationKind = AnnotationKind.entries.getOrElse(kindOrdinal) { AnnotationKind.UNKNOWN },
+                isPrivate = isPrivate,
+                hasPreviewParameter = hasPreviewParameter,
+                previewGroup = previewGroup,
+                unsupportedReason = unsupportedReason,
+            )
+        }
+        return result
+    }
+
+    private fun writeNullable(out: DataOutput, value: String?) {
+        out.writeBoolean(value != null)
+        if (value != null) IOUtil.writeUTF(out, value)
+    }
+
+    private fun readNullable(input: DataInput): String? =
+        if (input.readBoolean()) IOUtil.readUTF(input) else null
+}
+```
+
+Fields are read into locals before the constructor call so the read order is explicit rather than dependent on argument evaluation order.
+
+- [ ] **Step 2: Write the index**
+
+`src/main/kotlin/com/devomer/previewgallery/index/PreviewIndex.kt`:
+
+```kotlin
+package com.devomer.previewgallery.index
+
+import com.devomer.previewgallery.model.IndexedPreview
+import com.intellij.util.indexing.DataIndexer
+import com.intellij.util.indexing.FileBasedIndex
+import com.intellij.util.indexing.FileBasedIndexExtension
+import com.intellij.util.indexing.FileContent
+import com.intellij.util.indexing.ID
+import com.intellij.util.indexing.PsiDependentIndex
+import com.intellij.util.io.DataExternalizer
+import com.intellij.util.io.EnumeratorStringDescriptor
+import com.intellij.util.io.KeyDescriptor
+import org.jetbrains.kotlin.psi.KtFile
+
+/**
+ * Persistent, incremental index of every directly `@Preview`-annotated function, keyed by its composable FQN.
+ *
+ * Only file-local facts are stored. Module membership is a project-model property, so storing it here would let a
+ * Gradle sync invalidate correctness without invalidating the index.
+ */
+class PreviewIndex : FileBasedIndexExtension<String, List<IndexedPreview>>(), PsiDependentIndex {
+
+    override fun getName(): ID<String, List<IndexedPreview>> = NAME
+
+    override fun getVersion(): Int = VERSION
+
+    override fun dependsOnFileContent(): Boolean = true
+
+    override fun getKeyDescriptor(): KeyDescriptor<String> = EnumeratorStringDescriptor.INSTANCE
+
+    override fun getValueExternalizer(): DataExternalizer<List<IndexedPreview>> = PreviewValueExternalizer
+
+    override fun getInputFilter(): FileBasedIndex.InputFilter =
+        FileBasedIndex.InputFilter { file -> file.extension == KOTLIN_EXTENSION }
+
+    override fun getIndexer(): DataIndexer<String, List<IndexedPreview>, FileContent> =
+        DataIndexer { content ->
+            if (!content.contentAsText.contains(MARKER)) return@DataIndexer emptyMap()
+            val ktFile = content.psiFile as? KtFile ?: return@DataIndexer emptyMap()
+            PreviewPsiScanner.scan(ktFile).groupBy { it.composableFqn }
+        }
+
+    companion object {
+        val NAME: ID<String, List<IndexedPreview>> = ID.create("com.devomer.previewgallery.PreviewIndex")
+
+        /** Bump on any change to [PreviewValueExternalizer] or to what the scanner produces. */
+        const val VERSION = 1
+
+        private const val KOTLIN_EXTENSION = "kt"
+
+        /** Cheap text gate: files that never mention Preview are skipped before PSI is built. */
+        private const val MARKER = "Preview"
+    }
+}
+```
+
+- [ ] **Step 3: Register the index in `plugin.xml`**
+
+Add before the closing `</idea-plugin>` tag:
+
+```xml
+    <extensions defaultExtensionNs="com.intellij">
+        <fileBasedIndex implementation="com.devomer.previewgallery.index.PreviewIndex"/>
+    </extensions>
+```
+
+- [ ] **Step 4: Verify it compiles**
+Run: `./gradlew compileKotlin`
+Expected: BUILD SUCCESSFUL.
+
+- [ ] **Step 5: Commit**
+
+```bash
+git add src/main/kotlin/com/devomer/previewgallery/index src/main/resources/META-INF/plugin.xml
+git commit -m "[PG-5] - Preview file-based index"
+```
+
+---
+
+### Task 6: Query service
+
+**Files:**
+- Create: `src/main/kotlin/com/devomer/previewgallery/model/PreviewEntry.kt`
+- Create: `src/main/kotlin/com/devomer/previewgallery/service/PreviewIndexService.kt`
+
+**Interfaces:**
+- Consumes: `PreviewIndex.NAME`, `IndexedPreview`, `PreviewRow`.
+- Produces:
+  - `data class PreviewEntry(override val indexed: IndexedPreview, override val moduleName: String, val file: VirtualFile) : PreviewRow` with `val id: String`
+  - `PreviewIndexService.getInstance(project: Project): PreviewIndexService`
+  - `PreviewIndexService.findAll(): List<PreviewEntry>` — must be called under a read action, off the EDT
+  - `PreviewIndexService.refresh()` — invalidates the cache
+
+- [ ] **Step 1: Write `PreviewEntry`**
+
+`src/main/kotlin/com/devomer/previewgallery/model/PreviewEntry.kt`:
+
+```kotlin
+package com.devomer.previewgallery.model
+
+import com.intellij.openapi.vfs.VirtualFile
+
+/** An index value joined with the project-model context resolved at query time. */
+data class PreviewEntry(
+    override val indexed: IndexedPreview,
+    override val moduleName: String,
+    val file: VirtualFile,
+) : PreviewRow {
+
+    val id: String get() = "${indexed.composableFqn}#${indexed.displayName}"
+}
+```
+
+- [ ] **Step 2: Write the service**
+
+`src/main/kotlin/com/devomer/previewgallery/service/PreviewIndexService.kt`:
+
+```kotlin
+package com.devomer.previewgallery.service
+
+import com.devomer.previewgallery.index.PreviewIndex
+import com.devomer.previewgallery.model.PreviewEntry
+import com.intellij.openapi.components.Service
+import com.intellij.openapi.components.service
+import com.intellij.openapi.project.DumbService
+import com.intellij.openapi.project.Project
+import com.intellij.openapi.roots.ProjectFileIndex
+import com.intellij.openapi.util.Key
+import com.intellij.openapi.util.SimpleModificationTracker
+import com.intellij.psi.search.GlobalSearchScope
+import com.intellij.psi.util.CachedValue
+import com.intellij.psi.util.CachedValueProvider
+import com.intellij.psi.util.CachedValuesManager
+import com.intellij.psi.util.PsiModificationTracker
+import com.intellij.util.indexing.FileBasedIndex
+
+/**
+ * Reads [PreviewIndex] and joins each value with the module and file it belongs to.
+ *
+ * Callers must invoke [findAll] under a read action and off the EDT — it touches the index and the project model.
+ */
+@Service(Service.Level.PROJECT)
+class PreviewIndexService(private val project: Project) {
+
+    private val refreshTracker = SimpleModificationTracker()
+
+    fun findAll(): List<PreviewEntry> {
+        if (DumbService.isDumb(project)) return emptyList()
+        return CachedValuesManager.getManager(project).getCachedValue(
+            project,
+            CACHE_KEY,
+            {
+                CachedValueProvider.Result.create(
+                    compute(),
+                    PsiModificationTracker.MODIFICATION_COUNT,
+                    refreshTracker,
+                )
+            },
+            false,
+        )
+    }
+
+    /** Forces the next [findAll] to recompute, for project-model changes that raise no PSI event. */
+    fun refresh() {
+        refreshTracker.incModificationCount()
+    }
+
+    private fun compute(): List<PreviewEntry> {
+        val index = FileBasedIndex.getInstance()
+        val fileIndex = ProjectFileIndex.getInstance(project)
+        val scope = GlobalSearchScope.projectScope(project)
+        val entries = mutableListOf<PreviewEntry>()
+
+        index.processAllKeys(PreviewIndex.NAME, { key ->
+            index.processValues(PreviewIndex.NAME, key, null, { file, values ->
+                val module = fileIndex.getModuleForFile(file)
+                if (module != null) {
+                    values.forEach { entries += PreviewEntry(it, module.name, file) }
+                }
+                true
+            }, scope)
+            true
+        }, project)
+
+        return entries.sortedWith(
+            compareBy({ it.moduleName }, { it.indexed.packageName }, { it.indexed.displayName }),
+        )
+    }
+
+    companion object {
+        private val CACHE_KEY = Key.create<CachedValue<List<PreviewEntry>>>("com.devomer.previewgallery.entries")
+
+        fun getInstance(project: Project): PreviewIndexService = project.service()
+    }
+}
+```
+
+- [ ] **Step 3: Verify it compiles**
+Run: `./gradlew compileKotlin`
+Expected: BUILD SUCCESSFUL.
+
+- [ ] **Step 4: Commit**
+
+```bash
+git add src/main/kotlin/com/devomer/previewgallery/model/PreviewEntry.kt src/main/kotlin/com/devomer/previewgallery/service
+git commit -m "[PG-6] - Preview index query service"
+```
+
+---
+
+### Task 7: Search filter and module filter
+
+**Files:**
+- Create: `src/main/kotlin/com/devomer/previewgallery/search/PreviewSearchFilter.kt`
+- Create: `src/main/kotlin/com/devomer/previewgallery/search/PreviewModuleFilter.kt`
+
+**Interfaces:**
+- Consumes: `PreviewRow`, `IndexedPreview`, `AnnotationKind`.
+- Produces:
+  - `PreviewSearchFilter.matches(row: PreviewRow, query: String): Boolean`
+  - `PreviewSearchFilter.filter(rows: List<T>, query: String): List<T>` for `T : PreviewRow`
+  - `PreviewModuleFilter.apply(rows: List<T>, activeModuleName: String?, enabled: Boolean): List<T>` for `T : PreviewRow`
+
+- [ ] **Step 1: Write the filters**
+
+`src/main/kotlin/com/devomer/previewgallery/search/PreviewSearchFilter.kt`:
+
+```kotlin
+package com.devomer.previewgallery.search
+
+import com.devomer.previewgallery.model.PreviewRow
+
+/**
+ * Case-insensitive substring search over the preview name, function name and package.
+ *
+ * A plain scan is enough: the reference corpus is under 1000 entries and the tool window filters below 10k.
+ */
+object PreviewSearchFilter {
+
+    fun matches(row: PreviewRow, query: String): Boolean {
+        val trimmed = query.trim()
+        if (trimmed.isEmpty()) return true
+        val indexed = row.indexed
+        return indexed.displayName.contains(trimmed, ignoreCase = true) ||
+            indexed.functionName.contains(trimmed, ignoreCase = true) ||
+            indexed.packageName.contains(trimmed, ignoreCase = true)
+    }
+
+    fun <T : PreviewRow> filter(rows: List<T>, query: String): List<T> = rows.filter { matches(it, query) }
+}
+```
+
+`src/main/kotlin/com/devomer/previewgallery/search/PreviewModuleFilter.kt`:
+
+```kotlin
+package com.devomer.previewgallery.search
+
+import com.devomer.previewgallery.model.PreviewRow
+
+/** Restricts rows to the module of the file currently open in the editor. */
+object PreviewModuleFilter {
+
+    fun <T : PreviewRow> apply(rows: List<T>, activeModuleName: String?, enabled: Boolean): List<T> = when {
+        !enabled -> rows
+        activeModuleName == null -> emptyList()
+        else -> rows.filter { it.moduleName == activeModuleName }
+    }
+}
+```
+
+- [ ] **Step 2: Verify it compiles**
+Run: `./gradlew compileKotlin`
+Expected: BUILD SUCCESSFUL.
+
+- [ ] **Step 3: Commit**
+
+```bash
+git add src/main/kotlin/com/devomer/previewgallery/search
+git commit -m "[PG-7] - Preview search and module filters"
+```
+
+---
+
+### Task 8: Tree model and detail model
+
+**Files:**
+- Create: `src/main/kotlin/com/devomer/previewgallery/ui/PreviewNode.kt`
+- Create: `src/main/kotlin/com/devomer/previewgallery/ui/PreviewTreeModelBuilder.kt`
+- Create: `src/main/kotlin/com/devomer/previewgallery/ui/PreviewDetailModel.kt`
+
+**Interfaces:**
+- Consumes: `PreviewRow`, `PreviewSearchFilter`.
+- Produces:
+  - `sealed interface PreviewNode` with `ModuleNode(moduleName, count, packages)`, `PackageNode(packageName, previews)`, `PreviewLeaf(row)`
+  - `PreviewTreeModelBuilder.build(rows: List<T>, query: String): List<PreviewNode.ModuleNode>` for `T : PreviewRow`
+  - `data class DetailField(val label: String, val value: String)`
+  - `PreviewDetailModel.fields(row: PreviewRow, fileName: String, line: Int?): List<DetailField>`
+
+- [ ] **Step 1: Write the node types and the builder**
+
+`src/main/kotlin/com/devomer/previewgallery/ui/PreviewNode.kt`:
+
+```kotlin
+package com.devomer.previewgallery.ui
+
+import com.devomer.previewgallery.model.PreviewRow
+
+/** A Swing-free tree shape, so grouping can be tested without a `JTree`. */
+sealed interface PreviewNode {
+
+    data class ModuleNode(
+        val moduleName: String,
+        val count: Int,
+        val packages: List<PackageNode>,
+    ) : PreviewNode
+
+    data class PackageNode(
+        val packageName: String,
+        val previews: List<PreviewLeaf>,
+    ) : PreviewNode
+
+    data class PreviewLeaf(val row: PreviewRow) : PreviewNode
+}
+```
+
+`src/main/kotlin/com/devomer/previewgallery/ui/PreviewTreeModelBuilder.kt`:
+
+```kotlin
+package com.devomer.previewgallery.ui
+
+import com.devomer.previewgallery.model.PreviewRow
+import com.devomer.previewgallery.search.PreviewSearchFilter
+
+/** Builds the module -> package -> preview tree. Module counts reflect the filtered result, not the whole project. */
+object PreviewTreeModelBuilder {
+
+    fun <T : PreviewRow> build(rows: List<T>, query: String): List<PreviewNode.ModuleNode> =
+        PreviewSearchFilter.filter(rows, query)
+            .groupBy { it.moduleName }
+            .toSortedMap()
+            .map { (moduleName, moduleRows) ->
+                val packages = moduleRows
+                    .groupBy { it.indexed.packageName }
+                    .toSortedMap()
+                    .map { (packageName, packageRows) ->
+                        PreviewNode.PackageNode(
+                            packageName = packageName,
+                            previews = packageRows
+                                .sortedBy { it.indexed.displayName }
+                                .map { PreviewNode.PreviewLeaf(it) },
+                        )
+                    }
+                PreviewNode.ModuleNode(moduleName, moduleRows.size, packages)
+            }
+}
+```
+
+- [ ] **Step 2: Write the detail model**
+
+`src/main/kotlin/com/devomer/previewgallery/ui/PreviewDetailModel.kt`:
+
+```kotlin
+package com.devomer.previewgallery.ui
+
+import com.devomer.previewgallery.model.AnnotationKind
+import com.devomer.previewgallery.model.PreviewRow
+
+data class DetailField(val label: String, val value: String)
+
+/** The label/value pairs the detail panel renders. Kept free of Swing so it can be asserted directly. */
+object PreviewDetailModel {
+
+    /** @param line zero-based, as `Document.getLineNumber` returns it; displayed one-based. */
+    fun fields(row: PreviewRow, fileName: String, line: Int?): List<DetailField> {
+        val indexed = row.indexed
+        val fields = mutableListOf(
+            DetailField("Name", indexed.displayName),
+            DetailField("Function", indexed.functionName),
+            DetailField("FQN", indexed.composableFqn),
+            DetailField("Module", row.moduleName),
+            DetailField("File", if (line == null) fileName else "$fileName:${line + 1}"),
+            DetailField(
+                "Annotation",
+                when (indexed.annotationKind) {
+                    AnnotationKind.ANDROIDX -> "androidx"
+                    AnnotationKind.JETBRAINS -> "org.jetbrains"
+                    AnnotationKind.UNKNOWN -> "unknown"
+                },
+            ),
+        )
+        if (indexed.isPrivate) fields += DetailField("Private", "yes")
+        if (indexed.hasPreviewParameter) fields += DetailField("PreviewParameter", "yes")
+        indexed.previewGroup?.let { fields += DetailField("Group", it) }
+        indexed.unsupportedReason?.let { fields += DetailField("Unsupported", it) }
+        return fields
+    }
+}
+```
+
+- [ ] **Step 3: Verify it compiles**
+Run: `./gradlew compileKotlin`
+Expected: BUILD SUCCESSFUL.
+
+- [ ] **Step 4: Commit**
+
+```bash
+git add src/main/kotlin/com/devomer/previewgallery/ui
+git commit -m "[PG-8] - Preview tree and detail models"
+```
+
+---
+
+### Task 9: Tool window
+
+**Files:**
+- Create: `src/main/kotlin/com/devomer/previewgallery/ui/PreviewGalleryToolWindowFactory.kt`
+- Create: `src/main/kotlin/com/devomer/previewgallery/ui/PreviewGalleryPanel.kt`
+- Create: `src/main/kotlin/com/devomer/previewgallery/ui/PreviewTreeCellRenderer.kt`
+- Create: `src/main/kotlin/com/devomer/previewgallery/ui/PreviewDetailPanel.kt`
+- Create: `src/main/kotlin/com/devomer/previewgallery/ui/PreviewRenderPlaceholder.kt`
+- Modify: `src/main/resources/META-INF/plugin.xml`
+- Modify: `src/main/resources/messages/PreviewGalleryBundle.properties`
+
+**Interfaces:**
+- Consumes: `PreviewIndexService`, `PreviewTreeModelBuilder`, `PreviewDetailModel`, `PreviewSearchFilter`, `PreviewGalleryBundle`.
+- Produces:
+  - `PreviewGalleryToolWindowFactory.ID: String = "Compose Gallery"`
+  - `class PreviewGalleryPanel(project: Project, parentDisposable: Disposable) : JBPanel<PreviewGalleryPanel>` with `fun reload()`, `fun selectEntry(entryId: String)`, and `val state: PreviewGalleryPanel.State`
+  - `enum class PreviewGalleryPanel.State { INDEXING, NO_PREVIEWS, NO_MATCH, LOADED }`
+
+- [ ] **Step 1: Add the message keys**
+
+Append to `src/main/resources/messages/PreviewGalleryBundle.properties`:
+
+```properties
+state.indexing=Waiting for indexing to finish…
+state.noPreviews=No @Preview functions found in this project
+state.noMatch=No preview matches ''{0}''
+detail.empty=Select a preview to see its details
+detail.openFile=Open file
+detail.copyFqn=Copy FQN
+render.placeholder=Preview rendering arrives in Phase 2
+search.hint=Search previews
+```
+
+- [ ] **Step 2: Write the placeholder and detail panels**
+
+`src/main/kotlin/com/devomer/previewgallery/ui/PreviewRenderPlaceholder.kt`:
+
+```kotlin
+package com.devomer.previewgallery.ui
+
+import com.devomer.previewgallery.PreviewGalleryBundle
+import com.intellij.ui.components.JBPanel
+import com.intellij.util.ui.JBUI
+import com.intellij.util.ui.StatusText
+import java.awt.Graphics
+
+/** The lower half of the tool window. Phase 2 replaces its contents with the rendered image. */
+class PreviewRenderPlaceholder : JBPanel<PreviewRenderPlaceholder>() {
+
+    private val emptyText = object : StatusText(this) {
+        override fun isStatusVisible(): Boolean = true
+    }.apply { text = PreviewGalleryBundle.message("render.placeholder") }
+
+    init {
+        border = JBUI.Borders.empty()
+    }
+
+    override fun paintComponent(g: Graphics) {
+        super.paintComponent(g)
+        emptyText.paint(this, g)
+    }
+}
+```
+
+`src/main/kotlin/com/devomer/previewgallery/ui/PreviewDetailPanel.kt`:
+
+```kotlin
+package com.devomer.previewgallery.ui
+
+import com.devomer.previewgallery.PreviewGalleryBundle
+import com.devomer.previewgallery.model.PreviewEntry
+import com.intellij.ide.CopyPasteManager
+import com.intellij.openapi.fileEditor.OpenFileDescriptor
+import com.intellij.openapi.project.Project
+import com.intellij.ui.components.ActionLink
+import com.intellij.ui.components.JBLabel
+import com.intellij.ui.components.JBPanel
+import com.intellij.util.ui.JBUI
+import com.intellij.util.ui.UIUtil
+import java.awt.GridBagConstraints
+import java.awt.GridBagLayout
+import java.awt.datatransfer.StringSelection
+
+class PreviewDetailPanel(private val project: Project) : JBPanel<PreviewDetailPanel>(GridBagLayout()) {
+
+    private var entry: PreviewEntry? = null
+
+    init {
+        border = JBUI.Borders.empty(8)
+        showEmpty()
+    }
+
+    fun show(entry: PreviewEntry?) {
+        this.entry = entry
+        removeAll()
+        if (entry == null) showEmpty() else showEntry(entry)
+        revalidate()
+        repaint()
+    }
+
+    private fun showEmpty() {
+        add(JBLabel(PreviewGalleryBundle.message("detail.empty")).apply { foreground = UIUtil.getInactiveTextColor() })
+    }
+
+    private fun showEntry(entry: PreviewEntry) {
+        val line = runCatching {
+            com.intellij.openapi.fileEditor.FileDocumentManager.getInstance()
+                .getDocument(entry.file)
+                ?.getLineNumber(entry.indexed.offset)
+        }.getOrNull()
+
+        val constraints = GridBagConstraints().apply {
+            gridx = 0
+            gridy = 0
+            anchor = GridBagConstraints.NORTHWEST
+            insets = JBUI.insets(2, 0, 2, 8)
+        }
+        PreviewDetailModel.fields(entry, entry.file.name, line).forEach { field ->
+            constraints.gridx = 0
+            add(JBLabel("${field.label}:").apply { foreground = UIUtil.getInactiveTextColor() }, constraints)
+            constraints.gridx = 1
+            add(JBLabel(field.value), constraints)
+            constraints.gridy++
+        }
+
+        constraints.gridx = 0
+        constraints.gridwidth = 2
+        add(ActionLink(PreviewGalleryBundle.message("detail.openFile")) { navigate(entry) }, constraints)
+        constraints.gridy++
+        add(
+            ActionLink(PreviewGalleryBundle.message("detail.copyFqn")) {
+                CopyPasteManager.getInstance().setContents(StringSelection(entry.indexed.composableFqn))
+            },
+            constraints,
+        )
+    }
+
+    private fun navigate(entry: PreviewEntry) {
+        OpenFileDescriptor(project, entry.file, entry.indexed.offset).navigate(true)
+    }
+}
+```
+
+- [ ] **Step 3: Write the tree cell renderer**
+
+`src/main/kotlin/com/devomer/previewgallery/ui/PreviewTreeCellRenderer.kt`:
+
+```kotlin
+package com.devomer.previewgallery.ui
+
+import com.intellij.ui.ColoredTreeCellRenderer
+import com.intellij.ui.SimpleTextAttributes
+import javax.swing.JTree
+import javax.swing.tree.DefaultMutableTreeNode
+
+class PreviewTreeCellRenderer : ColoredTreeCellRenderer() {
+
+    override fun customizeCellRenderer(
+        tree: JTree,
+        value: Any?,
+        selected: Boolean,
+        expanded: Boolean,
+        leaf: Boolean,
+        row: Int,
+        hasFocus: Boolean,
+    ) {
+        val node = (value as? DefaultMutableTreeNode)?.userObject as? PreviewNode ?: return
+        when (node) {
+            is PreviewNode.ModuleNode -> {
+                append(node.moduleName)
+                append("  (${node.count})", SimpleTextAttributes.GRAYED_ATTRIBUTES)
+            }
+
+            is PreviewNode.PackageNode -> append(node.packageName)
+
+            is PreviewNode.PreviewLeaf -> {
+                val indexed = node.row.indexed
+                append(indexed.displayName)
+                if (indexed.displayName != indexed.functionName) {
+                    append("  ${indexed.functionName}", SimpleTextAttributes.GRAYED_ATTRIBUTES)
+                }
+                val badges = buildList {
+                    if (indexed.isPrivate) add("private")
+                    if (indexed.hasPreviewParameter) add("@PreviewParameter")
+                    if (indexed.unsupportedReason != null) add("unsupported")
+                }
+                if (badges.isNotEmpty()) {
+                    append("  ${badges.joinToString(" · ")}", SimpleTextAttributes.GRAYED_SMALL_ATTRIBUTES)
+                }
+            }
+        }
+    }
+}
+```
+
+- [ ] **Step 4: Write the panel**
+
+`src/main/kotlin/com/devomer/previewgallery/ui/PreviewGalleryPanel.kt`:
+
+```kotlin
+package com.devomer.previewgallery.ui
+
+import com.devomer.previewgallery.PreviewGalleryBundle
+import com.devomer.previewgallery.model.PreviewEntry
+import com.devomer.previewgallery.service.PreviewIndexService
+import com.intellij.openapi.Disposable
+import com.intellij.openapi.application.ModalityState
+import com.intellij.openapi.application.ReadAction
+import com.intellij.openapi.fileEditor.OpenFileDescriptor
+import com.intellij.openapi.project.DumbService
+import com.intellij.openapi.project.Project
+import com.intellij.ui.DoubleClickListener
+import com.intellij.ui.DocumentAdapter
+import com.intellij.ui.OnePixelSplitter
+import com.intellij.ui.SearchTextField
+import com.intellij.ui.components.JBPanel
+import com.intellij.ui.components.JBScrollPane
+import com.intellij.ui.treeStructure.Tree
+import com.intellij.util.Alarm
+import com.intellij.util.concurrency.AppExecutorUtil
+import com.intellij.util.ui.JBUI
+import java.awt.BorderLayout
+import java.awt.event.KeyAdapter
+import java.awt.event.KeyEvent
+import java.awt.event.MouseEvent
+import javax.swing.event.DocumentEvent
+import javax.swing.tree.DefaultMutableTreeNode
+import javax.swing.tree.DefaultTreeModel
+import javax.swing.tree.TreePath
+import javax.swing.tree.TreeSelectionModel
+
+class PreviewGalleryPanel(
+    private val project: Project,
+    private val parentDisposable: Disposable,
+) : JBPanel<PreviewGalleryPanel>(BorderLayout()) {
+
+    enum class State { INDEXING, NO_PREVIEWS, NO_MATCH, LOADED }
+
+    var state: State = State.INDEXING
+        private set
+
+    private val searchField = SearchTextField()
+    private val treeRoot = DefaultMutableTreeNode()
+    private val treeModel = DefaultTreeModel(treeRoot)
+    private val tree = Tree(treeModel)
+    private val detailPanel = PreviewDetailPanel(project)
+    private val statusLabel = com.intellij.ui.components.JBLabel()
+    private val alarm = Alarm(Alarm.ThreadToUse.SWING_THREAD, parentDisposable)
+
+    private var entries: List<PreviewEntry> = emptyList()
+
+    /** Set by [PreviewGalleryToolWindowFactory]; consumed by the module filter action in Task 10. */
+    var moduleFilter: (List<PreviewEntry>) -> List<PreviewEntry> = { it }
+
+    init {
+        tree.isRootVisible = false
+        tree.showsRootHandles = true
+        tree.cellRenderer = PreviewTreeCellRenderer()
+        tree.selectionModel.selectionMode = TreeSelectionModel.SINGLE_TREE_SELECTION
+        tree.addTreeSelectionListener { detailPanel.show(selectedEntry()) }
+
+        object : DoubleClickListener() {
+            override fun onDoubleClick(event: MouseEvent): Boolean = navigateToSelection()
+        }.installOn(tree)
+
+        tree.addKeyListener(object : KeyAdapter() {
+            override fun keyPressed(event: KeyEvent) {
+                if (event.keyCode == KeyEvent.VK_ENTER && navigateToSelection()) event.consume()
+            }
+        })
+
+        searchField.textEditor.document.addDocumentListener(object : DocumentAdapter() {
+            override fun textChanged(event: DocumentEvent) {
+                alarm.cancelAllRequests()
+                alarm.addRequest({ applyFilter() }, SEARCH_DEBOUNCE_MS)
+            }
+        })
+
+        val treeSide = JBPanel<JBPanel<*>>(BorderLayout()).apply {
+            add(searchField, BorderLayout.NORTH)
+            add(JBScrollPane(tree), BorderLayout.CENTER)
+        }
+        val upper = OnePixelSplitter(false, "PreviewGallery.horizontal", 0.55f).apply {
+            firstComponent = treeSide
+            secondComponent = JBScrollPane(detailPanel)
+        }
+        val outer = OnePixelSplitter(true, "PreviewGallery.vertical", 0.6f).apply {
+            firstComponent = upper
+            secondComponent = PreviewRenderPlaceholder()
+        }
+
+        statusLabel.border = JBUI.Borders.empty(8)
+        add(outer, BorderLayout.CENTER)
+        add(statusLabel, BorderLayout.SOUTH)
+
+        reload()
+    }
+
+    /** Reloads the index off the EDT. Safe to call repeatedly. */
+    fun reload() {
+        if (DumbService.isDumb(project)) {
+            setState(State.INDEXING)
+            DumbService.getInstance(project).runWhenSmart { reload() }
+            return
+        }
+        ReadAction.nonBlocking<List<PreviewEntry>> { PreviewIndexService.getInstance(project).findAll() }
+            .expireWith(parentDisposable)
+            .finishOnUiThread(ModalityState.defaultModalityState()) { loaded ->
+                entries = loaded
+                applyFilter()
+            }
+            .submit(AppExecutorUtil.getAppExecutorService())
+    }
+
+    fun selectEntry(entryId: String) {
+        val path = findPath(entryId) ?: return
+        tree.selectionPath = path
+        tree.scrollPathToVisible(path)
+    }
+
+    private fun applyFilter() {
+        val visible = moduleFilter(entries)
+        val modules = PreviewTreeModelBuilder.build(visible, searchField.text)
+        treeRoot.removeAllChildren()
+        modules.forEach { module ->
+            val moduleNode = DefaultMutableTreeNode(module)
+            module.packages.forEach { pkg ->
+                val packageNode = DefaultMutableTreeNode(pkg)
+                pkg.previews.forEach { packageNode.add(DefaultMutableTreeNode(it)) }
+                moduleNode.add(packageNode)
+            }
+            treeRoot.add(moduleNode)
+        }
+        treeModel.reload()
+        expandAll()
+        detailPanel.show(selectedEntry())
+
+        setState(
+            when {
+                entries.isEmpty() -> State.NO_PREVIEWS
+                modules.isEmpty() -> State.NO_MATCH
+                else -> State.LOADED
+            },
+        )
+    }
+
+    private fun expandAll() {
+        var row = 0
+        while (row < tree.rowCount) {
+            tree.expandRow(row)
+            row++
+        }
+    }
+
+    private fun setState(newState: State) {
+        state = newState
+        statusLabel.text = when (newState) {
+            State.INDEXING -> PreviewGalleryBundle.message("state.indexing")
+            State.NO_PREVIEWS -> PreviewGalleryBundle.message("state.noPreviews")
+            State.NO_MATCH -> PreviewGalleryBundle.message("state.noMatch", searchField.text)
+            State.LOADED -> ""
+        }
+        statusLabel.isVisible = newState != State.LOADED
+    }
+
+    private fun selectedEntry(): PreviewEntry? {
+        val node = tree.selectionPath?.lastPathComponent as? DefaultMutableTreeNode ?: return null
+        return (node.userObject as? PreviewNode.PreviewLeaf)?.row as? PreviewEntry
+    }
+
+    private fun navigateToSelection(): Boolean {
+        val entry = selectedEntry() ?: return false
+        OpenFileDescriptor(project, entry.file, entry.indexed.offset).navigate(true)
+        return true
+    }
+
+    private fun findPath(entryId: String): TreePath? {
+        val moduleNodes = treeRoot.children().toList().filterIsInstance<DefaultMutableTreeNode>()
+        for (moduleNode in moduleNodes) {
+            for (packageNode in moduleNode.children().toList().filterIsInstance<DefaultMutableTreeNode>()) {
+                for (leafNode in packageNode.children().toList().filterIsInstance<DefaultMutableTreeNode>()) {
+                    val entry = (leafNode.userObject as? PreviewNode.PreviewLeaf)?.row as? PreviewEntry
+                    if (entry?.id == entryId) return TreePath(leafNode.path)
+                }
+            }
+        }
+        return null
+    }
+
+    private companion object {
+        const val SEARCH_DEBOUNCE_MS = 150
+    }
+}
+```
+
+- [ ] **Step 5: Write the tool window factory**
+
+`src/main/kotlin/com/devomer/previewgallery/ui/PreviewGalleryToolWindowFactory.kt`:
+
+```kotlin
+package com.devomer.previewgallery.ui
+
+import com.intellij.openapi.project.DumbAware
+import com.intellij.openapi.project.Project
+import com.intellij.openapi.wm.ToolWindow
+import com.intellij.openapi.wm.ToolWindowFactory
+import com.intellij.ui.content.ContentFactory
+
+/**
+ * `DumbAware` on purpose: the tool window opens during indexing and shows the INDEXING state, then reloads once
+ * the IDE is smart again.
+ */
+class PreviewGalleryToolWindowFactory : ToolWindowFactory, DumbAware {
+
+    override fun createToolWindowContent(project: Project, toolWindow: ToolWindow) {
+        val panel = PreviewGalleryPanel(project, toolWindow.disposable)
+        val content = ContentFactory.getInstance().createContent(panel, null, false)
+        toolWindow.contentManager.addContent(content)
+    }
+
+    companion object {
+        const val ID = "Compose Gallery"
+    }
+}
+```
+
+- [ ] **Step 6: Register the tool window in `plugin.xml`**
+
+Inside the existing `<extensions defaultExtensionNs="com.intellij">` block, add:
+
+```xml
+        <toolWindow id="Compose Gallery"
+                    anchor="right"
+                    factoryClass="com.devomer.previewgallery.ui.PreviewGalleryToolWindowFactory"/>
+```
+
+- [ ] **Step 7: Verify it compiles**
+Run: `./gradlew compileKotlin`
+Expected: BUILD SUCCESSFUL.
+
+- [ ] **Step 8: Commit**
+
+```bash
+git add src/main/kotlin/com/devomer/previewgallery/ui src/main/resources
+git commit -m "[PG-9] - Preview gallery tool window"
+```
+
+---
+
+### Task 10: Module filter toggle and refresh action
+
+**Files:**
+- Create: `src/main/kotlin/com/devomer/previewgallery/ui/ActiveModuleTracker.kt`
+- Create: `src/main/kotlin/com/devomer/previewgallery/ui/ModuleFilterToggleAction.kt`
+- Create: `src/main/kotlin/com/devomer/previewgallery/ui/RefreshAction.kt`
+- Modify: `src/main/kotlin/com/devomer/previewgallery/ui/PreviewGalleryPanel.kt`
+- Modify: `src/main/resources/messages/PreviewGalleryBundle.properties`
+
+**Interfaces:**
+- Consumes: `PreviewGalleryPanel`, `PreviewModuleFilter`, `PreviewIndexService.refresh`.
+- Produces:
+  - `class ActiveModuleTracker(project: Project, parentDisposable: Disposable, onChange: () -> Unit)` with `val activeModuleName: String?`
+  - `PreviewGalleryPanel.isModuleFilterEnabled: Boolean` (persisted via `PropertiesComponent`)
+
+- [ ] **Step 1: Write the tracker**
+
+`src/main/kotlin/com/devomer/previewgallery/ui/ActiveModuleTracker.kt`:
+
+```kotlin
+package com.devomer.previewgallery.ui
+
+import com.intellij.openapi.Disposable
+import com.intellij.openapi.fileEditor.FileEditorManager
+import com.intellij.openapi.fileEditor.FileEditorManagerEvent
+import com.intellij.openapi.fileEditor.FileEditorManagerListener
+import com.intellij.openapi.module.ModuleUtilCore
+import com.intellij.openapi.project.Project
+import com.intellij.psi.PsiManager
+
+/** Tracks the module of the file currently open in the editor. */
+class ActiveModuleTracker(
+    private val project: Project,
+    parentDisposable: Disposable,
+    private val onChange: () -> Unit,
+) {
+
+    val activeModuleName: String?
+        get() {
+            val file = FileEditorManager.getInstance(project).selectedFiles.firstOrNull() ?: return null
+            val psiFile = PsiManager.getInstance(project).findFile(file) ?: return null
+            return ModuleUtilCore.findModuleForPsiElement(psiFile)?.name
+        }
+
+    init {
+        project.messageBus.connect(parentDisposable).subscribe(
+            FileEditorManagerListener.FILE_EDITOR_MANAGER,
+            object : FileEditorManagerListener {
+                override fun selectionChanged(event: FileEditorManagerEvent) = onChange()
+            },
+        )
+    }
+}
+```
+
+- [ ] **Step 2: Add the message keys**
+
+Append to `src/main/resources/messages/PreviewGalleryBundle.properties`:
+
+```properties
+action.moduleFilter.text=Show only the active editor's module
+action.refresh.text=Refresh
+state.noActiveModule=No file open — the module filter has nothing to show
+```
+
+- [ ] **Step 3: Write the actions**
+
+`src/main/kotlin/com/devomer/previewgallery/ui/ModuleFilterToggleAction.kt`:
+
+```kotlin
+package com.devomer.previewgallery.ui
+
+import com.devomer.previewgallery.PreviewGalleryBundle
+import com.intellij.icons.AllIcons
+import com.intellij.openapi.actionSystem.ActionUpdateThread
+import com.intellij.openapi.actionSystem.AnActionEvent
+import com.intellij.openapi.project.DumbAware
+import com.intellij.openapi.project.Project
+import com.intellij.openapi.actionSystem.ToggleAction
+import com.intellij.ide.util.PropertiesComponent
+
+class ModuleFilterToggleAction(
+    private val project: Project,
+    private val onToggle: () -> Unit,
+) : ToggleAction(
+    PreviewGalleryBundle.message("action.moduleFilter.text"),
+    PreviewGalleryBundle.message("action.moduleFilter.text"),
+    AllIcons.General.Filter,
+),
+    DumbAware {
+
+    override fun getActionUpdateThread(): ActionUpdateThread = ActionUpdateThread.EDT
+
+    override fun isSelected(event: AnActionEvent): Boolean = isEnabled(project)
+
+    override fun setSelected(event: AnActionEvent, selected: Boolean) {
+        PropertiesComponent.getInstance(project).setValue(KEY, selected)
+        onToggle()
+    }
+
+    companion object {
+        private const val KEY = "com.devomer.previewgallery.moduleFilter"
+
+        fun isEnabled(project: Project): Boolean = PropertiesComponent.getInstance(project).getBoolean(KEY, false)
+    }
+}
+```
+
+`src/main/kotlin/com/devomer/previewgallery/ui/RefreshAction.kt`:
+
+```kotlin
+package com.devomer.previewgallery.ui
+
+import com.devomer.previewgallery.PreviewGalleryBundle
+import com.devomer.previewgallery.service.PreviewIndexService
+import com.intellij.icons.AllIcons
+import com.intellij.openapi.actionSystem.ActionUpdateThread
+import com.intellij.openapi.actionSystem.AnAction
+import com.intellij.openapi.actionSystem.AnActionEvent
+import com.intellij.openapi.project.DumbAware
+import com.intellij.openapi.project.Project
+
+class RefreshAction(
+    private val project: Project,
+    private val onRefresh: () -> Unit,
+) : AnAction(
+    PreviewGalleryBundle.message("action.refresh.text"),
+    PreviewGalleryBundle.message("action.refresh.text"),
+    AllIcons.Actions.Refresh,
+),
+    DumbAware {
+
+    override fun getActionUpdateThread(): ActionUpdateThread = ActionUpdateThread.BGT
+
+    override fun actionPerformed(event: AnActionEvent) {
+        PreviewIndexService.getInstance(project).refresh()
+        onRefresh()
+    }
+}
+```
+
+- [ ] **Step 4: Wire the actions into the panel**
+
+In `PreviewGalleryPanel`, replace the `moduleFilter` property with a tracker plus a toolbar. Add these imports:
+
+```kotlin
+import com.devomer.previewgallery.search.PreviewModuleFilter
+import com.intellij.openapi.actionSystem.ActionManager
+import com.intellij.openapi.actionSystem.DefaultActionGroup
+```
+
+Replace:
+
+```kotlin
+    /** Set by [PreviewGalleryToolWindowFactory]; consumed by the module filter action in Task 10. */
+    var moduleFilter: (List<PreviewEntry>) -> List<PreviewEntry> = { it }
+```
+
+with:
+
+```kotlin
+    private val moduleTracker = ActiveModuleTracker(project, parentDisposable) { applyFilter() }
+```
+
+In the `init` block, before `add(outer, BorderLayout.CENTER)`, insert:
+
+```kotlin
+        val actionGroup = DefaultActionGroup(
+            RefreshAction(project) { reload() },
+            ModuleFilterToggleAction(project) { applyFilter() },
+        )
+        val toolbar = ActionManager.getInstance().createActionToolbar("PreviewGallery", actionGroup, true)
+        toolbar.targetComponent = this
+        add(toolbar.component, BorderLayout.NORTH)
+```
+
+In `applyFilter`, replace the first line:
+
+```kotlin
+        val visible = moduleFilter(entries)
+```
+
+with:
+
+```kotlin
+        val visible = PreviewModuleFilter.apply(
+            entries,
+            moduleTracker.activeModuleName,
+            ModuleFilterToggleAction.isEnabled(project),
+        )
+```
+
+- [ ] **Step 5: Verify it compiles**
+Run: `./gradlew compileKotlin`
+Expected: BUILD SUCCESSFUL.
+
+- [ ] **Step 6: Commit**
+
+```bash
+git add src/main/kotlin/com/devomer/previewgallery/ui src/main/resources/messages
+git commit -m "[PG-10] - Module filter toggle and refresh action"
+```
+
+---
+
+### Task 11: SearchEverywhere contributor
+
+**Files:**
+- Create: `src/main/kotlin/com/devomer/previewgallery/searcheverywhere/PreviewSearchEverywhereContributor.kt`
+- Create: `src/main/kotlin/com/devomer/previewgallery/searcheverywhere/PreviewSearchEverywhereContributorFactory.kt`
+- Modify: `src/main/resources/META-INF/plugin.xml`
+- Modify: `src/main/resources/messages/PreviewGalleryBundle.properties`
+
+**Interfaces:**
+- Consumes: `PreviewIndexService`, `PreviewSearchFilter`, `PreviewEntry`, `PreviewGalleryToolWindowFactory.ID`, `PreviewGalleryPanel.selectEntry`.
+- Produces: a `SearchEverywhereContributor<PreviewEntry>` registered on `com.intellij.searchEverywhereContributor`.
+
+- [ ] **Step 1: Add the message key**
+
+Append to `src/main/resources/messages/PreviewGalleryBundle.properties`:
+
+```properties
+searcheverywhere.group=Compose Previews
+```
+
+- [ ] **Step 2: Write the contributor**
+
+`src/main/kotlin/com/devomer/previewgallery/searcheverywhere/PreviewSearchEverywhereContributor.kt`:
+
+```kotlin
+package com.devomer.previewgallery.searcheverywhere
+
+import com.devomer.previewgallery.PreviewGalleryBundle
+import com.devomer.previewgallery.model.PreviewEntry
+import com.devomer.previewgallery.search.PreviewSearchFilter
+import com.devomer.previewgallery.service.PreviewIndexService
+import com.devomer.previewgallery.ui.PreviewGalleryPanel
+import com.devomer.previewgallery.ui.PreviewGalleryToolWindowFactory
+import com.intellij.ide.actions.searcheverywhere.SearchEverywhereContributor
+import com.intellij.openapi.application.ReadAction
+import com.intellij.openapi.fileEditor.OpenFileDescriptor
+import com.intellij.openapi.progress.ProgressIndicator
+import com.intellij.openapi.project.DumbService
+import com.intellij.openapi.project.Project
+import com.intellij.openapi.wm.ToolWindowManager
+import com.intellij.ui.SimpleListCellRenderer
+import com.intellij.util.Processor
+import javax.swing.ListCellRenderer
+
+class PreviewSearchEverywhereContributor(private val project: Project) :
+    SearchEverywhereContributor<PreviewEntry> {
+
+    override fun getSearchProviderId(): String = javaClass.name
+
+    override fun getGroupName(): String = PreviewGalleryBundle.message("searcheverywhere.group")
+
+    override fun getSortWeight(): Int = SORT_WEIGHT
+
+    override fun showInFindResults(): Boolean = false
+
+    override fun isShownInSeparateTab(): Boolean = false
+
+    override fun fetchElements(
+        pattern: String,
+        indicator: ProgressIndicator,
+        consumer: Processor<in PreviewEntry>,
+    ) {
+        if (DumbService.isDumb(project)) return
+        val entries = ReadAction.compute<List<PreviewEntry>, RuntimeException> {
+            PreviewIndexService.getInstance(project).findAll()
+        }
+        for (entry in PreviewSearchFilter.filter(entries, pattern)) {
+            indicator.checkCanceled()
+            if (!consumer.process(entry)) return
+        }
+    }
+
+    override fun getElementsRenderer(): ListCellRenderer<in PreviewEntry> =
+        SimpleListCellRenderer.create("") { entry ->
+            "${entry.indexed.displayName}  —  ${entry.moduleName} · ${entry.indexed.packageName}"
+        }
+
+    override fun processSelectedItem(selected: PreviewEntry, modifiers: Int, searchText: String): Boolean {
+        OpenFileDescriptor(project, selected.file, selected.indexed.offset).navigate(true)
+        val toolWindow = ToolWindowManager.getInstance(project).getToolWindow(PreviewGalleryToolWindowFactory.ID)
+        toolWindow?.activate({
+            val panel = toolWindow.contentManager.contents
+                .firstNotNullOfOrNull { it.component as? PreviewGalleryPanel }
+            panel?.selectEntry(selected.id)
+        }, false)
+        return true
+    }
+
+    override fun getDataForItem(element: PreviewEntry, dataId: String): Any? = null
+
+    private companion object {
+        const val SORT_WEIGHT = 900
+    }
+}
+```
+
+`src/main/kotlin/com/devomer/previewgallery/searcheverywhere/PreviewSearchEverywhereContributorFactory.kt`:
+
+```kotlin
+package com.devomer.previewgallery.searcheverywhere
+
+import com.devomer.previewgallery.model.PreviewEntry
+import com.intellij.ide.actions.searcheverywhere.SearchEverywhereContributor
+import com.intellij.ide.actions.searcheverywhere.SearchEverywhereContributorFactory
+import com.intellij.openapi.actionSystem.AnActionEvent
+
+class PreviewSearchEverywhereContributorFactory : SearchEverywhereContributorFactory<PreviewEntry> {
+
+    override fun createContributor(initEvent: AnActionEvent): SearchEverywhereContributor<PreviewEntry> {
+        val project = requireNotNull(initEvent.project) { "Preview gallery search requires an open project" }
+        return PreviewSearchEverywhereContributor(project)
+    }
+}
+```
+
+If `SimpleListCellRenderer.create` does not accept that lambda shape on platform 253, replace
+`getElementsRenderer()` with an explicit renderer:
+
+```kotlin
+    override fun getElementsRenderer(): ListCellRenderer<in PreviewEntry> =
+        ListCellRenderer { _, value, _, _, _ ->
+            com.intellij.ui.components.JBLabel(
+                "${value.indexed.displayName}  —  ${value.moduleName} · ${value.indexed.packageName}",
+            )
+        }
+```
+
+- [ ] **Step 3: Register the contributor in `plugin.xml`**
+
+Inside the `<extensions defaultExtensionNs="com.intellij">` block, add:
+
+```xml
+        <searchEverywhereContributor
+            implementation="com.devomer.previewgallery.searcheverywhere.PreviewSearchEverywhereContributorFactory"/>
+```
+
+- [ ] **Step 4: Verify it compiles**
+Run: `./gradlew compileKotlin`
+Expected: BUILD SUCCESSFUL.
+
+- [ ] **Step 5: Commit**
+
+```bash
+git add src/main/kotlin/com/devomer/previewgallery/searcheverywhere src/main/resources
+git commit -m "[PG-11] - SearchEverywhere contributor"
+```
+
+---
+
+### Task 12: Test suite
+
+All tests for Tasks 2–11 are written here, after the implementation is complete and compiling.
+
+**Files:**
+- Modify: `src/main/kotlin/com/devomer/previewgallery/ui/PreviewGalleryPanel.kt`
+- Create: `src/test/kotlin/com/devomer/previewgallery/index/JvmFqnResolverTest.kt`
+- Create: `src/test/kotlin/com/devomer/previewgallery/index/PreviewAnnotationMatcherTest.kt`
+- Create: `src/test/kotlin/com/devomer/previewgallery/index/PreviewIndexTest.kt`
+- Create: `src/test/kotlin/com/devomer/previewgallery/index/PreviewPsiScannerTest.kt`
+- Create: `src/test/kotlin/com/devomer/previewgallery/index/PreviewValueExternalizerTest.kt`
+- Create: `src/test/kotlin/com/devomer/previewgallery/search/PreviewSearchFilterTest.kt`
+- Create: `src/test/kotlin/com/devomer/previewgallery/search/TestPreviewRow.kt`
+- Create: `src/test/kotlin/com/devomer/previewgallery/searcheverywhere/PreviewSearchEverywhereContributorTest.kt`
+- Create: `src/test/kotlin/com/devomer/previewgallery/service/PreviewIndexServiceTest.kt`
+- Create: `src/test/kotlin/com/devomer/previewgallery/ui/ActiveModuleTrackerTest.kt`
+- Create: `src/test/kotlin/com/devomer/previewgallery/ui/PreviewDetailModelTest.kt`
+- Create: `src/test/kotlin/com/devomer/previewgallery/ui/PreviewGalleryPanelTest.kt`
+- Create: `src/test/kotlin/com/devomer/previewgallery/ui/PreviewTreeModelBuilderTest.kt`
+
+**Interfaces:**
+- Consumes: every type produced by Tasks 2–11.
+- Produces: `PreviewGalleryPanel.reloadSynchronously()` and `PreviewGalleryPanel.applyQueryForTest(query: String)`, both `@TestOnly`.
+
+- [ ] **Step 1: Add the test-only panel helpers**
+
+`PreviewGalleryPanel` reloads asynchronously and debounces its search field, so tests need synchronous entry
+points. Add these two methods to `PreviewGalleryPanel`, along with the import
+`org.jetbrains.annotations.TestOnly`:
+
+```kotlin
+    /** Synchronous reload for tests — the production path is [reload]. */
+    @TestOnly
+    fun reloadSynchronously() {
+        entries = PreviewIndexService.getInstance(project).findAll()
+        applyFilter()
+    }
+
+    /** Applies a query directly, bypassing the 150 ms debounce. */
+    @TestOnly
+    fun applyQueryForTest(query: String) {
+        searchField.text = query
+        applyFilter()
+    }
+```
+
+- [ ] **Step 2: Unit tests — `JvmFqnResolver`**
+
+`src/test/kotlin/com/devomer/previewgallery/index/JvmFqnResolverTest.kt`:
+
+```kotlin
+package com.devomer.previewgallery.index
+
+import org.junit.Assert.assertEquals
+import org.junit.Test
+
+class JvmFqnResolverTest {
+
+    @Test
+    fun `top-level function uses the file facade class`() {
+        val jvmClass = JvmFqnResolver.jvmClassName(
+            packageName = "com.example",
+            fileName = "Foo.kt",
+            jvmNameOverride = null,
+            containerObjectName = null,
+        )
+        assertEquals("com.example.FooKt", jvmClass)
+        assertEquals("com.example.FooKt.BarPreview", JvmFqnResolver.composableFqn(jvmClass, "BarPreview"))
+    }
+
+    @Test
+    fun `JvmName annotation replaces the facade name`() {
+        assertEquals(
+            "com.example.Custom",
+            JvmFqnResolver.jvmClassName("com.example", "Foo.kt", "Custom", null),
+        )
+    }
+
+    @Test
+    fun `object member uses the object class and ignores JvmName`() {
+        assertEquals(
+            "com.example.Previews",
+            JvmFqnResolver.jvmClassName("com.example", "Foo.kt", "Custom", "Previews"),
+        )
+    }
+
+    @Test
+    fun `default package has no prefix`() {
+        assertEquals("FooKt", JvmFqnResolver.jvmClassName("", "Foo.kt", null, null))
+    }
+
+    @Test
+    fun `file name is capitalized`() {
+        assertEquals("FooKt", JvmFqnResolver.facadeClassName("foo.kt"))
+    }
+
+    @Test
+    fun `invalid identifier characters become underscores`() {
+        assertEquals("Foo_barKt", JvmFqnResolver.facadeClassName("foo-bar.kt"))
+    }
+
+    @Test
+    fun `a leading digit becomes an underscore`() {
+        assertEquals("_1FooKt", JvmFqnResolver.facadeClassName("1foo.kt"))
+    }
+}
+```
+
+- [ ] **Step 3: Unit tests — `PreviewAnnotationMatcher`**
+
+`src/test/kotlin/com/devomer/previewgallery/index/PreviewAnnotationMatcherTest.kt`:
+
+```kotlin
+package com.devomer.previewgallery.index
+
+import com.devomer.previewgallery.model.AnnotationKind
+import org.junit.Assert.assertEquals
+import org.junit.Assert.assertFalse
+import org.junit.Assert.assertNull
+import org.junit.Assert.assertTrue
+import org.junit.Test
+
+class PreviewAnnotationMatcherTest {
+
+    private val androidxImport = ImportInfo("androidx.compose.ui.tooling.preview.Preview", null, false)
+    private val jetbrainsImport = ImportInfo("org.jetbrains.compose.ui.tooling.preview.Preview", null, false)
+    private val androidxStar = ImportInfo("androidx.compose.ui.tooling.preview", null, true)
+    private val jetbrainsStar = ImportInfo("org.jetbrains.compose.ui.tooling.preview", null, true)
+
+    @Test
+    fun `fully qualified androidx reference`() {
+        assertEquals(
+            AnnotationKind.ANDROIDX,
+            PreviewAnnotationMatcher.matchPreview("androidx.compose.ui.tooling.preview.Preview", emptyList()),
+        )
+    }
+
+    @Test
+    fun `fully qualified jetbrains reference`() {
+        assertEquals(
+            AnnotationKind.JETBRAINS,
+            PreviewAnnotationMatcher.matchPreview("org.jetbrains.compose.ui.tooling.preview.Preview", emptyList()),
+        )
+    }
+
+    @Test
+    fun `explicit androidx import`() {
+        assertEquals(AnnotationKind.ANDROIDX, PreviewAnnotationMatcher.matchPreview("Preview", listOf(androidxImport)))
+    }
+
+    @Test
+    fun `explicit jetbrains import`() {
+        assertEquals(AnnotationKind.JETBRAINS, PreviewAnnotationMatcher.matchPreview("Preview", listOf(jetbrainsImport)))
+    }
+
+    @Test
+    fun `aliased import`() {
+        val aliased = ImportInfo("androidx.compose.ui.tooling.preview.Preview", "P", false)
+        assertEquals(AnnotationKind.ANDROIDX, PreviewAnnotationMatcher.matchPreview("P", listOf(aliased)))
+        assertNull(PreviewAnnotationMatcher.matchPreview("Preview", listOf(aliased)))
+    }
+
+    @Test
+    fun `star import`() {
+        assertEquals(AnnotationKind.ANDROIDX, PreviewAnnotationMatcher.matchPreview("Preview", listOf(androidxStar)))
+    }
+
+    @Test
+    fun `both packages star-imported is ambiguous`() {
+        assertEquals(
+            AnnotationKind.UNKNOWN,
+            PreviewAnnotationMatcher.matchPreview("Preview", listOf(androidxStar, jetbrainsStar)),
+        )
+    }
+
+    @Test
+    fun `short name with no matching import is unknown`() {
+        assertEquals(AnnotationKind.UNKNOWN, PreviewAnnotationMatcher.matchPreview("Preview", emptyList()))
+    }
+
+    @Test
+    fun `an unrelated Preview import is not a compose preview`() {
+        val unrelated = ImportInfo("com.example.Preview", null, false)
+        assertNull(PreviewAnnotationMatcher.matchPreview("Preview", listOf(unrelated)))
+    }
+
+    @Test
+    fun `an unrelated annotation is not a preview`() {
+        assertNull(PreviewAnnotationMatcher.matchPreview("Composable", listOf(androidxImport)))
+    }
+
+    @Test
+    fun `preview parameter is detected through its import`() {
+        val parameterImport = ImportInfo("androidx.compose.ui.tooling.preview.PreviewParameter", null, false)
+        assertTrue(PreviewAnnotationMatcher.isPreviewParameter("PreviewParameter", listOf(parameterImport)))
+        assertFalse(PreviewAnnotationMatcher.isPreviewParameter("Preview", listOf(parameterImport)))
+    }
+}
+```
+
+- [ ] **Step 4: Integration tests — `PreviewPsiScanner`**
 
 `src/test/kotlin/com/devomer/previewgallery/index/PreviewPsiScannerTest.kt`:
 
@@ -945,186 +2450,7 @@ class PreviewPsiScannerTest : BasePlatformTestCase() {
 
 Note: `annotation class ThemePreview` in the multipreview test is itself annotated with `@Preview`, so the scanner must only report previews on **functions**, never on annotation classes — that is what makes `previews.none { ... }` meaningful without also asserting an empty list.
 
-- [ ] **Step 2: Run the test to verify it fails**
-
-Run: `./gradlew test --tests "com.devomer.previewgallery.index.PreviewPsiScannerTest"`
-Expected: FAIL — `Unresolved reference: PreviewPsiScanner`.
-
-- [ ] **Step 3: Write the scanner**
-
-`src/main/kotlin/com/devomer/previewgallery/index/PreviewPsiScanner.kt`:
-
-```kotlin
-package com.devomer.previewgallery.index
-
-import com.devomer.previewgallery.model.AnnotationKind
-import com.devomer.previewgallery.model.IndexedPreview
-import org.jetbrains.kotlin.lexer.KtTokens
-import org.jetbrains.kotlin.psi.KtAnnotationEntry
-import org.jetbrains.kotlin.psi.KtClass
-import org.jetbrains.kotlin.psi.KtFile
-import org.jetbrains.kotlin.psi.KtLiteralStringTemplateEntry
-import org.jetbrains.kotlin.psi.KtNamedFunction
-import org.jetbrains.kotlin.psi.KtObjectDeclaration
-import org.jetbrains.kotlin.psi.KtStringTemplateExpression
-import org.jetbrains.kotlin.psi.KtTreeVisitorVoid
-
-/** Extracts every directly `@Preview`-annotated function from a single Kotlin file. */
-object PreviewPsiScanner {
-
-    private const val UNSUPPORTED_IN_CLASS = "declared inside a class"
-    private const val UNSUPPORTED_LOCAL = "declared inside a local scope"
-    private const val JVM_NAME = "JvmName"
-
-    fun scan(file: KtFile): List<IndexedPreview> {
-        val imports = file.importDirectives.mapNotNull { directive ->
-            val fqn = directive.importedFqName?.asString() ?: return@mapNotNull null
-            ImportInfo(fqn, directive.aliasName, directive.isAllUnder)
-        }
-        val packageName = file.packageFqName.asString()
-        val jvmNameOverride = file.fileAnnotationList?.annotationEntries
-            ?.firstOrNull { it.shortName?.asString() == JVM_NAME }
-            ?.let { positionalString(it, 0) }
-
-        val result = mutableListOf<IndexedPreview>()
-        file.accept(object : KtTreeVisitorVoid() {
-            override fun visitNamedFunction(function: KtNamedFunction) {
-                super.visitNamedFunction(function)
-                val match = function.annotationEntries.firstNotNullOfOrNull { entry ->
-                    val reference = entry.referenceText() ?: return@firstNotNullOfOrNull null
-                    PreviewAnnotationMatcher.matchPreview(reference, imports)?.let { entry to it }
-                } ?: return
-                result += build(function, match.first, match.second, packageName, file.name, jvmNameOverride, imports)
-            }
-        })
-        return result
-    }
-
-    private fun build(
-        function: KtNamedFunction,
-        annotation: KtAnnotationEntry,
-        kind: AnnotationKind,
-        packageName: String,
-        fileName: String,
-        jvmNameOverride: String?,
-        imports: List<ImportInfo>,
-    ): IndexedPreview {
-        val container = containerOf(function)
-        val functionName = function.name ?: ""
-        val jvmClassName = JvmFqnResolver.jvmClassName(
-            packageName = packageName,
-            fileName = fileName,
-            jvmNameOverride = jvmNameOverride,
-            containerObjectName = (container as? Container.InObject)?.name,
-        )
-        val name = namedString(annotation, "name") ?: positionalString(annotation, 0) ?: functionName
-        return IndexedPreview(
-            displayName = name,
-            functionName = functionName,
-            packageName = packageName,
-            jvmClassName = jvmClassName,
-            composableFqn = JvmFqnResolver.composableFqn(jvmClassName, functionName),
-            offset = function.nameIdentifier?.textOffset ?: function.textOffset,
-            annotationKind = kind,
-            isPrivate = function.hasModifier(KtTokens.PRIVATE_KEYWORD),
-            hasPreviewParameter = function.valueParameters.any { parameter ->
-                parameter.annotationEntries.any { entry ->
-                    val reference = entry.referenceText() ?: return@any false
-                    PreviewAnnotationMatcher.isPreviewParameter(reference, imports)
-                }
-            },
-            previewGroup = namedString(annotation, "group"),
-            unsupportedReason = (container as? Container.Unsupported)?.reason,
-        )
-    }
-
-    private sealed interface Container {
-        data object TopLevel : Container
-        data class InObject(val name: String) : Container
-        data class Unsupported(val reason: String) : Container
-    }
-
-    private fun containerOf(function: KtNamedFunction): Container {
-        var current = function.parent
-        while (current != null) {
-            when (current) {
-                is KtFile -> return Container.TopLevel
-                is KtClass -> return Container.Unsupported(UNSUPPORTED_IN_CLASS)
-                is KtNamedFunction -> return Container.Unsupported(UNSUPPORTED_LOCAL)
-                is KtObjectDeclaration -> {
-                    val name = current.name
-                    val isTopLevelObject = current.parent is KtFile ||
-                        (current.parent?.parent is KtFile && current.parent !is KtClass)
-                    return if (name != null && isTopLevelObject && !current.isCompanion()) {
-                        Container.InObject(name)
-                    } else {
-                        Container.Unsupported(UNSUPPORTED_IN_CLASS)
-                    }
-                }
-            }
-            current = current.parent
-        }
-        return Container.TopLevel
-    }
-
-    /** The annotation's type reference as written, with any type arguments stripped. */
-    private fun KtAnnotationEntry.referenceText(): String? =
-        typeReference?.text?.substringBefore('<')?.trim()?.takeIf { it.isNotEmpty() }
-
-    private fun namedString(entry: KtAnnotationEntry, name: String): String? =
-        entry.valueArguments
-            .firstOrNull { it.getArgumentName()?.asName?.asString() == name }
-            ?.let { literalOf(it.getArgumentExpression()) }
-
-    private fun positionalString(entry: KtAnnotationEntry, index: Int): String? =
-        entry.valueArguments
-            .filter { it.getArgumentName() == null }
-            .getOrNull(index)
-            ?.let { literalOf(it.getArgumentExpression()) }
-
-    /** Only plain string literals are read — anything else would require resolution, which indexers must avoid. */
-    private fun literalOf(expression: com.intellij.psi.PsiElement?): String? {
-        val template = expression as? KtStringTemplateExpression ?: return null
-        val single = template.entries.singleOrNull() as? KtLiteralStringTemplateEntry ?: return null
-        return single.text
-    }
-}
-```
-
-The object-container check uses `isTopLevelObject` so that an object nested inside a class or another object falls back to `Unsupported` — its JVM name would need `$` separators, which v1 does not derive.
-
-- [ ] **Step 4: Run the test to verify it passes**
-
-Run: `./gradlew test --tests "com.devomer.previewgallery.index.PreviewPsiScannerTest"`
-Expected: PASS, 15 tests.
-
-If `KtObjectDeclaration.parent` turns out to be a `KtObjectDeclaration`'s body rather than the object itself, adjust `isTopLevelObject` until the `object member uses the object name` and `class member is indexed but unsupported` tests both pass. Do not weaken the tests.
-
-- [ ] **Step 5: Commit**
-
-```bash
-git add src/main/kotlin/com/devomer/previewgallery/index/PreviewPsiScanner.kt src/test/kotlin/com/devomer/previewgallery/index/PreviewPsiScannerTest.kt
-git commit -m "[PG-4] - Preview PSI scanner"
-```
-
----
-
-### Task 5: The file-based index
-
-**Files:**
-- Create: `src/main/kotlin/com/devomer/previewgallery/index/PreviewValueExternalizer.kt`
-- Create: `src/main/kotlin/com/devomer/previewgallery/index/PreviewIndex.kt`
-- Modify: `src/main/resources/META-INF/plugin.xml`
-- Test: `src/test/kotlin/com/devomer/previewgallery/index/PreviewValueExternalizerTest.kt`
-- Test: `src/test/kotlin/com/devomer/previewgallery/index/PreviewIndexTest.kt`
-
-**Interfaces:**
-- Consumes: `PreviewPsiScanner.scan`, `IndexedPreview`.
-- Produces:
-  - `PreviewValueExternalizer : DataExternalizer<List<IndexedPreview>>`
-  - `PreviewIndex.NAME: ID<String, List<IndexedPreview>>` — the index id later tasks query, keyed by `composableFqn`
-
-- [ ] **Step 1: Write the failing externalizer test**
+- [ ] **Step 5: Unit tests — `PreviewValueExternalizer`**
 
 `src/test/kotlin/com/devomer/previewgallery/index/PreviewValueExternalizerTest.kt`:
 
@@ -1193,99 +2519,7 @@ class PreviewValueExternalizerTest {
 }
 ```
 
-- [ ] **Step 2: Run the test to verify it fails**
-
-Run: `./gradlew test --tests "com.devomer.previewgallery.index.PreviewValueExternalizerTest"`
-Expected: FAIL — `Unresolved reference: PreviewValueExternalizer`.
-
-- [ ] **Step 3: Write the externalizer**
-
-`src/main/kotlin/com/devomer/previewgallery/index/PreviewValueExternalizer.kt`:
-
-```kotlin
-package com.devomer.previewgallery.index
-
-import com.devomer.previewgallery.model.AnnotationKind
-import com.devomer.previewgallery.model.IndexedPreview
-import com.intellij.util.io.DataExternalizer
-import com.intellij.util.io.DataInputOutputUtil
-import com.intellij.util.io.IOUtil
-import java.io.DataInput
-import java.io.DataOutput
-
-/**
- * Field-by-field serialization of the index values. Any change to the layout requires bumping
- * [PreviewIndex.VERSION], otherwise stale on-disk data is read with the new layout.
- */
-object PreviewValueExternalizer : DataExternalizer<List<IndexedPreview>> {
-
-    override fun save(out: DataOutput, value: List<IndexedPreview>) {
-        DataInputOutputUtil.writeINT(out, value.size)
-        for (preview in value) {
-            IOUtil.writeUTF(out, preview.displayName)
-            IOUtil.writeUTF(out, preview.functionName)
-            IOUtil.writeUTF(out, preview.packageName)
-            IOUtil.writeUTF(out, preview.jvmClassName)
-            IOUtil.writeUTF(out, preview.composableFqn)
-            DataInputOutputUtil.writeINT(out, preview.offset)
-            DataInputOutputUtil.writeINT(out, preview.annotationKind.ordinal)
-            out.writeBoolean(preview.isPrivate)
-            out.writeBoolean(preview.hasPreviewParameter)
-            writeNullable(out, preview.previewGroup)
-            writeNullable(out, preview.unsupportedReason)
-        }
-    }
-
-    override fun read(input: DataInput): List<IndexedPreview> {
-        val size = DataInputOutputUtil.readINT(input)
-        val result = ArrayList<IndexedPreview>(size)
-        repeat(size) {
-            val displayName = IOUtil.readUTF(input)
-            val functionName = IOUtil.readUTF(input)
-            val packageName = IOUtil.readUTF(input)
-            val jvmClassName = IOUtil.readUTF(input)
-            val composableFqn = IOUtil.readUTF(input)
-            val offset = DataInputOutputUtil.readINT(input)
-            val kindOrdinal = DataInputOutputUtil.readINT(input)
-            val isPrivate = input.readBoolean()
-            val hasPreviewParameter = input.readBoolean()
-            val previewGroup = readNullable(input)
-            val unsupportedReason = readNullable(input)
-            result += IndexedPreview(
-                displayName = displayName,
-                functionName = functionName,
-                packageName = packageName,
-                jvmClassName = jvmClassName,
-                composableFqn = composableFqn,
-                offset = offset,
-                annotationKind = AnnotationKind.entries.getOrElse(kindOrdinal) { AnnotationKind.UNKNOWN },
-                isPrivate = isPrivate,
-                hasPreviewParameter = hasPreviewParameter,
-                previewGroup = previewGroup,
-                unsupportedReason = unsupportedReason,
-            )
-        }
-        return result
-    }
-
-    private fun writeNullable(out: DataOutput, value: String?) {
-        out.writeBoolean(value != null)
-        if (value != null) IOUtil.writeUTF(out, value)
-    }
-
-    private fun readNullable(input: DataInput): String? =
-        if (input.readBoolean()) IOUtil.readUTF(input) else null
-}
-```
-
-Fields are read into locals before the constructor call so the read order is explicit rather than dependent on argument evaluation order.
-
-- [ ] **Step 4: Run the externalizer test to verify it passes**
-
-Run: `./gradlew test --tests "com.devomer.previewgallery.index.PreviewValueExternalizerTest"`
-Expected: PASS, 5 tests.
-
-- [ ] **Step 5: Write the failing index test**
+- [ ] **Step 6: Integration tests — `PreviewIndex`**
 
 `src/test/kotlin/com/devomer/previewgallery/index/PreviewIndexTest.kt`:
 
@@ -1379,112 +2613,7 @@ class PreviewIndexTest : BasePlatformTestCase() {
 }
 ```
 
-- [ ] **Step 6: Run the index test to verify it fails**
-
-Run: `./gradlew test --tests "com.devomer.previewgallery.index.PreviewIndexTest"`
-Expected: FAIL — `Unresolved reference: PreviewIndex`.
-
-- [ ] **Step 7: Write the index**
-
-`src/main/kotlin/com/devomer/previewgallery/index/PreviewIndex.kt`:
-
-```kotlin
-package com.devomer.previewgallery.index
-
-import com.devomer.previewgallery.model.IndexedPreview
-import com.intellij.util.indexing.DataIndexer
-import com.intellij.util.indexing.FileBasedIndex
-import com.intellij.util.indexing.FileBasedIndexExtension
-import com.intellij.util.indexing.FileContent
-import com.intellij.util.indexing.ID
-import com.intellij.util.indexing.PsiDependentIndex
-import com.intellij.util.io.DataExternalizer
-import com.intellij.util.io.EnumeratorStringDescriptor
-import com.intellij.util.io.KeyDescriptor
-import org.jetbrains.kotlin.psi.KtFile
-
-/**
- * Persistent, incremental index of every directly `@Preview`-annotated function, keyed by its composable FQN.
- *
- * Only file-local facts are stored. Module membership is a project-model property, so storing it here would let a
- * Gradle sync invalidate correctness without invalidating the index.
- */
-class PreviewIndex : FileBasedIndexExtension<String, List<IndexedPreview>>(), PsiDependentIndex {
-
-    override fun getName(): ID<String, List<IndexedPreview>> = NAME
-
-    override fun getVersion(): Int = VERSION
-
-    override fun dependsOnFileContent(): Boolean = true
-
-    override fun getKeyDescriptor(): KeyDescriptor<String> = EnumeratorStringDescriptor.INSTANCE
-
-    override fun getValueExternalizer(): DataExternalizer<List<IndexedPreview>> = PreviewValueExternalizer
-
-    override fun getInputFilter(): FileBasedIndex.InputFilter =
-        FileBasedIndex.InputFilter { file -> file.extension == KOTLIN_EXTENSION }
-
-    override fun getIndexer(): DataIndexer<String, List<IndexedPreview>, FileContent> =
-        DataIndexer { content ->
-            if (!content.contentAsText.contains(MARKER)) return@DataIndexer emptyMap()
-            val ktFile = content.psiFile as? KtFile ?: return@DataIndexer emptyMap()
-            PreviewPsiScanner.scan(ktFile).groupBy { it.composableFqn }
-        }
-
-    companion object {
-        val NAME: ID<String, List<IndexedPreview>> = ID.create("com.devomer.previewgallery.PreviewIndex")
-
-        /** Bump on any change to [PreviewValueExternalizer] or to what the scanner produces. */
-        const val VERSION = 1
-
-        private const val KOTLIN_EXTENSION = "kt"
-
-        /** Cheap text gate: files that never mention Preview are skipped before PSI is built. */
-        private const val MARKER = "Preview"
-    }
-}
-```
-
-- [ ] **Step 8: Register the index in `plugin.xml`**
-
-Add before the closing `</idea-plugin>` tag:
-
-```xml
-    <extensions defaultExtensionNs="com.intellij">
-        <fileBasedIndex implementation="com.devomer.previewgallery.index.PreviewIndex"/>
-    </extensions>
-```
-
-- [ ] **Step 9: Run the index test to verify it passes**
-
-Run: `./gradlew test --tests "com.devomer.previewgallery.index.PreviewIndexTest"`
-Expected: PASS, 4 tests.
-
-- [ ] **Step 10: Commit**
-
-```bash
-git add src/main/kotlin/com/devomer/previewgallery/index src/main/resources/META-INF/plugin.xml src/test/kotlin/com/devomer/previewgallery/index
-git commit -m "[PG-5] - Preview file-based index"
-```
-
----
-
-### Task 6: Query service
-
-**Files:**
-- Create: `src/main/kotlin/com/devomer/previewgallery/model/PreviewEntry.kt`
-- Create: `src/main/kotlin/com/devomer/previewgallery/service/PreviewIndexService.kt`
-- Test: `src/test/kotlin/com/devomer/previewgallery/service/PreviewIndexServiceTest.kt`
-
-**Interfaces:**
-- Consumes: `PreviewIndex.NAME`, `IndexedPreview`, `PreviewRow`.
-- Produces:
-  - `data class PreviewEntry(override val indexed: IndexedPreview, override val moduleName: String, val file: VirtualFile) : PreviewRow` with `val id: String`
-  - `PreviewIndexService.getInstance(project: Project): PreviewIndexService`
-  - `PreviewIndexService.findAll(): List<PreviewEntry>` — must be called under a read action, off the EDT
-  - `PreviewIndexService.refresh()` — invalidates the cache
-
-- [ ] **Step 1: Write the failing test**
+- [ ] **Step 7: Integration tests — `PreviewIndexService`**
 
 `src/test/kotlin/com/devomer/previewgallery/service/PreviewIndexServiceTest.kt`:
 
@@ -1553,145 +2682,7 @@ class PreviewIndexServiceTest : BasePlatformTestCase() {
 }
 ```
 
-- [ ] **Step 2: Run the test to verify it fails**
-
-Run: `./gradlew test --tests "com.devomer.previewgallery.service.PreviewIndexServiceTest"`
-Expected: FAIL — `Unresolved reference: PreviewIndexService`.
-
-- [ ] **Step 3: Write `PreviewEntry`**
-
-`src/main/kotlin/com/devomer/previewgallery/model/PreviewEntry.kt`:
-
-```kotlin
-package com.devomer.previewgallery.model
-
-import com.intellij.openapi.vfs.VirtualFile
-
-/** An index value joined with the project-model context resolved at query time. */
-data class PreviewEntry(
-    override val indexed: IndexedPreview,
-    override val moduleName: String,
-    val file: VirtualFile,
-) : PreviewRow {
-
-    val id: String get() = "${indexed.composableFqn}#${indexed.displayName}"
-}
-```
-
-- [ ] **Step 4: Write the service**
-
-`src/main/kotlin/com/devomer/previewgallery/service/PreviewIndexService.kt`:
-
-```kotlin
-package com.devomer.previewgallery.service
-
-import com.devomer.previewgallery.index.PreviewIndex
-import com.devomer.previewgallery.model.PreviewEntry
-import com.intellij.openapi.components.Service
-import com.intellij.openapi.components.service
-import com.intellij.openapi.project.DumbService
-import com.intellij.openapi.project.Project
-import com.intellij.openapi.roots.ProjectFileIndex
-import com.intellij.openapi.util.Key
-import com.intellij.openapi.util.SimpleModificationTracker
-import com.intellij.psi.search.GlobalSearchScope
-import com.intellij.psi.util.CachedValue
-import com.intellij.psi.util.CachedValueProvider
-import com.intellij.psi.util.CachedValuesManager
-import com.intellij.psi.util.PsiModificationTracker
-import com.intellij.util.indexing.FileBasedIndex
-
-/**
- * Reads [PreviewIndex] and joins each value with the module and file it belongs to.
- *
- * Callers must invoke [findAll] under a read action and off the EDT — it touches the index and the project model.
- */
-@Service(Service.Level.PROJECT)
-class PreviewIndexService(private val project: Project) {
-
-    private val refreshTracker = SimpleModificationTracker()
-
-    fun findAll(): List<PreviewEntry> {
-        if (DumbService.isDumb(project)) return emptyList()
-        return CachedValuesManager.getManager(project).getCachedValue(
-            project,
-            CACHE_KEY,
-            {
-                CachedValueProvider.Result.create(
-                    compute(),
-                    PsiModificationTracker.MODIFICATION_COUNT,
-                    refreshTracker,
-                )
-            },
-            false,
-        )
-    }
-
-    /** Forces the next [findAll] to recompute, for project-model changes that raise no PSI event. */
-    fun refresh() {
-        refreshTracker.incModificationCount()
-    }
-
-    private fun compute(): List<PreviewEntry> {
-        val index = FileBasedIndex.getInstance()
-        val fileIndex = ProjectFileIndex.getInstance(project)
-        val scope = GlobalSearchScope.projectScope(project)
-        val entries = mutableListOf<PreviewEntry>()
-
-        index.processAllKeys(PreviewIndex.NAME, { key ->
-            index.processValues(PreviewIndex.NAME, key, null, { file, values ->
-                val module = fileIndex.getModuleForFile(file)
-                if (module != null) {
-                    values.forEach { entries += PreviewEntry(it, module.name, file) }
-                }
-                true
-            }, scope)
-            true
-        }, project)
-
-        return entries.sortedWith(
-            compareBy({ it.moduleName }, { it.indexed.packageName }, { it.indexed.displayName }),
-        )
-    }
-
-    companion object {
-        private val CACHE_KEY = Key.create<CachedValue<List<PreviewEntry>>>("com.devomer.previewgallery.entries")
-
-        fun getInstance(project: Project): PreviewIndexService = project.service()
-    }
-}
-```
-
-- [ ] **Step 5: Run the test to verify it passes**
-
-Run: `./gradlew test --tests "com.devomer.previewgallery.service.PreviewIndexServiceTest"`
-Expected: PASS, 3 tests.
-
-- [ ] **Step 6: Commit**
-
-```bash
-git add src/main/kotlin/com/devomer/previewgallery/model/PreviewEntry.kt src/main/kotlin/com/devomer/previewgallery/service src/test/kotlin/com/devomer/previewgallery/service
-git commit -m "[PG-6] - Preview index query service"
-```
-
----
-
-### Task 7: Search filter and module filter
-
-**Files:**
-- Create: `src/main/kotlin/com/devomer/previewgallery/search/PreviewSearchFilter.kt`
-- Create: `src/main/kotlin/com/devomer/previewgallery/search/PreviewModuleFilter.kt`
-- Test: `src/test/kotlin/com/devomer/previewgallery/search/PreviewSearchFilterTest.kt`
-- Test: `src/test/kotlin/com/devomer/previewgallery/search/TestPreviewRow.kt`
-
-**Interfaces:**
-- Consumes: `PreviewRow`, `IndexedPreview`, `AnnotationKind`.
-- Produces:
-  - `PreviewSearchFilter.matches(row: PreviewRow, query: String): Boolean`
-  - `PreviewSearchFilter.filter(rows: List<T>, query: String): List<T>` for `T : PreviewRow`
-  - `PreviewModuleFilter.apply(rows: List<T>, activeModuleName: String?, enabled: Boolean): List<T>` for `T : PreviewRow`
-
-- [ ] **Step 1: Write the test fixture and the failing test**
+- [ ] **Step 8: Unit tests — search and module filters**
 
 `src/test/kotlin/com/devomer/previewgallery/search/TestPreviewRow.kt`:
 
@@ -1806,90 +2797,7 @@ class PreviewSearchFilterTest {
 }
 ```
 
-- [ ] **Step 2: Run the test to verify it fails**
-
-Run: `./gradlew test --tests "com.devomer.previewgallery.search.PreviewSearchFilterTest"`
-Expected: FAIL — `Unresolved reference: PreviewSearchFilter`.
-
-- [ ] **Step 3: Write the filters**
-
-`src/main/kotlin/com/devomer/previewgallery/search/PreviewSearchFilter.kt`:
-
-```kotlin
-package com.devomer.previewgallery.search
-
-import com.devomer.previewgallery.model.PreviewRow
-
-/**
- * Case-insensitive substring search over the preview name, function name and package.
- *
- * A plain scan is enough: the reference corpus is under 1000 entries and the tool window filters below 10k.
- */
-object PreviewSearchFilter {
-
-    fun matches(row: PreviewRow, query: String): Boolean {
-        val trimmed = query.trim()
-        if (trimmed.isEmpty()) return true
-        val indexed = row.indexed
-        return indexed.displayName.contains(trimmed, ignoreCase = true) ||
-            indexed.functionName.contains(trimmed, ignoreCase = true) ||
-            indexed.packageName.contains(trimmed, ignoreCase = true)
-    }
-
-    fun <T : PreviewRow> filter(rows: List<T>, query: String): List<T> = rows.filter { matches(it, query) }
-}
-```
-
-`src/main/kotlin/com/devomer/previewgallery/search/PreviewModuleFilter.kt`:
-
-```kotlin
-package com.devomer.previewgallery.search
-
-import com.devomer.previewgallery.model.PreviewRow
-
-/** Restricts rows to the module of the file currently open in the editor. */
-object PreviewModuleFilter {
-
-    fun <T : PreviewRow> apply(rows: List<T>, activeModuleName: String?, enabled: Boolean): List<T> = when {
-        !enabled -> rows
-        activeModuleName == null -> emptyList()
-        else -> rows.filter { it.moduleName == activeModuleName }
-    }
-}
-```
-
-- [ ] **Step 4: Run the test to verify it passes**
-
-Run: `./gradlew test --tests "com.devomer.previewgallery.search.PreviewSearchFilterTest"`
-Expected: PASS, 11 tests.
-
-- [ ] **Step 5: Commit**
-
-```bash
-git add src/main/kotlin/com/devomer/previewgallery/search src/test/kotlin/com/devomer/previewgallery/search
-git commit -m "[PG-7] - Preview search and module filters"
-```
-
----
-
-### Task 8: Tree model and detail model
-
-**Files:**
-- Create: `src/main/kotlin/com/devomer/previewgallery/ui/PreviewNode.kt`
-- Create: `src/main/kotlin/com/devomer/previewgallery/ui/PreviewTreeModelBuilder.kt`
-- Create: `src/main/kotlin/com/devomer/previewgallery/ui/PreviewDetailModel.kt`
-- Test: `src/test/kotlin/com/devomer/previewgallery/ui/PreviewTreeModelBuilderTest.kt`
-- Test: `src/test/kotlin/com/devomer/previewgallery/ui/PreviewDetailModelTest.kt`
-
-**Interfaces:**
-- Consumes: `PreviewRow`, `PreviewSearchFilter`.
-- Produces:
-  - `sealed interface PreviewNode` with `ModuleNode(moduleName, count, packages)`, `PackageNode(packageName, previews)`, `PreviewLeaf(row)`
-  - `PreviewTreeModelBuilder.build(rows: List<T>, query: String): List<PreviewNode.ModuleNode>` for `T : PreviewRow`
-  - `data class DetailField(val label: String, val value: String)`
-  - `PreviewDetailModel.fields(row: PreviewRow, fileName: String, line: Int?): List<DetailField>`
-
-- [ ] **Step 1: Write the failing tree test**
+- [ ] **Step 9: Unit tests — `PreviewTreeModelBuilder`**
 
 `src/test/kotlin/com/devomer/previewgallery/ui/PreviewTreeModelBuilderTest.kt`:
 
@@ -1972,76 +2880,7 @@ class PreviewTreeModelBuilderTest {
 }
 ```
 
-- [ ] **Step 2: Run the test to verify it fails**
-
-Run: `./gradlew test --tests "com.devomer.previewgallery.ui.PreviewTreeModelBuilderTest"`
-Expected: FAIL — `Unresolved reference: PreviewTreeModelBuilder`.
-
-- [ ] **Step 3: Write the node types and the builder**
-
-`src/main/kotlin/com/devomer/previewgallery/ui/PreviewNode.kt`:
-
-```kotlin
-package com.devomer.previewgallery.ui
-
-import com.devomer.previewgallery.model.PreviewRow
-
-/** A Swing-free tree shape, so grouping can be tested without a `JTree`. */
-sealed interface PreviewNode {
-
-    data class ModuleNode(
-        val moduleName: String,
-        val count: Int,
-        val packages: List<PackageNode>,
-    ) : PreviewNode
-
-    data class PackageNode(
-        val packageName: String,
-        val previews: List<PreviewLeaf>,
-    ) : PreviewNode
-
-    data class PreviewLeaf(val row: PreviewRow) : PreviewNode
-}
-```
-
-`src/main/kotlin/com/devomer/previewgallery/ui/PreviewTreeModelBuilder.kt`:
-
-```kotlin
-package com.devomer.previewgallery.ui
-
-import com.devomer.previewgallery.model.PreviewRow
-import com.devomer.previewgallery.search.PreviewSearchFilter
-
-/** Builds the module -> package -> preview tree. Module counts reflect the filtered result, not the whole project. */
-object PreviewTreeModelBuilder {
-
-    fun <T : PreviewRow> build(rows: List<T>, query: String): List<PreviewNode.ModuleNode> =
-        PreviewSearchFilter.filter(rows, query)
-            .groupBy { it.moduleName }
-            .toSortedMap()
-            .map { (moduleName, moduleRows) ->
-                val packages = moduleRows
-                    .groupBy { it.indexed.packageName }
-                    .toSortedMap()
-                    .map { (packageName, packageRows) ->
-                        PreviewNode.PackageNode(
-                            packageName = packageName,
-                            previews = packageRows
-                                .sortedBy { it.indexed.displayName }
-                                .map { PreviewNode.PreviewLeaf(it) },
-                        )
-                    }
-                PreviewNode.ModuleNode(moduleName, moduleRows.size, packages)
-            }
-}
-```
-
-- [ ] **Step 4: Run the tree test to verify it passes**
-
-Run: `./gradlew test --tests "com.devomer.previewgallery.ui.PreviewTreeModelBuilderTest"`
-Expected: PASS, 6 tests.
-
-- [ ] **Step 5: Write the failing detail test**
+- [ ] **Step 10: Unit tests — `PreviewDetailModel`**
 
 `src/test/kotlin/com/devomer/previewgallery/ui/PreviewDetailModelTest.kt`:
 
@@ -2107,87 +2946,7 @@ class PreviewDetailModelTest {
 }
 ```
 
-- [ ] **Step 6: Run the detail test to verify it fails**
-
-Run: `./gradlew test --tests "com.devomer.previewgallery.ui.PreviewDetailModelTest"`
-Expected: FAIL — `Unresolved reference: PreviewDetailModel`.
-
-- [ ] **Step 7: Write the detail model**
-
-`src/main/kotlin/com/devomer/previewgallery/ui/PreviewDetailModel.kt`:
-
-```kotlin
-package com.devomer.previewgallery.ui
-
-import com.devomer.previewgallery.model.AnnotationKind
-import com.devomer.previewgallery.model.PreviewRow
-
-data class DetailField(val label: String, val value: String)
-
-/** The label/value pairs the detail panel renders. Kept free of Swing so it can be asserted directly. */
-object PreviewDetailModel {
-
-    /** @param line zero-based, as `Document.getLineNumber` returns it; displayed one-based. */
-    fun fields(row: PreviewRow, fileName: String, line: Int?): List<DetailField> {
-        val indexed = row.indexed
-        val fields = mutableListOf(
-            DetailField("Name", indexed.displayName),
-            DetailField("Function", indexed.functionName),
-            DetailField("FQN", indexed.composableFqn),
-            DetailField("Module", row.moduleName),
-            DetailField("File", if (line == null) fileName else "$fileName:${line + 1}"),
-            DetailField(
-                "Annotation",
-                when (indexed.annotationKind) {
-                    AnnotationKind.ANDROIDX -> "androidx"
-                    AnnotationKind.JETBRAINS -> "org.jetbrains"
-                    AnnotationKind.UNKNOWN -> "unknown"
-                },
-            ),
-        )
-        if (indexed.isPrivate) fields += DetailField("Private", "yes")
-        if (indexed.hasPreviewParameter) fields += DetailField("PreviewParameter", "yes")
-        indexed.previewGroup?.let { fields += DetailField("Group", it) }
-        indexed.unsupportedReason?.let { fields += DetailField("Unsupported", it) }
-        return fields
-    }
-}
-```
-
-- [ ] **Step 8: Run the detail test to verify it passes**
-
-Run: `./gradlew test --tests "com.devomer.previewgallery.ui.PreviewDetailModelTest"`
-Expected: PASS, 4 tests.
-
-- [ ] **Step 9: Commit**
-
-```bash
-git add src/main/kotlin/com/devomer/previewgallery/ui src/test/kotlin/com/devomer/previewgallery/ui
-git commit -m "[PG-8] - Preview tree and detail models"
-```
-
----
-
-### Task 9: Tool window
-
-**Files:**
-- Create: `src/main/kotlin/com/devomer/previewgallery/ui/PreviewGalleryToolWindowFactory.kt`
-- Create: `src/main/kotlin/com/devomer/previewgallery/ui/PreviewGalleryPanel.kt`
-- Create: `src/main/kotlin/com/devomer/previewgallery/ui/PreviewTreeCellRenderer.kt`
-- Create: `src/main/kotlin/com/devomer/previewgallery/ui/PreviewDetailPanel.kt`
-- Create: `src/main/kotlin/com/devomer/previewgallery/ui/PreviewRenderPlaceholder.kt`
-- Modify: `src/main/resources/META-INF/plugin.xml`
-- Modify: `src/main/resources/messages/PreviewGalleryBundle.properties`
-- Test: `src/test/kotlin/com/devomer/previewgallery/ui/PreviewGalleryPanelTest.kt`
-
-**Interfaces:**
-- Consumes: `PreviewIndexService`, `PreviewTreeModelBuilder`, `PreviewDetailModel`, `PreviewSearchFilter`, `PreviewGalleryBundle`.
-- Produces:
-  - `PreviewGalleryToolWindowFactory.ID: String = "Compose Gallery"`
-  - `class PreviewGalleryPanel(project: Project, parentDisposable: Disposable) : JBPanel<PreviewGalleryPanel>` with `fun reload()`, `fun selectEntry(entryId: String)`, and `val state: PreviewGalleryPanel.State`
-  - `enum class PreviewGalleryPanel.State { INDEXING, NO_PREVIEWS, NO_MATCH, LOADED }`
-
-- [ ] **Step 1: Write the failing test**
+- [ ] **Step 11: Integration tests — `PreviewGalleryPanel`**
 
 `src/test/kotlin/com/devomer/previewgallery/ui/PreviewGalleryPanelTest.kt`:
 
@@ -2248,477 +3007,7 @@ class PreviewGalleryPanelTest : BasePlatformTestCase() {
 }
 ```
 
-- [ ] **Step 2: Run the test to verify it fails**
-
-Run: `./gradlew test --tests "com.devomer.previewgallery.ui.PreviewGalleryPanelTest"`
-Expected: FAIL — `Unresolved reference: PreviewGalleryPanel`.
-
-- [ ] **Step 3: Add the message keys**
-
-Append to `src/main/resources/messages/PreviewGalleryBundle.properties`:
-
-```properties
-state.indexing=Waiting for indexing to finish…
-state.noPreviews=No @Preview functions found in this project
-state.noMatch=No preview matches ''{0}''
-detail.empty=Select a preview to see its details
-detail.openFile=Open file
-detail.copyFqn=Copy FQN
-render.placeholder=Preview rendering arrives in Phase 2
-search.hint=Search previews
-```
-
-- [ ] **Step 4: Write the placeholder and detail panels**
-
-`src/main/kotlin/com/devomer/previewgallery/ui/PreviewRenderPlaceholder.kt`:
-
-```kotlin
-package com.devomer.previewgallery.ui
-
-import com.devomer.previewgallery.PreviewGalleryBundle
-import com.intellij.ui.components.JBPanel
-import com.intellij.util.ui.JBUI
-import com.intellij.util.ui.StatusText
-import java.awt.Graphics
-
-/** The lower half of the tool window. Phase 2 replaces its contents with the rendered image. */
-class PreviewRenderPlaceholder : JBPanel<PreviewRenderPlaceholder>() {
-
-    private val emptyText = object : StatusText(this) {
-        override fun isStatusVisible(): Boolean = true
-    }.apply { text = PreviewGalleryBundle.message("render.placeholder") }
-
-    init {
-        border = JBUI.Borders.empty()
-    }
-
-    override fun paintComponent(g: Graphics) {
-        super.paintComponent(g)
-        emptyText.paint(this, g)
-    }
-}
-```
-
-`src/main/kotlin/com/devomer/previewgallery/ui/PreviewDetailPanel.kt`:
-
-```kotlin
-package com.devomer.previewgallery.ui
-
-import com.devomer.previewgallery.PreviewGalleryBundle
-import com.devomer.previewgallery.model.PreviewEntry
-import com.intellij.ide.CopyPasteManager
-import com.intellij.openapi.fileEditor.OpenFileDescriptor
-import com.intellij.openapi.project.Project
-import com.intellij.ui.components.ActionLink
-import com.intellij.ui.components.JBLabel
-import com.intellij.ui.components.JBPanel
-import com.intellij.util.ui.JBUI
-import com.intellij.util.ui.UIUtil
-import java.awt.GridBagConstraints
-import java.awt.GridBagLayout
-import java.awt.datatransfer.StringSelection
-
-class PreviewDetailPanel(private val project: Project) : JBPanel<PreviewDetailPanel>(GridBagLayout()) {
-
-    private var entry: PreviewEntry? = null
-
-    init {
-        border = JBUI.Borders.empty(8)
-        showEmpty()
-    }
-
-    fun show(entry: PreviewEntry?) {
-        this.entry = entry
-        removeAll()
-        if (entry == null) showEmpty() else showEntry(entry)
-        revalidate()
-        repaint()
-    }
-
-    private fun showEmpty() {
-        add(JBLabel(PreviewGalleryBundle.message("detail.empty")).apply { foreground = UIUtil.getInactiveTextColor() })
-    }
-
-    private fun showEntry(entry: PreviewEntry) {
-        val line = runCatching {
-            com.intellij.openapi.fileEditor.FileDocumentManager.getInstance()
-                .getDocument(entry.file)
-                ?.getLineNumber(entry.indexed.offset)
-        }.getOrNull()
-
-        val constraints = GridBagConstraints().apply {
-            gridx = 0
-            gridy = 0
-            anchor = GridBagConstraints.NORTHWEST
-            insets = JBUI.insets(2, 0, 2, 8)
-        }
-        PreviewDetailModel.fields(entry, entry.file.name, line).forEach { field ->
-            constraints.gridx = 0
-            add(JBLabel("${field.label}:").apply { foreground = UIUtil.getInactiveTextColor() }, constraints)
-            constraints.gridx = 1
-            add(JBLabel(field.value), constraints)
-            constraints.gridy++
-        }
-
-        constraints.gridx = 0
-        constraints.gridwidth = 2
-        add(ActionLink(PreviewGalleryBundle.message("detail.openFile")) { navigate(entry) }, constraints)
-        constraints.gridy++
-        add(
-            ActionLink(PreviewGalleryBundle.message("detail.copyFqn")) {
-                CopyPasteManager.getInstance().setContents(StringSelection(entry.indexed.composableFqn))
-            },
-            constraints,
-        )
-    }
-
-    private fun navigate(entry: PreviewEntry) {
-        OpenFileDescriptor(project, entry.file, entry.indexed.offset).navigate(true)
-    }
-}
-```
-
-- [ ] **Step 5: Write the tree cell renderer**
-
-`src/main/kotlin/com/devomer/previewgallery/ui/PreviewTreeCellRenderer.kt`:
-
-```kotlin
-package com.devomer.previewgallery.ui
-
-import com.intellij.ui.ColoredTreeCellRenderer
-import com.intellij.ui.SimpleTextAttributes
-import javax.swing.JTree
-import javax.swing.tree.DefaultMutableTreeNode
-
-class PreviewTreeCellRenderer : ColoredTreeCellRenderer() {
-
-    override fun customizeCellRenderer(
-        tree: JTree,
-        value: Any?,
-        selected: Boolean,
-        expanded: Boolean,
-        leaf: Boolean,
-        row: Int,
-        hasFocus: Boolean,
-    ) {
-        val node = (value as? DefaultMutableTreeNode)?.userObject as? PreviewNode ?: return
-        when (node) {
-            is PreviewNode.ModuleNode -> {
-                append(node.moduleName)
-                append("  (${node.count})", SimpleTextAttributes.GRAYED_ATTRIBUTES)
-            }
-
-            is PreviewNode.PackageNode -> append(node.packageName)
-
-            is PreviewNode.PreviewLeaf -> {
-                val indexed = node.row.indexed
-                append(indexed.displayName)
-                if (indexed.displayName != indexed.functionName) {
-                    append("  ${indexed.functionName}", SimpleTextAttributes.GRAYED_ATTRIBUTES)
-                }
-                val badges = buildList {
-                    if (indexed.isPrivate) add("private")
-                    if (indexed.hasPreviewParameter) add("@PreviewParameter")
-                    if (indexed.unsupportedReason != null) add("unsupported")
-                }
-                if (badges.isNotEmpty()) {
-                    append("  ${badges.joinToString(" · ")}", SimpleTextAttributes.GRAYED_SMALL_ATTRIBUTES)
-                }
-            }
-        }
-    }
-}
-```
-
-- [ ] **Step 6: Write the panel**
-
-`src/main/kotlin/com/devomer/previewgallery/ui/PreviewGalleryPanel.kt`:
-
-```kotlin
-package com.devomer.previewgallery.ui
-
-import com.devomer.previewgallery.PreviewGalleryBundle
-import com.devomer.previewgallery.model.PreviewEntry
-import com.devomer.previewgallery.service.PreviewIndexService
-import com.intellij.openapi.Disposable
-import com.intellij.openapi.application.ModalityState
-import com.intellij.openapi.application.ReadAction
-import com.intellij.openapi.fileEditor.OpenFileDescriptor
-import com.intellij.openapi.project.DumbService
-import com.intellij.openapi.project.Project
-import com.intellij.ui.DoubleClickListener
-import com.intellij.ui.DocumentAdapter
-import com.intellij.ui.OnePixelSplitter
-import com.intellij.ui.SearchTextField
-import com.intellij.ui.components.JBPanel
-import com.intellij.ui.components.JBScrollPane
-import com.intellij.ui.treeStructure.Tree
-import com.intellij.util.Alarm
-import com.intellij.util.concurrency.AppExecutorUtil
-import com.intellij.util.ui.JBUI
-import java.awt.BorderLayout
-import java.awt.event.KeyAdapter
-import java.awt.event.KeyEvent
-import java.awt.event.MouseEvent
-import javax.swing.event.DocumentEvent
-import javax.swing.tree.DefaultMutableTreeNode
-import javax.swing.tree.DefaultTreeModel
-import javax.swing.tree.TreePath
-import javax.swing.tree.TreeSelectionModel
-
-class PreviewGalleryPanel(
-    private val project: Project,
-    private val parentDisposable: Disposable,
-) : JBPanel<PreviewGalleryPanel>(BorderLayout()) {
-
-    enum class State { INDEXING, NO_PREVIEWS, NO_MATCH, LOADED }
-
-    var state: State = State.INDEXING
-        private set
-
-    private val searchField = SearchTextField()
-    private val treeRoot = DefaultMutableTreeNode()
-    private val treeModel = DefaultTreeModel(treeRoot)
-    private val tree = Tree(treeModel)
-    private val detailPanel = PreviewDetailPanel(project)
-    private val statusLabel = com.intellij.ui.components.JBLabel()
-    private val alarm = Alarm(Alarm.ThreadToUse.SWING_THREAD, parentDisposable)
-
-    private var entries: List<PreviewEntry> = emptyList()
-
-    /** Set by [PreviewGalleryToolWindowFactory]; consumed by the module filter action in Task 10. */
-    var moduleFilter: (List<PreviewEntry>) -> List<PreviewEntry> = { it }
-
-    init {
-        tree.isRootVisible = false
-        tree.showsRootHandles = true
-        tree.cellRenderer = PreviewTreeCellRenderer()
-        tree.selectionModel.selectionMode = TreeSelectionModel.SINGLE_TREE_SELECTION
-        tree.addTreeSelectionListener { detailPanel.show(selectedEntry()) }
-
-        object : DoubleClickListener() {
-            override fun onDoubleClick(event: MouseEvent): Boolean = navigateToSelection()
-        }.installOn(tree)
-
-        tree.addKeyListener(object : KeyAdapter() {
-            override fun keyPressed(event: KeyEvent) {
-                if (event.keyCode == KeyEvent.VK_ENTER && navigateToSelection()) event.consume()
-            }
-        })
-
-        searchField.textEditor.document.addDocumentListener(object : DocumentAdapter() {
-            override fun textChanged(event: DocumentEvent) {
-                alarm.cancelAllRequests()
-                alarm.addRequest({ applyFilter() }, SEARCH_DEBOUNCE_MS)
-            }
-        })
-
-        val treeSide = JBPanel<JBPanel<*>>(BorderLayout()).apply {
-            add(searchField, BorderLayout.NORTH)
-            add(JBScrollPane(tree), BorderLayout.CENTER)
-        }
-        val upper = OnePixelSplitter(false, "PreviewGallery.horizontal", 0.55f).apply {
-            firstComponent = treeSide
-            secondComponent = JBScrollPane(detailPanel)
-        }
-        val outer = OnePixelSplitter(true, "PreviewGallery.vertical", 0.6f).apply {
-            firstComponent = upper
-            secondComponent = PreviewRenderPlaceholder()
-        }
-
-        statusLabel.border = JBUI.Borders.empty(8)
-        add(outer, BorderLayout.CENTER)
-        add(statusLabel, BorderLayout.SOUTH)
-
-        reload()
-    }
-
-    /** Reloads the index off the EDT. Safe to call repeatedly. */
-    fun reload() {
-        if (DumbService.isDumb(project)) {
-            setState(State.INDEXING)
-            DumbService.getInstance(project).runWhenSmart { reload() }
-            return
-        }
-        ReadAction.nonBlocking<List<PreviewEntry>> { PreviewIndexService.getInstance(project).findAll() }
-            .expireWith(parentDisposable)
-            .finishOnUiThread(ModalityState.defaultModalityState()) { loaded ->
-                entries = loaded
-                applyFilter()
-            }
-            .submit(AppExecutorUtil.getAppExecutorService())
-    }
-
-    /** Synchronous reload for tests — the production path is [reload]. */
-    fun reloadSynchronously() {
-        entries = PreviewIndexService.getInstance(project).findAll()
-        applyFilter()
-    }
-
-    /** Applies a query directly, bypassing the debounce. For tests. */
-    fun applyQueryForTest(query: String) {
-        searchField.text = query
-        applyFilter()
-    }
-
-    fun selectEntry(entryId: String) {
-        val path = findPath(entryId) ?: return
-        tree.selectionPath = path
-        tree.scrollPathToVisible(path)
-    }
-
-    private fun applyFilter() {
-        val visible = moduleFilter(entries)
-        val modules = PreviewTreeModelBuilder.build(visible, searchField.text)
-        treeRoot.removeAllChildren()
-        modules.forEach { module ->
-            val moduleNode = DefaultMutableTreeNode(module)
-            module.packages.forEach { pkg ->
-                val packageNode = DefaultMutableTreeNode(pkg)
-                pkg.previews.forEach { packageNode.add(DefaultMutableTreeNode(it)) }
-                moduleNode.add(packageNode)
-            }
-            treeRoot.add(moduleNode)
-        }
-        treeModel.reload()
-        expandAll()
-        detailPanel.show(selectedEntry())
-
-        setState(
-            when {
-                entries.isEmpty() -> State.NO_PREVIEWS
-                modules.isEmpty() -> State.NO_MATCH
-                else -> State.LOADED
-            },
-        )
-    }
-
-    private fun expandAll() {
-        var row = 0
-        while (row < tree.rowCount) {
-            tree.expandRow(row)
-            row++
-        }
-    }
-
-    private fun setState(newState: State) {
-        state = newState
-        statusLabel.text = when (newState) {
-            State.INDEXING -> PreviewGalleryBundle.message("state.indexing")
-            State.NO_PREVIEWS -> PreviewGalleryBundle.message("state.noPreviews")
-            State.NO_MATCH -> PreviewGalleryBundle.message("state.noMatch", searchField.text)
-            State.LOADED -> ""
-        }
-        statusLabel.isVisible = newState != State.LOADED
-    }
-
-    private fun selectedEntry(): PreviewEntry? {
-        val node = tree.selectionPath?.lastPathComponent as? DefaultMutableTreeNode ?: return null
-        return (node.userObject as? PreviewNode.PreviewLeaf)?.row as? PreviewEntry
-    }
-
-    private fun navigateToSelection(): Boolean {
-        val entry = selectedEntry() ?: return false
-        OpenFileDescriptor(project, entry.file, entry.indexed.offset).navigate(true)
-        return true
-    }
-
-    private fun findPath(entryId: String): TreePath? {
-        val moduleNodes = treeRoot.children().toList().filterIsInstance<DefaultMutableTreeNode>()
-        for (moduleNode in moduleNodes) {
-            for (packageNode in moduleNode.children().toList().filterIsInstance<DefaultMutableTreeNode>()) {
-                for (leafNode in packageNode.children().toList().filterIsInstance<DefaultMutableTreeNode>()) {
-                    val entry = (leafNode.userObject as? PreviewNode.PreviewLeaf)?.row as? PreviewEntry
-                    if (entry?.id == entryId) return TreePath(leafNode.path)
-                }
-            }
-        }
-        return null
-    }
-
-    private companion object {
-        const val SEARCH_DEBOUNCE_MS = 150
-    }
-}
-```
-
-- [ ] **Step 7: Write the tool window factory**
-
-`src/main/kotlin/com/devomer/previewgallery/ui/PreviewGalleryToolWindowFactory.kt`:
-
-```kotlin
-package com.devomer.previewgallery.ui
-
-import com.intellij.openapi.project.DumbAware
-import com.intellij.openapi.project.Project
-import com.intellij.openapi.wm.ToolWindow
-import com.intellij.openapi.wm.ToolWindowFactory
-import com.intellij.ui.content.ContentFactory
-
-/**
- * `DumbAware` on purpose: the tool window opens during indexing and shows the INDEXING state, then reloads once
- * the IDE is smart again.
- */
-class PreviewGalleryToolWindowFactory : ToolWindowFactory, DumbAware {
-
-    override fun createToolWindowContent(project: Project, toolWindow: ToolWindow) {
-        val panel = PreviewGalleryPanel(project, toolWindow.disposable)
-        val content = ContentFactory.getInstance().createContent(panel, null, false)
-        toolWindow.contentManager.addContent(content)
-    }
-
-    companion object {
-        const val ID = "Compose Gallery"
-    }
-}
-```
-
-- [ ] **Step 8: Register the tool window in `plugin.xml`**
-
-Inside the existing `<extensions defaultExtensionNs="com.intellij">` block, add:
-
-```xml
-        <toolWindow id="Compose Gallery"
-                    anchor="right"
-                    factoryClass="com.devomer.previewgallery.ui.PreviewGalleryToolWindowFactory"/>
-```
-
-- [ ] **Step 9: Run the test to verify it passes**
-
-Run: `./gradlew test --tests "com.devomer.previewgallery.ui.PreviewGalleryPanelTest"`
-Expected: PASS, 3 tests.
-
-- [ ] **Step 10: Run the whole suite**
-
-Run: `./gradlew test`
-Expected: PASS, all tests from Tasks 2–9.
-
-- [ ] **Step 11: Commit**
-
-```bash
-git add src/main/kotlin/com/devomer/previewgallery/ui src/main/resources src/test/kotlin/com/devomer/previewgallery/ui
-git commit -m "[PG-9] - Preview gallery tool window"
-```
-
----
-
-### Task 10: Module filter toggle and refresh action
-
-**Files:**
-- Create: `src/main/kotlin/com/devomer/previewgallery/ui/ActiveModuleTracker.kt`
-- Create: `src/main/kotlin/com/devomer/previewgallery/ui/ModuleFilterToggleAction.kt`
-- Create: `src/main/kotlin/com/devomer/previewgallery/ui/RefreshAction.kt`
-- Modify: `src/main/kotlin/com/devomer/previewgallery/ui/PreviewGalleryPanel.kt`
-- Modify: `src/main/resources/messages/PreviewGalleryBundle.properties`
-- Test: `src/test/kotlin/com/devomer/previewgallery/ui/ActiveModuleTrackerTest.kt`
-
-**Interfaces:**
-- Consumes: `PreviewGalleryPanel`, `PreviewModuleFilter`, `PreviewIndexService.refresh`.
-- Produces:
-  - `class ActiveModuleTracker(project: Project, parentDisposable: Disposable, onChange: () -> Unit)` with `val activeModuleName: String?`
-  - `PreviewGalleryPanel.isModuleFilterEnabled: Boolean` (persisted via `PropertiesComponent`)
-
-- [ ] **Step 1: Write the failing test**
+- [ ] **Step 12: Integration tests — `ActiveModuleTracker`**
 
 `src/test/kotlin/com/devomer/previewgallery/ui/ActiveModuleTrackerTest.kt`:
 
@@ -2751,221 +3040,7 @@ class ActiveModuleTrackerTest : BasePlatformTestCase() {
 }
 ```
 
-- [ ] **Step 2: Run the test to verify it fails**
-
-Run: `./gradlew test --tests "com.devomer.previewgallery.ui.ActiveModuleTrackerTest"`
-Expected: FAIL — `Unresolved reference: ActiveModuleTracker`.
-
-- [ ] **Step 3: Write the tracker**
-
-`src/main/kotlin/com/devomer/previewgallery/ui/ActiveModuleTracker.kt`:
-
-```kotlin
-package com.devomer.previewgallery.ui
-
-import com.intellij.openapi.Disposable
-import com.intellij.openapi.fileEditor.FileEditorManager
-import com.intellij.openapi.fileEditor.FileEditorManagerEvent
-import com.intellij.openapi.fileEditor.FileEditorManagerListener
-import com.intellij.openapi.module.ModuleUtilCore
-import com.intellij.openapi.project.Project
-import com.intellij.psi.PsiManager
-
-/** Tracks the module of the file currently open in the editor. */
-class ActiveModuleTracker(
-    private val project: Project,
-    parentDisposable: Disposable,
-    private val onChange: () -> Unit,
-) {
-
-    val activeModuleName: String?
-        get() {
-            val file = FileEditorManager.getInstance(project).selectedFiles.firstOrNull() ?: return null
-            val psiFile = PsiManager.getInstance(project).findFile(file) ?: return null
-            return ModuleUtilCore.findModuleForPsiElement(psiFile)?.name
-        }
-
-    init {
-        project.messageBus.connect(parentDisposable).subscribe(
-            FileEditorManagerListener.FILE_EDITOR_MANAGER,
-            object : FileEditorManagerListener {
-                override fun selectionChanged(event: FileEditorManagerEvent) = onChange()
-            },
-        )
-    }
-}
-```
-
-- [ ] **Step 4: Run the tracker test to verify it passes**
-
-Run: `./gradlew test --tests "com.devomer.previewgallery.ui.ActiveModuleTrackerTest"`
-Expected: PASS, 2 tests.
-
-- [ ] **Step 5: Add the message keys**
-
-Append to `src/main/resources/messages/PreviewGalleryBundle.properties`:
-
-```properties
-action.moduleFilter.text=Show only the active editor's module
-action.refresh.text=Refresh
-state.noActiveModule=No file open — the module filter has nothing to show
-```
-
-- [ ] **Step 6: Write the actions**
-
-`src/main/kotlin/com/devomer/previewgallery/ui/ModuleFilterToggleAction.kt`:
-
-```kotlin
-package com.devomer.previewgallery.ui
-
-import com.devomer.previewgallery.PreviewGalleryBundle
-import com.intellij.icons.AllIcons
-import com.intellij.openapi.actionSystem.ActionUpdateThread
-import com.intellij.openapi.actionSystem.AnActionEvent
-import com.intellij.openapi.project.DumbAware
-import com.intellij.openapi.project.Project
-import com.intellij.openapi.actionSystem.ToggleAction
-import com.intellij.ide.util.PropertiesComponent
-
-class ModuleFilterToggleAction(
-    private val project: Project,
-    private val onToggle: () -> Unit,
-) : ToggleAction(
-    PreviewGalleryBundle.message("action.moduleFilter.text"),
-    PreviewGalleryBundle.message("action.moduleFilter.text"),
-    AllIcons.General.Filter,
-),
-    DumbAware {
-
-    override fun getActionUpdateThread(): ActionUpdateThread = ActionUpdateThread.EDT
-
-    override fun isSelected(event: AnActionEvent): Boolean = isEnabled(project)
-
-    override fun setSelected(event: AnActionEvent, selected: Boolean) {
-        PropertiesComponent.getInstance(project).setValue(KEY, selected)
-        onToggle()
-    }
-
-    companion object {
-        private const val KEY = "com.devomer.previewgallery.moduleFilter"
-
-        fun isEnabled(project: Project): Boolean = PropertiesComponent.getInstance(project).getBoolean(KEY, false)
-    }
-}
-```
-
-`src/main/kotlin/com/devomer/previewgallery/ui/RefreshAction.kt`:
-
-```kotlin
-package com.devomer.previewgallery.ui
-
-import com.devomer.previewgallery.PreviewGalleryBundle
-import com.devomer.previewgallery.service.PreviewIndexService
-import com.intellij.icons.AllIcons
-import com.intellij.openapi.actionSystem.ActionUpdateThread
-import com.intellij.openapi.actionSystem.AnAction
-import com.intellij.openapi.actionSystem.AnActionEvent
-import com.intellij.openapi.project.DumbAware
-import com.intellij.openapi.project.Project
-
-class RefreshAction(
-    private val project: Project,
-    private val onRefresh: () -> Unit,
-) : AnAction(
-    PreviewGalleryBundle.message("action.refresh.text"),
-    PreviewGalleryBundle.message("action.refresh.text"),
-    AllIcons.Actions.Refresh,
-),
-    DumbAware {
-
-    override fun getActionUpdateThread(): ActionUpdateThread = ActionUpdateThread.BGT
-
-    override fun actionPerformed(event: AnActionEvent) {
-        PreviewIndexService.getInstance(project).refresh()
-        onRefresh()
-    }
-}
-```
-
-- [ ] **Step 7: Wire the actions into the panel**
-
-In `PreviewGalleryPanel`, replace the `moduleFilter` property with a tracker plus a toolbar. Add these imports:
-
-```kotlin
-import com.devomer.previewgallery.search.PreviewModuleFilter
-import com.intellij.openapi.actionSystem.ActionManager
-import com.intellij.openapi.actionSystem.DefaultActionGroup
-```
-
-Replace:
-
-```kotlin
-    /** Set by [PreviewGalleryToolWindowFactory]; consumed by the module filter action in Task 10. */
-    var moduleFilter: (List<PreviewEntry>) -> List<PreviewEntry> = { it }
-```
-
-with:
-
-```kotlin
-    private val moduleTracker = ActiveModuleTracker(project, parentDisposable) { applyFilter() }
-```
-
-In the `init` block, before `add(outer, BorderLayout.CENTER)`, insert:
-
-```kotlin
-        val actionGroup = DefaultActionGroup(
-            RefreshAction(project) { reload() },
-            ModuleFilterToggleAction(project) { applyFilter() },
-        )
-        val toolbar = ActionManager.getInstance().createActionToolbar("PreviewGallery", actionGroup, true)
-        toolbar.targetComponent = this
-        add(toolbar.component, BorderLayout.NORTH)
-```
-
-In `applyFilter`, replace the first line:
-
-```kotlin
-        val visible = moduleFilter(entries)
-```
-
-with:
-
-```kotlin
-        val visible = PreviewModuleFilter.apply(
-            entries,
-            moduleTracker.activeModuleName,
-            ModuleFilterToggleAction.isEnabled(project),
-        )
-```
-
-- [ ] **Step 8: Run the whole suite**
-
-Run: `./gradlew test`
-Expected: PASS. The `PreviewGalleryPanelTest` cases still pass because the module filter defaults to off.
-
-- [ ] **Step 9: Commit**
-
-```bash
-git add src/main/kotlin/com/devomer/previewgallery/ui src/main/resources/messages src/test/kotlin/com/devomer/previewgallery/ui
-git commit -m "[PG-10] - Module filter toggle and refresh action"
-```
-
----
-
-### Task 11: SearchEverywhere contributor
-
-**Files:**
-- Create: `src/main/kotlin/com/devomer/previewgallery/searcheverywhere/PreviewSearchEverywhereContributor.kt`
-- Create: `src/main/kotlin/com/devomer/previewgallery/searcheverywhere/PreviewSearchEverywhereContributorFactory.kt`
-- Modify: `src/main/resources/META-INF/plugin.xml`
-- Modify: `src/main/resources/messages/PreviewGalleryBundle.properties`
-- Test: `src/test/kotlin/com/devomer/previewgallery/searcheverywhere/PreviewSearchEverywhereContributorTest.kt`
-
-**Interfaces:**
-- Consumes: `PreviewIndexService`, `PreviewSearchFilter`, `PreviewEntry`, `PreviewGalleryToolWindowFactory.ID`, `PreviewGalleryPanel.selectEntry`.
-- Produces: a `SearchEverywhereContributor<PreviewEntry>` registered on `com.intellij.searchEverywhereContributor`.
-
-- [ ] **Step 1: Write the failing test**
+- [ ] **Step 13: Integration tests — `PreviewSearchEverywhereContributor`**
 
 `src/test/kotlin/com/devomer/previewgallery/searcheverywhere/PreviewSearchEverywhereContributorTest.kt`:
 
@@ -3018,160 +3093,30 @@ class PreviewSearchEverywhereContributorTest : BasePlatformTestCase() {
 }
 ```
 
-- [ ] **Step 2: Run the test to verify it fails**
-
-Run: `./gradlew test --tests "com.devomer.previewgallery.searcheverywhere.PreviewSearchEverywhereContributorTest"`
-Expected: FAIL — `Unresolved reference: PreviewSearchEverywhereContributor`.
-
-- [ ] **Step 3: Add the message key**
-
-Append to `src/main/resources/messages/PreviewGalleryBundle.properties`:
-
-```properties
-searcheverywhere.group=Compose Previews
-```
-
-- [ ] **Step 4: Write the contributor**
-
-`src/main/kotlin/com/devomer/previewgallery/searcheverywhere/PreviewSearchEverywhereContributor.kt`:
-
-```kotlin
-package com.devomer.previewgallery.searcheverywhere
-
-import com.devomer.previewgallery.PreviewGalleryBundle
-import com.devomer.previewgallery.model.PreviewEntry
-import com.devomer.previewgallery.search.PreviewSearchFilter
-import com.devomer.previewgallery.service.PreviewIndexService
-import com.devomer.previewgallery.ui.PreviewGalleryPanel
-import com.devomer.previewgallery.ui.PreviewGalleryToolWindowFactory
-import com.intellij.ide.actions.searcheverywhere.SearchEverywhereContributor
-import com.intellij.openapi.application.ReadAction
-import com.intellij.openapi.fileEditor.OpenFileDescriptor
-import com.intellij.openapi.progress.ProgressIndicator
-import com.intellij.openapi.project.DumbService
-import com.intellij.openapi.project.Project
-import com.intellij.openapi.wm.ToolWindowManager
-import com.intellij.ui.SimpleListCellRenderer
-import com.intellij.util.Processor
-import javax.swing.ListCellRenderer
-
-class PreviewSearchEverywhereContributor(private val project: Project) :
-    SearchEverywhereContributor<PreviewEntry> {
-
-    override fun getSearchProviderId(): String = javaClass.name
-
-    override fun getGroupName(): String = PreviewGalleryBundle.message("searcheverywhere.group")
-
-    override fun getSortWeight(): Int = SORT_WEIGHT
-
-    override fun showInFindResults(): Boolean = false
-
-    override fun isShownInSeparateTab(): Boolean = false
-
-    override fun fetchElements(
-        pattern: String,
-        indicator: ProgressIndicator,
-        consumer: Processor<in PreviewEntry>,
-    ) {
-        if (DumbService.isDumb(project)) return
-        val entries = ReadAction.compute<List<PreviewEntry>, RuntimeException> {
-            PreviewIndexService.getInstance(project).findAll()
-        }
-        for (entry in PreviewSearchFilter.filter(entries, pattern)) {
-            indicator.checkCanceled()
-            if (!consumer.process(entry)) return
-        }
-    }
-
-    override fun getElementsRenderer(): ListCellRenderer<in PreviewEntry> =
-        SimpleListCellRenderer.create("") { entry ->
-            "${entry.indexed.displayName}  —  ${entry.moduleName} · ${entry.indexed.packageName}"
-        }
-
-    override fun processSelectedItem(selected: PreviewEntry, modifiers: Int, searchText: String): Boolean {
-        OpenFileDescriptor(project, selected.file, selected.indexed.offset).navigate(true)
-        val toolWindow = ToolWindowManager.getInstance(project).getToolWindow(PreviewGalleryToolWindowFactory.ID)
-        toolWindow?.activate({
-            val panel = toolWindow.contentManager.contents
-                .firstNotNullOfOrNull { it.component as? PreviewGalleryPanel }
-            panel?.selectEntry(selected.id)
-        }, false)
-        return true
-    }
-
-    override fun getDataForItem(element: PreviewEntry, dataId: String): Any? = null
-
-    private companion object {
-        const val SORT_WEIGHT = 900
-    }
-}
-```
-
-`src/main/kotlin/com/devomer/previewgallery/searcheverywhere/PreviewSearchEverywhereContributorFactory.kt`:
-
-```kotlin
-package com.devomer.previewgallery.searcheverywhere
-
-import com.devomer.previewgallery.model.PreviewEntry
-import com.intellij.ide.actions.searcheverywhere.SearchEverywhereContributor
-import com.intellij.ide.actions.searcheverywhere.SearchEverywhereContributorFactory
-import com.intellij.openapi.actionSystem.AnActionEvent
-
-class PreviewSearchEverywhereContributorFactory : SearchEverywhereContributorFactory<PreviewEntry> {
-
-    override fun createContributor(initEvent: AnActionEvent): SearchEverywhereContributor<PreviewEntry> {
-        val project = requireNotNull(initEvent.project) { "Preview gallery search requires an open project" }
-        return PreviewSearchEverywhereContributor(project)
-    }
-}
-```
-
-- [ ] **Step 5: Register the contributor in `plugin.xml`**
-
-Inside the `<extensions defaultExtensionNs="com.intellij">` block, add:
-
-```xml
-        <searchEverywhereContributor
-            implementation="com.devomer.previewgallery.searcheverywhere.PreviewSearchEverywhereContributorFactory"/>
-```
-
-- [ ] **Step 6: Run the test to verify it passes**
-
-Run: `./gradlew test --tests "com.devomer.previewgallery.searcheverywhere.PreviewSearchEverywhereContributorTest"`
-Expected: PASS, 3 tests.
-
-If `SimpleListCellRenderer.create` does not accept that lambda shape on platform 253, replace `getElementsRenderer()` with an explicit renderer:
-
-```kotlin
-    override fun getElementsRenderer(): ListCellRenderer<in PreviewEntry> =
-        ListCellRenderer { _, value, _, _, _ ->
-            com.intellij.ui.components.JBLabel(
-                "${value.indexed.displayName}  —  ${value.moduleName} · ${value.indexed.packageName}",
-            )
-        }
-```
-
-- [ ] **Step 7: Run the whole suite**
+- [ ] **Step 14: Run the whole suite**
 
 Run: `./gradlew test`
-Expected: PASS, every test from Tasks 2–11.
+Expected: PASS. Every test written in this task passes and the output is free of warnings.
 
-- [ ] **Step 8: Commit**
+Fix any failure at its source: a failing test means the implementation from Tasks 2–11 is wrong, not that the
+test should be relaxed.
+
+- [ ] **Step 15: Commit**
 
 ```bash
-git add src/main/kotlin/com/devomer/previewgallery/searcheverywhere src/main/resources src/test/kotlin/com/devomer/previewgallery/searcheverywhere
-git commit -m "[PG-11] - SearchEverywhere contributor"
+git add src/test src/main/kotlin/com/devomer/previewgallery/ui/PreviewGalleryPanel.kt
+git commit -m "[PG-12] - Phase 1 test suite"
 ```
 
 ---
 
-### Task 12: Manual verification against a real project
+### Task 13: Manual verification against a real project
 
 **Files:**
 - Modify: `CHANGELOG.md`
 
 **Interfaces:**
-- Consumes: everything from Tasks 1–11.
+- Consumes: everything from Tasks 1–12.
 - Produces: a verified `0.1.0` build.
 
 This task covers the acceptance criteria that a light test fixture cannot: real multi-module grouping, the debounce, and the Shift-Shift path (spec §6.4).
@@ -3248,5 +3193,5 @@ Expected: no `ERROR` or `WARN` lines mentioning the plugin. Investigate anything
 
 ```bash
 git add CHANGELOG.md
-git commit -m "[PG-12] - Verify Phase 1 against a real project"
+git commit -m "[PG-13] - Verify Phase 1 against a real project"
 ```
