@@ -6,7 +6,7 @@
 
 **Architecture:** A custom `FileBasedIndex` over Kotlin files extracts file-local preview facts; a project service joins those facts with the project model (module, file) at query time; a tool window renders a module → package → preview tree with a search field, a detail panel, and a placeholder for the Phase 2 render surface. All logic that can be pure Kotlin (FQN derivation, annotation matching, search, tree grouping, detail fields) lives outside PSI and Swing so it is unit-testable without an IDE fixture.
 
-**Tech Stack:** Kotlin 2.1.20 · IntelliJ Platform 253 (Android Studio Panda 4, local install) · IntelliJ Platform Gradle Plugin 2.16.0 · Gradle 9.5.0 · JUnit 4 · `BasePlatformTestCase`
+**Tech Stack:** Kotlin 2.3.21 · IntelliJ Platform 253 (Android Studio Panda 4, local install) · IntelliJ Platform Gradle Plugin 2.16.0 · Gradle 9.5.0 · JUnit 4 · `BasePlatformTestCase`
 
 **Spec:** [2026-07-23-preview-gallery-phase1-design.md](../specs/2026-07-23-preview-gallery-phase1-design.md)
 
@@ -16,6 +16,9 @@
 - Platform: `local(providers.gradleProperty("platformLocalPath"))`, `platformLocalPath = /Users/odurmaz/Applications/Android Studio.app` (build `AI-253.32098.37.2534.15336583`).
 - `sinceBuild = "253"`, `untilBuild` left open.
 - Kotlin JVM toolchain 21.
+- Kotlin Gradle plugin `2.3.21`. The template pins `2.1.20`, but Android Studio 253's bundled Kotlin plugin
+  ships module metadata `2.3.0`, which a 2.1 compiler refuses to read (`Module was compiled with an
+  incompatible version of Kotlin`). 2.3.x is the lowest line that can read it.
 - **Never use the Kotlin `!!` operator.** Use `?:`, `requireNotNull`, `checkNotNull`, or an early return.
 - **Tests are written in Task 12, not per task.** Tasks 1-11 implement and must compile; Task 12 writes the
   whole test suite and every test must pass before Task 13.
@@ -45,13 +48,26 @@
 
 - [ ] **Step 1: Rename the project in `settings.gradle.kts`**
 
-Change the single line:
+Change the project name:
 
 ```kotlin
 rootProject.name = "preview-gallery"
 ```
 
-Leave the `pluginManagement`, `plugins`, and `dependencyResolutionManagement` blocks untouched.
+and bump the Kotlin plugin inside `pluginManagement` from `2.1.20` to `2.3.21`:
+
+```kotlin
+pluginManagement {
+    plugins {
+        id("org.jetbrains.kotlin.jvm") version "2.3.21"
+        id("org.jetbrains.changelog") version "2.5.0"
+    }
+}
+```
+
+Android Studio 253 bundles a Kotlin plugin whose module metadata is `2.3.0`; a 2.1 compiler refuses to read it
+with `Module was compiled with an incompatible version of Kotlin`. Leave the `plugins` and
+`dependencyResolutionManagement` blocks untouched.
 
 - [ ] **Step 2: Rewrite `gradle.properties`**
 
