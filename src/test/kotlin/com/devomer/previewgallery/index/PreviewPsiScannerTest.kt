@@ -250,6 +250,24 @@ class PreviewPsiScannerTest : BasePlatformTestCase() {
         assertTrue(previews.none { it.functionName == "BarPreview" })
     }
 
+    fun `test repeated direct previews collapse to one entry labelled by the function name`() {
+        val previews = scan(
+            "Foo.kt",
+            """
+            package com.example
+
+            import androidx.compose.ui.tooling.preview.Preview
+
+            @Preview(name = "Light")
+            @Preview(name = "Dark")
+            fun ScreenPreview() {}
+            """.trimIndent(),
+        )
+        assertEquals(1, previews.size)
+        assertEquals("ScreenPreview", previews.single().displayName)
+        assertEquals("ScreenPreview", previews.single().functionName)
+    }
+
     fun `test offset points at the function name`() {
         val text = """
             package com.example

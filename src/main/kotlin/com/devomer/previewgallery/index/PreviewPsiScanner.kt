@@ -33,11 +33,15 @@ object PreviewPsiScanner {
         file.accept(object : KtTreeVisitorVoid() {
             override fun visitNamedFunction(function: KtNamedFunction) {
                 super.visitNamedFunction(function)
-                val match = function.annotationEntries.firstNotNullOfOrNull { entry ->
-                    val reference = entry.referenceText() ?: return@firstNotNullOfOrNull null
+                val matches = function.annotationEntries.mapNotNull { entry ->
+                    val reference = entry.referenceText() ?: return@mapNotNull null
                     PreviewAnnotationMatcher.matchPreview(reference, imports)?.let { entry to it }
-                } ?: return
-                result += build(function, match.first, match.second, packageName, file.name, jvmNameOverride, imports)
+                }
+                if (matches.isEmpty()) return
+                val (annotation, kind) = matches.first()
+                result += build(
+                    function, annotation, kind, matches.size > 1, packageName, file.name, jvmNameOverride, imports,
+                )
             }
         })
         return result
@@ -47,6 +51,7 @@ object PreviewPsiScanner {
         function: KtNamedFunction,
         annotation: KtAnnotationEntry,
         kind: AnnotationKind,
+        hasMultiplePreviews: Boolean,
         packageName: String,
         fileName: String,
         jvmNameOverride: String?,
@@ -62,7 +67,13 @@ object PreviewPsiScanner {
             jvmNameOverride = jvmNameOverride,
             containerObjectName = (container as? Container.InObject)?.name,
         )
-        val name = namedString(annotation, "name") ?: positionalString(annotation, 0) ?: functionName
+        val name = if (hasMultiplePreviews) {
+            // No single config's name represents a function carrying several @Preview annotations, so label it
+            // by the function name. v1 renders nothing, so the configs need not become separate entries.
+            functionName
+        } else {
+            namedString(annotation, "name") ?: positionalString(annotation, 0) ?: functionName
+        }
         return IndexedPreview(
             displayName = name,
             functionName = functionName,
