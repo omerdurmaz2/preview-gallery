@@ -2,8 +2,11 @@ package com.devomer.previewgallery.ui
 
 import com.devomer.previewgallery.PreviewGalleryBundle
 import com.devomer.previewgallery.model.PreviewEntry
+import com.devomer.previewgallery.search.PreviewModuleFilter
 import com.devomer.previewgallery.service.PreviewIndexService
 import com.intellij.openapi.Disposable
+import com.intellij.openapi.actionSystem.ActionManager
+import com.intellij.openapi.actionSystem.DefaultActionGroup
 import com.intellij.openapi.application.ModalityState
 import com.intellij.openapi.application.ReadAction
 import com.intellij.openapi.fileEditor.OpenFileDescriptor
@@ -51,8 +54,7 @@ class PreviewGalleryPanel(
 
     private var entries: List<PreviewEntry> = emptyList()
 
-    /** Set by [PreviewGalleryToolWindowFactory]; consumed by the module filter action in Task 10. */
-    var moduleFilter: (List<PreviewEntry>) -> List<PreviewEntry> = { it }
+    private val moduleTracker = ActiveModuleTracker(project, parentDisposable) { applyFilter() }
 
     init {
         tree.isRootVisible = false
@@ -91,6 +93,14 @@ class PreviewGalleryPanel(
             secondComponent = PreviewRenderPlaceholder()
         }
 
+        val actionGroup = DefaultActionGroup(
+            RefreshAction(project) { reload() },
+            ModuleFilterToggleAction(project) { applyFilter() },
+        )
+        val toolbar = ActionManager.getInstance().createActionToolbar("PreviewGallery", actionGroup, true)
+        toolbar.targetComponent = this
+        add(toolbar.component, BorderLayout.NORTH)
+
         statusLabel.border = JBUI.Borders.empty(8)
         add(outer, BorderLayout.CENTER)
         add(statusLabel, BorderLayout.SOUTH)
@@ -125,7 +135,11 @@ class PreviewGalleryPanel(
     }
 
     private fun applyFilter() {
-        val visible = moduleFilter(entries)
+        val visible = PreviewModuleFilter.apply(
+            entries,
+            moduleTracker.activeModuleName,
+            ModuleFilterToggleAction.isEnabled(project),
+        )
         val modules = PreviewTreeModelBuilder.build(visible, searchField.text)
         treeRoot.removeAllChildren()
         modules.forEach { module ->
