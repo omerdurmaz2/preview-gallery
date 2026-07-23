@@ -2164,7 +2164,8 @@ class PreviewAnnotationMatcherTest {
     fun `aliased import`() {
         val aliased = ImportInfo("androidx.compose.ui.tooling.preview.Preview", "P", false)
         assertEquals(AnnotationKind.ANDROIDX, PreviewAnnotationMatcher.matchPreview("P", listOf(aliased)))
-        assertNull(PreviewAnnotationMatcher.matchPreview("Preview", listOf(aliased)))
+        // The bare name `Preview` is bound to nothing here, which is the design's "no matching import" row.
+        assertEquals(AnnotationKind.UNKNOWN, PreviewAnnotationMatcher.matchPreview("Preview", listOf(aliased)))
     }
 
     @Test
