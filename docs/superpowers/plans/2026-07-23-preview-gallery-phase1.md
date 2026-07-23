@@ -796,7 +796,6 @@ import com.intellij.util.indexing.FileBasedIndex
 import com.intellij.util.indexing.FileBasedIndexExtension
 import com.intellij.util.indexing.FileContent
 import com.intellij.util.indexing.ID
-import com.intellij.util.indexing.PsiDependentIndex
 import com.intellij.util.io.DataExternalizer
 import com.intellij.util.io.EnumeratorStringDescriptor
 import com.intellij.util.io.KeyDescriptor
@@ -808,7 +807,7 @@ import org.jetbrains.kotlin.psi.KtFile
  * Only file-local facts are stored. Module membership is a project-model property, so storing it here would let a
  * Gradle sync invalidate correctness without invalidating the index.
  */
-class PreviewIndex : FileBasedIndexExtension<String, List<IndexedPreview>>(), PsiDependentIndex {
+class PreviewIndex : FileBasedIndexExtension<String, List<IndexedPreview>>() {
 
     override fun getName(): ID<String, List<IndexedPreview>> = NAME
 
