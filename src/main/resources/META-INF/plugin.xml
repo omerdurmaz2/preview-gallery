@@ -24,4 +24,15 @@
         <searchEverywhereContributor
             implementation="com.devomer.previewgallery.searcheverywhere.PreviewSearchEverywhereContributorFactory"/>
     </extensions>
+
+    <!--
+        Required because this plugin depends on org.jetbrains.kotlin: without an explicit declaration, the
+        Kotlin plugin treats a dependent plugin as incompatible with K2 mode and skips loading it entirely
+        (silently dropping every extension declared above, including the file-based index). Accurate here
+        because nothing in this plugin calls into the Kotlin Analysis API (resolve/analyze) — only the
+        front-end-agnostic PSI tree (KtFile, KtNamedFunction, import directives, annotation entries).
+    -->
+    <extensions defaultExtensionNs="org.jetbrains.kotlin">
+        <supportsKotlinPluginMode supportsK2="true"/>
+    </extensions>
 </idea-plugin>

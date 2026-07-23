@@ -23,6 +23,7 @@ import com.intellij.ui.treeStructure.Tree
 import com.intellij.util.Alarm
 import com.intellij.util.concurrency.AppExecutorUtil
 import com.intellij.util.ui.JBUI
+import org.jetbrains.annotations.TestOnly
 import java.awt.BorderLayout
 import java.awt.event.KeyAdapter
 import java.awt.event.KeyEvent
@@ -126,6 +127,20 @@ class PreviewGalleryPanel(
                 applyFilter()
             }
             .submit(AppExecutorUtil.getAppExecutorService())
+    }
+
+    /** Synchronous reload for tests — the production path is [reload]. */
+    @TestOnly
+    fun reloadSynchronously() {
+        entries = PreviewIndexService.getInstance(project).findAll()
+        applyFilter()
+    }
+
+    /** Applies a query directly, bypassing the 150 ms debounce. */
+    @TestOnly
+    fun applyQueryForTest(query: String) {
+        searchField.text = query
+        applyFilter()
     }
 
     fun selectEntry(entryId: String) {
