@@ -9,6 +9,7 @@ import com.intellij.openapi.application.ReadAction
 import com.intellij.openapi.fileEditor.OpenFileDescriptor
 import com.intellij.openapi.project.DumbService
 import com.intellij.openapi.project.Project
+import com.intellij.openapi.util.Disposer
 import com.intellij.ui.DoubleClickListener
 import com.intellij.ui.DocumentAdapter
 import com.intellij.ui.OnePixelSplitter
@@ -101,7 +102,11 @@ class PreviewGalleryPanel(
     fun reload() {
         if (DumbService.isDumb(project)) {
             setState(State.INDEXING)
-            DumbService.getInstance(project).runWhenSmart { reload() }
+            // Tied to the panel's lifetime: DumbService keeps the callback until the next smart-mode
+            // transition, which can outlive a disposed tool window.
+            DumbService.getInstance(project).runWhenSmart {
+                if (!Disposer.isDisposed(parentDisposable)) reload()
+            }
             return
         }
         ReadAction.nonBlocking<List<PreviewEntry>> { PreviewIndexService.getInstance(project).findAll() }
