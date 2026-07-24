@@ -17,6 +17,10 @@ class PreviewTreeCellRenderer : ColoredTreeCellRenderer() {
         hasFocus: Boolean,
     ) {
         val node = (value as? DefaultMutableTreeNode)?.userObject as? PreviewNode ?: return
+        // The detail panel that used to show the composable FQN is gone (Fix PG2-10); surface it as a tooltip
+        // instead so the information is not lost. Explicitly cleared for non-leaf rows: this renderer instance
+        // is reused across cells, so a stale tooltip would otherwise leak from a previously rendered leaf.
+        toolTipText = (node as? PreviewNode.PreviewLeaf)?.row?.indexed?.composableFqn
         when (node) {
             is PreviewNode.ModuleNode -> {
                 append(node.moduleName)

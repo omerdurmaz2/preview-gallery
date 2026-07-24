@@ -52,7 +52,6 @@ class PreviewGalleryPanel(
     private val treeRoot = DefaultMutableTreeNode()
     private val treeModel = DefaultTreeModel(treeRoot)
     private val tree = Tree(treeModel)
-    private val detailPanel = PreviewDetailPanel(project)
     private val statusLabel = com.intellij.ui.components.JBLabel()
     private val alarm = Alarm(Alarm.ThreadToUse.SWING_THREAD, parentDisposable)
 
@@ -82,7 +81,6 @@ class PreviewGalleryPanel(
         tree.addTreeSelectionListener {
             if (restoringSelection) return@addTreeSelectionListener
             val selected = selectedEntry()
-            detailPanel.show(selected)
             lastSelectedEntry = selected
             pipeline.select(selected)
         }
@@ -108,12 +106,10 @@ class PreviewGalleryPanel(
             add(searchField, BorderLayout.NORTH)
             add(JBScrollPane(tree), BorderLayout.CENTER)
         }
-        val upper = OnePixelSplitter(false, "PreviewGallery.horizontal", 0.55f).apply {
+        // Single horizontal split: previews are tall, so a full-height render pane suits them better than a
+        // short bottom strip (design D-fix: drop the file-info detail panel, give the space to the render).
+        val split = OnePixelSplitter(false, "PreviewGallery.split", 0.35f).apply {
             firstComponent = treeSide
-            secondComponent = JBScrollPane(detailPanel)
-        }
-        val outer = OnePixelSplitter(true, "PreviewGallery.vertical", 0.6f).apply {
-            firstComponent = upper
             secondComponent = renderPanel
         }
 
@@ -129,7 +125,7 @@ class PreviewGalleryPanel(
         add(toolbar.component, BorderLayout.NORTH)
 
         statusLabel.border = JBUI.Borders.empty(8)
-        add(outer, BorderLayout.CENTER)
+        add(split, BorderLayout.CENTER)
         add(statusLabel, BorderLayout.SOUTH)
 
         reload()
@@ -213,7 +209,6 @@ class PreviewGalleryPanel(
         }
 
         val currentSelection = selectedEntry()
-        detailPanel.show(currentSelection)
         // Only notify the pipeline when the selection actually changed: re-landing on the same entry must
         // not restart a render that is already in flight or already showing a result.
         if (currentSelection?.id != previousSelectionId) {
