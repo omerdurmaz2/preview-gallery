@@ -54,10 +54,13 @@ class RenderPipeline(
     }
 
     private fun dispatch(entry: PreviewEntry, gen: Int) {
-        val fresh = ReadAction.compute<Boolean, RuntimeException> {
-            val module = ModuleManager.getInstance(project).findModuleByName(entry.moduleName)
-            module != null && ModuleFreshness.isModuleFresh(module)
-        }
+        // PG3-5: no outer read action here anymore. ModuleFreshness.isModuleFresh takes its own short read
+        // action for the project-model part only; the filesystem walk it does afterwards must NOT run under a
+        // read action (that used to hold the read lock for the whole walk, blocking every write action in the
+        // IDE — a prime freeze suspect). ModuleManager.findModuleByName is called bare, matching the existing
+        // precedent in buildThenRender below.
+        val module = ModuleManager.getInstance(project).findModuleByName(entry.moduleName)
+        val fresh = module != null && ModuleFreshness.isModuleFresh(module)
         val state = classify(entry.indexed.unsupportedReason != null, entry.indexed.hasPreviewParameter, fresh)
         when (state) {
             RenderState.UNSUPPORTED ->
@@ -100,8 +103,16 @@ class RenderPipeline(
         }
         build.build(module) { success ->
             if (gen != generation) return@build
-            if (success) render(entry, gen)
-            else onStateChange(RenderResultView(RenderState.FAILED, RenderOutcome.Failure("Build failed", null), entry.moduleName))
+            if (success) {
+                // The build just changed what's on disk under this module's output directory; drop the cached
+                // freshness verdict so a selection elsewhere in this module within the cache TTL (PG3-5)
+                // re-derives from the new output instead of replaying the pre-build "stale" verdict that
+                // triggered this very build.
+                ModuleFreshness.invalidate(module)
+                render(entry, gen)
+            } else {
+                onStateChange(RenderResultView(RenderState.FAILED, RenderOutcome.Failure("Build failed", null), entry.moduleName))
+            }
         }
     }
 
