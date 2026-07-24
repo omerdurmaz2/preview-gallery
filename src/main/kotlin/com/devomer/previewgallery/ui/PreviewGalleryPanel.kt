@@ -2,6 +2,9 @@ package com.devomer.previewgallery.ui
 
 import com.devomer.previewgallery.PreviewGalleryBundle
 import com.devomer.previewgallery.model.PreviewEntry
+import com.devomer.previewgallery.render.BuildService
+import com.devomer.previewgallery.render.LiveRenderer
+import com.devomer.previewgallery.render.RenderPipeline
 import com.devomer.previewgallery.search.PreviewModuleFilter
 import com.devomer.previewgallery.service.PreviewIndexService
 import com.intellij.openapi.Disposable
@@ -54,15 +57,29 @@ class PreviewGalleryPanel(
     private val alarm = Alarm(Alarm.ThreadToUse.SWING_THREAD, parentDisposable)
 
     private var entries: List<PreviewEntry> = emptyList()
+    private var lastSelectedEntry: PreviewEntry? = null
 
     private val moduleTracker = ActiveModuleTracker(project, parentDisposable) { applyFilter() }
+
+    private val renderPanel = PreviewRenderPanel(project)
+    private val pipeline = RenderPipeline(
+        project,
+        LiveRenderer(project),
+        BuildService.getInstance(project),
+        parentDisposable,
+    ) { view -> renderPanel.show(view, lastSelectedEntry) }
 
     init {
         tree.isRootVisible = false
         tree.showsRootHandles = true
         tree.cellRenderer = PreviewTreeCellRenderer()
         tree.selectionModel.selectionMode = TreeSelectionModel.SINGLE_TREE_SELECTION
-        tree.addTreeSelectionListener { detailPanel.show(selectedEntry()) }
+        tree.addTreeSelectionListener {
+            val selected = selectedEntry()
+            detailPanel.show(selected)
+            lastSelectedEntry = selected
+            pipeline.select(selected)
+        }
 
         object : DoubleClickListener() {
             override fun onDoubleClick(event: MouseEvent): Boolean = navigateToSelection()
@@ -91,8 +108,11 @@ class PreviewGalleryPanel(
         }
         val outer = OnePixelSplitter(true, "PreviewGallery.vertical", 0.6f).apply {
             firstComponent = upper
-            secondComponent = PreviewRenderPlaceholder()
+            secondComponent = renderPanel
         }
+
+        renderPanel.onRender = { pipeline.requestBuildAndRender(it) }
+        renderPanel.onOpenFile = { OpenFileDescriptor(project, it.file, it.indexed.offset).navigate(true) }
 
         val actionGroup = DefaultActionGroup(
             RefreshAction(project) { reload() },
