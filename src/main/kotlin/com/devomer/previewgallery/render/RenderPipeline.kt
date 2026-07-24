@@ -44,7 +44,7 @@ class RenderPipeline(
         alarm.cancelAllRequests()
         val gen = ++generation
         if (entry == null) {
-            onStateChange(RenderResultView(RenderState.UNSUPPORTED, null, null))
+            onStateChange(RenderResultView(RenderState.IDLE, null, null))
             return
         }
         alarm.addRequest({ dispatch(entry, gen) }, DEBOUNCE_MS)

@@ -59,6 +59,11 @@ class PreviewGalleryPanel(
     private var entries: List<PreviewEntry> = emptyList()
     private var lastSelectedEntry: PreviewEntry? = null
 
+    /** Suppresses [pipeline] notifications while [applyFilter] is rebuilding tree nodes and restoring the
+     *  previous selection onto the new ones — the rebuild otherwise looks like the selection was cleared and
+     *  then reselected, which would restart an in-progress or already-finished render for no reason. */
+    private var restoringSelection = false
+
     private val moduleTracker = ActiveModuleTracker(project, parentDisposable) { applyFilter() }
 
     private val renderPanel = PreviewRenderPanel(project)
@@ -75,6 +80,7 @@ class PreviewGalleryPanel(
         tree.cellRenderer = PreviewTreeCellRenderer()
         tree.selectionModel.selectionMode = TreeSelectionModel.SINGLE_TREE_SELECTION
         tree.addTreeSelectionListener {
+            if (restoringSelection) return@addTreeSelectionListener
             val selected = selectedEntry()
             detailPanel.show(selected)
             lastSelectedEntry = selected
@@ -169,7 +175,16 @@ class PreviewGalleryPanel(
         tree.scrollPathToVisible(path)
     }
 
+    /** The id of the currently selected entry, or null if none is selected. */
+    @TestOnly
+    fun selectedEntryIdForTest(): String? = selectedEntry()?.id
+
     private fun applyFilter() {
+        // The tree is rebuilt from scratch below (new node instances), which otherwise drops the current
+        // selection on every keystroke/reload. Capture it by id and restore it onto the new nodes so a
+        // perfectly renderable preview does not intermittently look unselected.
+        val previousSelectionId = selectedEntry()?.id
+
         val moduleFilterOn = ModuleFilterToggleAction.isEnabled(project)
         val visible = PreviewModuleFilter.apply(
             entries,
@@ -177,19 +192,34 @@ class PreviewGalleryPanel(
             moduleFilterOn,
         )
         val modules = PreviewTreeModelBuilder.build(visible, searchField.text)
-        treeRoot.removeAllChildren()
-        modules.forEach { module ->
-            val moduleNode = DefaultMutableTreeNode(module)
-            module.packages.forEach { pkg ->
-                val packageNode = DefaultMutableTreeNode(pkg)
-                pkg.previews.forEach { packageNode.add(DefaultMutableTreeNode(it)) }
-                moduleNode.add(packageNode)
+        restoringSelection = true
+        try {
+            treeRoot.removeAllChildren()
+            modules.forEach { module ->
+                val moduleNode = DefaultMutableTreeNode(module)
+                module.packages.forEach { pkg ->
+                    val packageNode = DefaultMutableTreeNode(pkg)
+                    pkg.previews.forEach { packageNode.add(DefaultMutableTreeNode(it)) }
+                    moduleNode.add(packageNode)
+                }
+                treeRoot.add(moduleNode)
             }
-            treeRoot.add(moduleNode)
+            treeModel.reload()
+            expandAll()
+            // No-op if the previously selected entry was filtered out; selection then stays empty.
+            if (previousSelectionId != null) selectEntry(previousSelectionId)
+        } finally {
+            restoringSelection = false
         }
-        treeModel.reload()
-        expandAll()
-        detailPanel.show(selectedEntry())
+
+        val currentSelection = selectedEntry()
+        detailPanel.show(currentSelection)
+        // Only notify the pipeline when the selection actually changed: re-landing on the same entry must
+        // not restart a render that is already in flight or already showing a result.
+        if (currentSelection?.id != previousSelectionId) {
+            lastSelectedEntry = currentSelection
+            pipeline.select(currentSelection)
+        }
 
         setState(
             when {

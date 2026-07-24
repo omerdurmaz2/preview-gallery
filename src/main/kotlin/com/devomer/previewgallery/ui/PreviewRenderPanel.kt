@@ -10,6 +10,7 @@ import com.intellij.ui.components.ActionLink
 import com.intellij.ui.components.JBLabel
 import com.intellij.ui.components.JBPanel
 import com.intellij.util.ui.JBUI
+import com.intellij.util.ui.UIUtil
 import java.awt.BorderLayout
 import java.awt.Image
 import java.awt.image.BufferedImage
@@ -36,6 +37,7 @@ class PreviewRenderPanel(private val project: Project) : JBPanel<PreviewRenderPa
         removeAll()
         currentImage = null
         when (view.state) {
+            RenderState.IDLE -> center(idle())
             RenderState.RENDERING -> center(JBLabel(PreviewGalleryBundle.message("render.rendering")))
             RenderState.LIVE -> showImage((view.outcome as? RenderOutcome.Success)?.image)
             RenderState.NEEDS_BUILD -> center(needsBuild(entry))
@@ -58,6 +60,11 @@ class PreviewRenderPanel(private val project: Project) : JBPanel<PreviewRenderPa
         val scale = minOf(w.toDouble() / img.width, h.toDouble() / img.height, 1.0)
         val sw = (img.width * scale).toInt().coerceAtLeast(1); val sh = (img.height * scale).toInt().coerceAtLeast(1)
         imageLabel.icon = ImageIcon(img.getScaledInstance(sw, sh, Image.SCALE_SMOOTH))
+    }
+
+    /** Nothing selected. Quiet by design: not an error, so no styling and no action. */
+    private fun idle(): JBLabel = JBLabel(PreviewGalleryBundle.message("render.idle")).apply {
+        foreground = UIUtil.getInactiveTextColor()
     }
 
     private fun needsBuild(entry: PreviewEntry?): JBPanel<*> = JBPanel<JBPanel<*>>(BorderLayout()).apply {
