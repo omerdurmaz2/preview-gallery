@@ -21,7 +21,19 @@ object RenderApiProbe {
         "com.android.tools.preview.SingleComposePreviewElementInstance" to emptyList(),
     )
 
-    fun isAvailable(): Boolean = runCatching {
+    private val pickerRequired = listOf(
+        "com.android.tools.idea.compose.pickers.PsiPickerManager" to listOf("show"),
+        "com.android.tools.idea.compose.pickers.preview.model.PreviewPickerPropertiesModel" to emptyList(),
+        "com.android.tools.idea.compose.pickers.preview.model.PreviewPickerPropertiesModel\$Companion" to listOf("fromPreviewElement"),
+        "com.android.tools.idea.compose.pickers.base.tracking.ComposePickerTracker" to emptyList(),
+    )
+
+    fun isAvailable(): Boolean = allPresent(required)
+
+    /** Whether Android Studio's own @Preview property picker can be driven on this build (spec §5). */
+    fun isPickerAvailable(): Boolean = allPresent(pickerRequired)
+
+    private fun allPresent(required: List<Pair<String, List<String>>>): Boolean = runCatching {
         required.all { (className, methods) ->
             val clazz = Class.forName(className, false, javaClass.classLoader)
             methods.all { name -> clazz.methods.any { it.name == name } }
