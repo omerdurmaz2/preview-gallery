@@ -39,7 +39,7 @@ shows the image.
 |---|---|---|---|
 | D1 | Spike first, or straight to MVP | **Straight to MVP** | User chose it. The static API probe below already did Phase 0's desk-check; the runtime unknowns are resolved by making the first task a working vertical slice rather than a throwaway |
 | D2 | Render entry point | **Low-level `org.jetbrains.android` path** (`StudioRenderService` + `RenderTask`), not the high-level `ComposeRenderer` | `ComposeRenderer` lives in `plugins/gemini/aiplugin.jar` — depending on the Gemini AI plugin is fragile and it may be absent. The low-level path is in `org.jetbrains.android`, which the plugin already `<depends>` on |
-| D3 | Un-built module on select | **Selection never builds** (parent spec B3); a `NEEDS_BUILD` state offers a **Render** button that builds then renders | User's call. Browsing the tree must stay free; building is an explicit action |
+| D3 | Un-built module on select | **Selection auto-builds** a stale module, debounced 400 ms, with any in-flight build cancelled when the selection changes. The **Render** button stays only as a retry after a failure | Revised by the user after trying the MVP: a manual button on every stale module was too much friction. Debounce + cancel is what keeps arrow-keying from queueing builds, rather than refusing to build at all |
 | D4 | Navigation debounce / cancel | **400 ms debounce, single-flight, cancel any in-flight build or render when the selection changes** | User's call, matches parent spec B4. Arrow-keying through nodes must not queue builds or renders |
 | D5 | Caching | **None in the MVP** — every render is live | Keeps the MVP focused. The disk/memory cache is a self-contained later slice; the pipeline is written so it can be inserted ahead of the live tier without touching `LiveRenderer` |
 | D6 | Render configuration | **Fixed default** (no device/theme UI) | Selectors are a later slice; the MVP proves rendering works at all |
@@ -159,10 +159,11 @@ component is plain platform/PSI code and unit-testable.
 onSelect(entry):
     cancel any in-flight build and render
     debounce 400 ms, then:
+        if entry == null                              → IDLE          (nothing selected; not an error)
         if entry.unsupportedReason != null            → UNSUPPORTED   (class-nested; from Phase 1 index)
         if entry.hasPreviewParameter                  → UNSUPPORTED   (cannot be invoked without a provider)
         if ModuleFreshness.isFresh(entry.module)      → render()      (state RENDERING → LIVE / FAILED)
-        else                                          → NEEDS_BUILD   (offer the Render button)
+        else                                          → build then render (D3: automatic, cancellable)
 
 onRenderButton(entry):
     cancel any in-flight build and render
@@ -178,7 +179,8 @@ render():
     image handed to the panel on the EDT
 ```
 
-**Key property carried from the parent spec:** selection never builds; only the explicit **Render** button does.
+**Key property (revised, D3):** selection builds a stale module automatically, but the 400 ms debounce plus
+in-flight cancellation means walking the tree never queues work. The **Render** button is a retry path.
 Cache is absent in the MVP, so the "cached" tiers of the parent spec's §7.3 pipeline are simply not present —
 the pipeline is a single live tier plus build-on-demand.
 
@@ -247,7 +249,7 @@ Compiles the target module's classes so `LiveRenderer` has something to load.
 |---|---|---|
 | B1 | Use the IDE's Gradle integration: `ExternalSystemUtil.runTask` with `GradleConstants.SYSTEM_ID`. **Never spawn a Gradle daemon directly.** | A second daemon costs gigabytes. The single largest performance risk |
 | B2 | Compile the minimum: `:path:to:module:compileDebugKotlin`, never `assembleDebug`. | Transitive deps come along; app packaging is not needed |
-| B3 | Selection must not build. Builds run only on the explicit **Render** button. | Browsing stays free |
+| B3 | Selection auto-builds a stale module (debounced 400 ms, in-flight build cancelled on a new selection). The Render button is a retry. | Revised per D3: responsiveness comes from debounce + cancel, not from refusing to build |
 | B4 | Debounce 400 ms; single-flight; cancel any in-flight build when the selection changes. | Arrow-keying must not queue builds |
 | B5 | Disabled while `DumbService.isDumb`. | Never compete with indexing |
 | B6 | Surface build progress in the standard IDE progress UI, cancellable. | Predictability |
@@ -267,7 +269,7 @@ tiers):
 |---|---|
 | `RENDERING` | Progress indicator (+ "building…" note when a build is running) |
 | `LIVE` | The image, no badge |
-| `NEEDS_BUILD` | "Module not built" + **Render** button |
+| `NEEDS_BUILD` | "Building module…" (automatic); the **Render** button appears only as a retry after a failure |
 | `FAILED` | Error summary + **Open file** + expandable log |
 | `UNSUPPORTED` | Reason (class-nested / `@PreviewParameter` / renderer unavailable) + **Open file** |
 
