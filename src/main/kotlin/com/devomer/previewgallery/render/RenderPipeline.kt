@@ -3,11 +3,14 @@ package com.devomer.previewgallery.render
 import com.devomer.previewgallery.model.PreviewEntry
 import com.devomer.previewgallery.model.RenderOutcome
 import com.intellij.openapi.Disposable
+import com.intellij.openapi.application.ApplicationManager
 import com.intellij.openapi.application.ModalityState
-import com.intellij.openapi.application.ReadAction
 import com.intellij.openapi.module.ModuleManager
+import com.intellij.openapi.progress.ProcessCanceledException
 import com.intellij.openapi.project.DumbService
 import com.intellij.openapi.project.Project
+import com.intellij.openapi.util.CheckedDisposable
+import com.intellij.openapi.util.Disposer
 import com.intellij.util.Alarm
 import com.intellij.util.concurrency.AppExecutorUtil
 
@@ -24,10 +27,17 @@ class RenderPipeline(
     private val project: Project,
     private val renderer: LiveRenderer,
     private val build: BuildService,
-    parentDisposable: Disposable,
+    private val parentDisposable: Disposable,
     private val onStateChange: (RenderResultView) -> Unit,
 ) {
     private val alarm = Alarm(Alarm.ThreadToUse.SWING_THREAD, parentDisposable)
+
+    // PG3-6: a live "is the panel gone" check for publishRenderResult, now that render() no longer runs under
+    // ReadAction.nonBlocking (which used to make this unnecessary). Disposer.isDisposed(Disposable) is
+    // deprecated; a CheckedDisposable registered as parentDisposable's own child is the platform's replacement —
+    // its isDisposed flips exactly when parentDisposable is disposed.
+    private val disposalCheck: CheckedDisposable = Disposer.newCheckedDisposable(parentDisposable)
+
     @Volatile private var generation = 0
 
     companion object {
@@ -116,19 +126,54 @@ class RenderPipeline(
         }
     }
 
+    /**
+     * PG3-6: [renderer] does a layoutlib render that can take seconds (up to its own 30 s timeout). The old code
+     * ran it inside `ReadAction.nonBlocking`, which holds the read lock for that whole time and blocks every
+     * write action in the IDE — the second freeze cause. [LiveRenderer] / [RenderModelResolver] already take
+     * their own short read actions for the PSI/project-model slivers they need, so the outer read action was
+     * both harmful and unnecessary; this submits straight to a background executor instead.
+     *
+     * That trades away `ReadAction.nonBlocking`'s built-in cancellation (see the PG3-6 report for how
+     * cancellation behaves now): nothing here preempts an in-flight [LiveRenderer.render] call anymore, it always
+     * runs to completion. What is preserved: [gen] is still checked against the live [generation] before any UI
+     * update, so a superseded selection's result is discarded, not shown; the result still reaches [onStateChange]
+     * only on the EDT, at the modality captured here (matching the old `finishOnUiThread` timing exactly); and a
+     * disposed panel ([parentDisposable]) is checked right before that UI update too, so this cannot outlive it.
+     */
     private fun render(entry: PreviewEntry, gen: Int) {
         onStateChange(RenderResultView(RenderState.RENDERING, null, entry.moduleName))
-        ReadAction.nonBlocking<RenderOutcome> { renderer.render(entry) }
-            .finishOnUiThread(ModalityState.defaultModalityState()) { outcome ->
-                if (gen != generation) return@finishOnUiThread
+        val modality = ModalityState.defaultModalityState()
+        AppExecutorUtil.getAppExecutorService().execute {
+            val outcome = try {
+                renderer.render(entry)
+            } catch (e: ProcessCanceledException) {
+                // LiveRenderer.render() always re-throws cancellation rather than swallowing it (design §5). With
+                // no ReadAction.nonBlocking around this call anymore, nothing downstream is waiting to catch this
+                // specifically — there is no next attempt already queued to replace this one the way a superseded
+                // generation implies, so the correct move is simply not publishing anything: whatever the panel
+                // was already showing stays showing, exactly as if this render had not run at all.
+                return@execute
+            }
+            publishRenderResult(entry, gen, outcome, modality)
+        }
+    }
+
+    /** Runs on the EDT, at [modality] (captured on the caller's thread in [render], before hopping to the
+     *  background executor — the exact same timing the old `finishOnUiThread(ModalityState...)` used). */
+    private fun publishRenderResult(entry: PreviewEntry, gen: Int, outcome: RenderOutcome, modality: ModalityState) {
+        ApplicationManager.getApplication().invokeLater(
+            {
+                if (gen != generation) return@invokeLater
+                if (disposalCheck.isDisposed) return@invokeLater
                 val state = when (outcome) {
                     is RenderOutcome.Success -> RenderState.LIVE
                     is RenderOutcome.Failure -> RenderState.FAILED
                     is RenderOutcome.Unsupported -> RenderState.UNSUPPORTED
                 }
                 onStateChange(RenderResultView(state, outcome, entry.moduleName))
-            }
-            .submit(AppExecutorUtil.getAppExecutorService())
+            },
+            modality,
+        )
     }
 
     private fun unsupportedOutcome(entry: PreviewEntry): RenderOutcome.Unsupported = RenderOutcome.Unsupported(
