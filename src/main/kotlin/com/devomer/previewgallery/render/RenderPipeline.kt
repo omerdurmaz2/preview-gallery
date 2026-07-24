@@ -14,8 +14,11 @@ import com.intellij.util.concurrency.AppExecutorUtil
 data class RenderResultView(val state: RenderState, val outcome: RenderOutcome?, val moduleName: String?)
 
 /**
- * Orchestrates selection -> render. Selection never builds (spec B3); the Render button does. Debounced with
- * in-flight cancellation so arrow-keying through previews queues no work.
+ * Orchestrates selection -> render. A stale module builds automatically on selection (revised D3/B3); the
+ * Render button is only a manual retry after a [RenderState.FAILED] render. Debounced with in-flight
+ * cancellation so arrow-keying through previews queues no work: [generation] is bumped on every [select] and
+ * [requestBuildAndRender] call, and every async completion (build or render) checks it is still current before
+ * acting, so a superseded selection's build/render is silently ignored rather than cancelled outright.
  */
 class RenderPipeline(
     private val project: Project,
@@ -59,16 +62,34 @@ class RenderPipeline(
         when (state) {
             RenderState.UNSUPPORTED ->
                 onStateChange(RenderResultView(RenderState.UNSUPPORTED, unsupportedOutcome(entry), entry.moduleName))
-            RenderState.NEEDS_BUILD ->
+            RenderState.NEEDS_BUILD -> {
+                // D3/B3 (revised): a stale module builds itself, no button click required. The panel shows this
+                // as the "building" state; [buildThenRender] checks [gen] again once the build finishes, so a
+                // selection made while this build is in flight silently supersedes it.
                 onStateChange(RenderResultView(RenderState.NEEDS_BUILD, null, entry.moduleName))
+                buildThenRender(entry, gen)
+            }
             RenderState.RENDERING -> render(entry, gen)
             else -> {}
         }
     }
 
+    /** Manual retry after a [RenderState.FAILED] render — the Render button's only remaining path (D3/B3). */
     fun requestBuildAndRender(entry: PreviewEntry) {
         val gen = ++generation
         onStateChange(RenderResultView(RenderState.RENDERING, null, entry.moduleName))
+        buildThenRender(entry, gen)
+    }
+
+    /**
+     * Builds [entry]'s module and renders on success. Shared by the automatic (selection) and manual (Render
+     * button retry) paths. [gen] is the generation captured by the caller before any state change; the build
+     * completion callback re-checks it against the live [generation] so a stale build finishing late (the
+     * selection moved on, or a newer build/render started) is ignored rather than clobbering newer output —
+     * [BuildService] itself only cancels its own in-flight task when a *new* build is requested, not merely
+     * when the selection changes, so this check is the actual staleness guard for "walked past it" builds.
+     */
+    private fun buildThenRender(entry: PreviewEntry, gen: Int) {
         if (DumbService.isDumb(project)) {
             onStateChange(RenderResultView(RenderState.FAILED, RenderOutcome.Failure("Indexing", null), entry.moduleName))
             return

@@ -17,7 +17,7 @@ import java.awt.image.BufferedImage
 import javax.swing.ImageIcon
 import javax.swing.SwingConstants
 
-/** The lower splitter half. Replaces PreviewRenderPlaceholder. Shows the five render states. */
+/** The right side of the tool window's split. Shows the six [RenderState]s. */
 class PreviewRenderPanel(private val project: Project) : JBPanel<PreviewRenderPanel>(BorderLayout()) {
 
     var onRender: (PreviewEntry) -> Unit = {}
@@ -40,7 +40,7 @@ class PreviewRenderPanel(private val project: Project) : JBPanel<PreviewRenderPa
             RenderState.IDLE -> center(idle())
             RenderState.RENDERING -> center(JBLabel(PreviewGalleryBundle.message("render.rendering")))
             RenderState.LIVE -> showImage((view.outcome as? RenderOutcome.Success)?.image)
-            RenderState.NEEDS_BUILD -> center(needsBuild(entry))
+            RenderState.NEEDS_BUILD -> center(JBLabel(PreviewGalleryBundle.message("render.building")))
             RenderState.FAILED -> center(failed(view.outcome as? RenderOutcome.Failure, entry))
             RenderState.UNSUPPORTED -> center(unsupported(view.outcome as? RenderOutcome.Unsupported, entry))
         }
@@ -67,14 +67,14 @@ class PreviewRenderPanel(private val project: Project) : JBPanel<PreviewRenderPa
         foreground = UIUtil.getInactiveTextColor()
     }
 
-    private fun needsBuild(entry: PreviewEntry?): JBPanel<*> = JBPanel<JBPanel<*>>(BorderLayout()).apply {
-        add(JBLabel(PreviewGalleryBundle.message("render.needsBuild")), BorderLayout.NORTH)
-        if (entry != null) add(ActionLink(PreviewGalleryBundle.message("render.render")) { onRender(entry) }, BorderLayout.CENTER)
-    }
-
+    /** The Render button now appears only here, as a retry — selecting a stale module builds it automatically
+     *  (D3/B3), so there is nothing left for the button to do on the automatic [RenderState.NEEDS_BUILD] path. */
     private fun failed(outcome: RenderOutcome.Failure?, entry: PreviewEntry?): JBPanel<*> = JBPanel<JBPanel<*>>(BorderLayout()).apply {
         add(JBLabel("${PreviewGalleryBundle.message("render.failed")}: ${outcome?.message ?: ""}"), BorderLayout.NORTH)
-        if (entry != null) add(ActionLink(PreviewGalleryBundle.message("detail.openFile")) { onOpenFile(entry) }, BorderLayout.SOUTH)
+        if (entry != null) {
+            add(ActionLink(PreviewGalleryBundle.message("render.render")) { onRender(entry) }, BorderLayout.CENTER)
+            add(ActionLink(PreviewGalleryBundle.message("detail.openFile")) { onOpenFile(entry) }, BorderLayout.SOUTH)
+        }
     }
 
     private fun unsupported(outcome: RenderOutcome.Unsupported?, entry: PreviewEntry?): JBPanel<*> = JBPanel<JBPanel<*>>(BorderLayout()).apply {
