@@ -13,6 +13,8 @@
     <depends>com.intellij.modules.platform</depends>
     <depends>org.jetbrains.kotlin</depends>
     <depends>org.jetbrains.android</depends>
+    <!-- Hosts the Compose @Preview property picker (com.android.tools.idea.compose.pickers). -->
+    <depends>com.android.tools.design</depends>
 
     <resource-bundle>messages.PreviewGalleryBundle</resource-bundle>
 

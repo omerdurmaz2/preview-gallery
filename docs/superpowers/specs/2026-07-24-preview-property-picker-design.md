@@ -44,8 +44,10 @@ without leaving the tool window.
 
 ## 2. Verified API surface
 
-Probed against the Android Studio 253 jars. All of it lives in the bundled `org.jetbrains.android` plugin — the
-same plugin the renderer already depends on. It is `com.android.tools.*` internal API, so §5 applies.
+Probed against the Android Studio 253 jars. It lives in the bundled **`com.android.tools.design`** plugin
+(`design-tools.jar`) — NOT in `org.jetbrains.android`, which is where the renderer's API lives. That plugin was
+not previously a dependency, so this feature adds `bundledPlugins("com.android.tools.design")` in
+`build.gradle.kts` and a matching `<depends>` in `plugin.xml`. It is `com.android.tools.*` internal API, so §5 applies.
 
 ```
 com.android.tools.idea.compose.pickers.PsiPickerManager

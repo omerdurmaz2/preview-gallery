@@ -15,7 +15,7 @@ dependencies {
 
     intellijPlatform {
         local(providers.gradleProperty("platformLocalPath"))
-        bundledPlugins("org.jetbrains.kotlin", "org.jetbrains.android")
+        bundledPlugins("org.jetbrains.kotlin", "org.jetbrains.android", "com.android.tools.design")
         testFramework(TestFrameworkType.Platform)
     }
 }
