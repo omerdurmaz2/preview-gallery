@@ -4,6 +4,7 @@ import com.devomer.previewgallery.PreviewGalleryBundle
 import com.devomer.previewgallery.model.PreviewEntry
 import com.devomer.previewgallery.render.BuildService
 import com.devomer.previewgallery.render.LiveRenderer
+import com.devomer.previewgallery.render.PreviewPickerBridge
 import com.devomer.previewgallery.render.RenderPipeline
 import com.devomer.previewgallery.search.PreviewModuleFilter
 import com.devomer.previewgallery.service.PreviewIndexService
@@ -12,6 +13,7 @@ import com.intellij.openapi.actionSystem.ActionManager
 import com.intellij.openapi.actionSystem.DefaultActionGroup
 import com.intellij.openapi.application.ModalityState
 import com.intellij.openapi.application.ReadAction
+import com.intellij.openapi.diagnostic.thisLogger
 import com.intellij.openapi.fileEditor.OpenFileDescriptor
 import com.intellij.openapi.project.DumbService
 import com.intellij.openapi.project.Project
@@ -72,6 +74,7 @@ class PreviewGalleryPanel(
         BuildService.getInstance(project),
         parentDisposable,
     ) { view -> renderPanel.show(view, lastSelectedEntry) }
+    private val pickerBridge = PreviewPickerBridge(project)
 
     init {
         tree.isRootVisible = false
@@ -115,6 +118,8 @@ class PreviewGalleryPanel(
 
         renderPanel.onRender = { pipeline.requestBuildAndRender(it) }
         renderPanel.onOpenFile = { OpenFileDescriptor(project, it.file, it.indexed.offset).navigate(true) }
+        renderPanel.propertiesAvailable = pickerBridge.isAvailable()
+        renderPanel.onProperties = { entry, point -> pickerBridge.showPicker(entry, point, ::onPickerModification) }
 
         val actionGroup = DefaultActionGroup(
             RefreshAction(project) { reload() },
@@ -129,6 +134,16 @@ class PreviewGalleryPanel(
         add(statusLabel, BorderLayout.SOUTH)
 
         reload()
+    }
+
+    /**
+     * Fires when [pickerBridge] reports the user changed a value in the picker (spec P3's primary signal).
+     * Stub for now — Task 3 wires this to [RenderPipeline]'s re-render so the panel reflects the edited
+     * `@Preview` annotation without the user reselecting the entry. Logged so the signal is externally
+     * observable (idea.log) during this task's manual `runIde` verification.
+     */
+    private fun onPickerModification() {
+        thisLogger().info("Preview picker reported a modification; re-render wiring lands in Task 3")
     }
 
     /** Reloads the index off the EDT. Safe to call repeatedly. */
