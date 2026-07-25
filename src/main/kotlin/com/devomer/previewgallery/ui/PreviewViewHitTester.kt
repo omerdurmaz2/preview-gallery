@@ -1,5 +1,6 @@
 package com.devomer.previewgallery.ui
 
+import com.devomer.previewgallery.model.PreviewSourceLocation
 import com.devomer.previewgallery.model.PreviewViewNode
 import java.awt.Dimension
 import java.awt.Point
@@ -44,5 +45,22 @@ object PreviewViewHitTester {
         }
         roots.forEach { visit(it) }
         return best
+    }
+
+    /**
+     * Source locations of the nodes containing [point], innermost first. Click-to-source uses this rather than
+     * [innermostAt]'s single node because the deepest node under the cursor often has no source (a layout/graphics
+     * leaf) or a framework source; the caller walks these innermost-out and navigates to the first that resolves
+     * to a project file, so a click lands on the most specific user code under the cursor.
+     */
+    fun sourceChainAt(roots: List<PreviewViewNode>, point: Point): List<PreviewSourceLocation> {
+        val chain = ArrayList<PreviewSourceLocation>()
+        fun visit(node: PreviewViewNode) {
+            if (!node.bounds.contains(point)) return
+            node.children.forEach { visit(it) } // recurse first so deeper nodes' sources land earlier in the list
+            node.sourceLocation?.let { chain.add(it) }
+        }
+        roots.forEach { visit(it) }
+        return chain
     }
 }

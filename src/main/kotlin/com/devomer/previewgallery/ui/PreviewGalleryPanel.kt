@@ -2,6 +2,7 @@ package com.devomer.previewgallery.ui
 
 import com.devomer.previewgallery.PreviewGalleryBundle
 import com.devomer.previewgallery.model.PreviewEntry
+import com.devomer.previewgallery.model.PreviewSourceLocation
 import com.devomer.previewgallery.render.BuildService
 import com.devomer.previewgallery.render.LiveRenderer
 import com.devomer.previewgallery.render.PreviewPickerBridge
@@ -17,6 +18,9 @@ import com.intellij.openapi.fileEditor.OpenFileDescriptor
 import com.intellij.openapi.project.DumbService
 import com.intellij.openapi.project.Project
 import com.intellij.openapi.util.Disposer
+import com.intellij.openapi.vfs.VirtualFile
+import com.intellij.psi.search.FilenameIndex
+import com.intellij.psi.search.GlobalSearchScope
 import com.intellij.ui.DoubleClickListener
 import com.intellij.ui.DocumentAdapter
 import com.intellij.ui.OnePixelSplitter
@@ -119,6 +123,7 @@ class PreviewGalleryPanel(
         renderPanel.onOpenFile = { OpenFileDescriptor(project, it.file, it.indexed.offset).navigate(true) }
         renderPanel.propertiesAvailable = pickerBridge.isAvailable()
         renderPanel.onProperties = { entry, point -> pickerBridge.showPicker(entry, point, ::onPickerModification) }
+        renderPanel.onNavigateToSource = { navigateToSource(it) }
 
         val actionGroup = DefaultActionGroup(
             RefreshAction(project) { reload() },
@@ -269,6 +274,34 @@ class PreviewGalleryPanel(
         val entry = selectedEntry() ?: return false
         OpenFileDescriptor(project, entry.file, entry.indexed.offset).navigate(true)
         return true
+    }
+
+    /**
+     * Opens the source a hit-tested render node points at (PG4-5). The ViewInfo path yields only a file name +
+     * line (no character offset — [PreviewSourceLocation.offset] is always null), so this navigates by line.
+     * [resolveSourceFile] looks the name up in PROJECT scope only, so a click landing on a framework node (e.g.
+     * `CompositionLocal.kt`, which lives in a library) resolves to nothing and no-ops rather than opening
+     * Compose's own source. Runs on the EDT (mouse click); the file lookup takes its own read action.
+     */
+    private fun navigateToSource(chain: List<PreviewSourceLocation>) {
+        for (location in chain) {
+            val file = resolveSourceFile(location.fileName) ?: continue
+            // lineNumber straight from AS's SourceLocation into OpenFileDescriptor(project, file, line, column):
+            // the gate confirmed the caret lands on the right line (used as a 0-based line, no off-by-one).
+            OpenFileDescriptor(project, file, location.lineNumber.coerceAtLeast(0), 0).navigate(true)
+            return
+        }
+    }
+
+    private fun resolveSourceFile(fileName: String): VirtualFile? {
+        // The clicked node is very often inside the selected preview's own file — prefer it, no index needed.
+        lastSelectedEntry?.file?.let { if (it.name == fileName) return it }
+        // Otherwise a nested component from another project file. Project scope only (source, not libraries) so a
+        // framework file resolves to nothing; skip while indexing since FilenameIndex is unavailable then.
+        if (DumbService.isDumb(project)) return null
+        return ReadAction.compute<VirtualFile?, RuntimeException> {
+            FilenameIndex.getVirtualFilesByName(fileName, GlobalSearchScope.projectScope(project)).firstOrNull()
+        }
     }
 
     private fun findPath(entryId: String): TreePath? {
