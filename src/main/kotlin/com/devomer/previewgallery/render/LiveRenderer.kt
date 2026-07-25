@@ -1,11 +1,14 @@
 package com.devomer.previewgallery.render
 
 import com.devomer.previewgallery.model.PreviewEntry
+import com.devomer.previewgallery.model.PreviewSourceLocation
+import com.devomer.previewgallery.model.PreviewViewNode
 import com.devomer.previewgallery.model.RenderOutcome
 import com.devomer.previewgallery.render.RenderModelResolver.RenderModelResult
 import com.intellij.openapi.diagnostic.thisLogger
 import com.intellij.openapi.progress.ProcessCanceledException
 import com.intellij.openapi.project.Project
+import java.awt.Rectangle
 import java.awt.image.BufferedImage
 import java.util.concurrent.CompletableFuture
 import java.util.concurrent.TimeUnit
@@ -13,6 +16,8 @@ import java.util.concurrent.TimeUnit
 // ── Android Studio internal render API. Isolated here + in RenderModelResolver only (design §3.1). ──
 import com.android.ide.common.rendering.api.SessionParams
 import com.android.resources.ResourceFolderType
+import com.android.tools.idea.compose.preview.ComposeViewInfo
+import com.android.tools.idea.compose.preview.parseViewInfo
 import com.android.tools.idea.rendering.StudioRenderService
 import com.android.tools.rendering.RenderResult
 import com.android.tools.rendering.RenderTask
@@ -231,7 +236,63 @@ class LiveRenderer(
         if (runCatching { result.logger.hasErrors() }.getOrDefault(false)) {
             thisLogger().warn("Preview rendered with layoutlib problems:\n${renderErrorDetail(result)}")
         }
-        return RenderOutcome.Success(image)
+
+        val viewTree = buildViewTree(result)
+        return RenderOutcome.Success(image, viewTree)
+    }
+
+    /**
+     * PG4-3: converts the render's raw layoutlib `ViewInfo` tree ([RenderResult.getRootViews]) into a plugin-owned
+     * [PreviewViewNode] tree, via Android Studio's own Compose view-info parser ([parseViewInfo]) — the same
+     * parser AS's own preview surface uses to resolve node bounds and `@Preview` source locations. Guarded like
+     * every other AS-internal call here: probed first ([RenderApiProbe.isViewTreeAvailable]) so a build missing
+     * the parser never attempts it, then wrapped against [Exception]/[LinkageError] so a shape change degrades to
+     * an empty tree — the image itself is never lost to a tree-conversion failure (design §5.3). Runs OFF the EDT
+     * and OFF any read action (this whole method already does, per PG3-6): [parseViewInfo] and every
+     * [ComposeViewInfo]/`SourceLocation` accessor it produces read only plain in-memory fields (reflection over
+     * the already-rendered Compose view objects, and `String`/`Int` getters), never PSI.
+     *
+     * `getRootViews()` returns a list because layoutlib's contract allows more than one top-level view, but a
+     * single compose preview's bridge XML has exactly one root; every root present is parsed and flattened so no
+     * node is silently dropped if that ever changes.
+     */
+    private fun buildViewTree(result: RenderResult): List<PreviewViewNode> {
+        if (!RenderApiProbe.isViewTreeAvailable()) return emptyList()
+        return try {
+            result.rootViews
+                .flatMap { rootView -> parseViewInfo(rootView, thisLogger()) }
+                .map { it.toPreviewViewNode() }
+        } catch (e: ProcessCanceledException) {
+            throw e // Never swallow cancellation — the platform relies on it propagating.
+        } catch (e: Exception) {
+            thisLogger().warn("View tree conversion failed", e)
+            emptyList()
+        } catch (e: LinkageError) {
+            thisLogger().warn("View tree conversion API is incompatible with this IDE build", e)
+            emptyList()
+        }
+    }
+
+    /**
+     * Recursively maps one AS [ComposeViewInfo] node into a plugin-owned [PreviewViewNode] (design §3.1: AS types
+     * never leak past `render/`). [ComposeViewInfo.getSourceLocation] is never Kotlin-null (AS's constructor
+     * requires it), but it can be `SourceLocation.isEmpty()` when AS could not resolve one — that maps to `null`
+     * here, matching [PreviewViewNode.sourceLocation]'s contract. AS's `SourceLocation` exposes only
+     * fileName/lineNumber/packageHash — no character offset — and `packageHash` is a package-name hash used to
+     * disambiguate same-named files during navigation, not a text offset, so it is never substituted in;
+     * [PreviewSourceLocation.offset] is always null from this path (task-3 report, V2).
+     */
+    private fun ComposeViewInfo.toPreviewViewNode(): PreviewViewNode {
+        val location = sourceLocation
+        return PreviewViewNode(
+            bounds = Rectangle(bounds.left, bounds.top, bounds.right - bounds.left, bounds.bottom - bounds.top),
+            sourceLocation = if (location.isEmpty()) {
+                null
+            } else {
+                PreviewSourceLocation(location.fileName, location.lineNumber, null)
+            },
+            children = children.map { it.toPreviewViewNode() },
+        )
     }
 
     /**

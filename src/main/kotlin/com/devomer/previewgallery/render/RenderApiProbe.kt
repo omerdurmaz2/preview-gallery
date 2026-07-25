@@ -35,6 +35,16 @@ object RenderApiProbe {
         "com.android.tools.idea.compose.preview.AnnotationFilePreviewElementFinder" to listOf("findPreviewElements"),
     )
 
+    // PG4-3: the ViewInfo -> source-located ComposeViewInfo parser LiveRenderer uses to build the plugin-owned
+    // PreviewViewNode tree. parseViewInfo is a Kotlin top-level function, so reflectively it lives as a static
+    // method on the file's synthetic ComposeViewInfoParserKt class (Kotlin's standard file-facade convention).
+    private val viewTreeRequired = listOf(
+        "com.android.tools.idea.compose.preview.ComposeViewInfoParserKt" to listOf("parseViewInfo"),
+        "com.android.tools.idea.compose.preview.ComposeViewInfo" to listOf("getSourceLocation", "getBounds", "getChildren"),
+        "com.android.tools.idea.compose.preview.PxBounds" to listOf("getLeft", "getTop", "getRight", "getBottom"),
+        "com.android.tools.idea.compose.preview.SourceLocation" to listOf("getFileName", "getLineNumber"),
+    )
+
     fun isAvailable(): Boolean = allPresent(required)
 
     /** Whether Android Studio's own @Preview property picker can be driven on this build (spec §5). */
@@ -45,6 +55,12 @@ object RenderApiProbe {
      *  [isAvailable]: this path is a bonus on top of plain rendering, never a requirement for it — a build missing
      *  just this finder still renders every preview at the default configuration. */
     fun isConfigAwareAvailable(): Boolean = allPresent(configAwareRequired)
+
+    /** Whether Android Studio's `ViewInfo` -> source-located Compose node parser is present on this build (PG4-3),
+     *  checked by [LiveRenderer] before it attempts the raw-tree -> `PreviewViewNode` conversion. Independent of
+     *  [isAvailable]: a build missing just this parser still renders images; only the view-tree (bounds +
+     *  source-location) overlay for a later hit-testing task degrades to an empty list. */
+    fun isViewTreeAvailable(): Boolean = allPresent(viewTreeRequired)
 
     private fun allPresent(required: List<Pair<String, List<String>>>): Boolean = runCatching {
         required.all { (className, methods) ->
