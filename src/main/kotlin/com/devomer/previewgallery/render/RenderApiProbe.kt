@@ -28,10 +28,23 @@ object RenderApiProbe {
         "com.android.tools.idea.compose.pickers.base.tracking.ComposePickerTracker" to emptyList(),
     )
 
+    // findPreviewElements is reflected by name only: it is a `suspend` function, so its real JVM signature carries
+    // a trailing kotlin.coroutines.Continuation parameter this name-only check does not distinguish. A shape
+    // change there still throws at the call site, which RenderModelResolver guards separately (PG4-2).
+    private val configAwareRequired = listOf(
+        "com.android.tools.idea.compose.preview.AnnotationFilePreviewElementFinder" to listOf("findPreviewElements"),
+    )
+
     fun isAvailable(): Boolean = allPresent(required)
 
     /** Whether Android Studio's own @Preview property picker can be driven on this build (spec §5). */
     fun isPickerAvailable(): Boolean = allPresent(pickerRequired)
+
+    /** Whether [RenderModelResolver] can ask Android Studio's own finder for each preview's real `@Preview`
+     *  config (device/api/size/showSystemUi) instead of always using the default (PG4-2, spec V1). Independent of
+     *  [isAvailable]: this path is a bonus on top of plain rendering, never a requirement for it — a build missing
+     *  just this finder still renders every preview at the default configuration. */
+    fun isConfigAwareAvailable(): Boolean = allPresent(configAwareRequired)
 
     private fun allPresent(required: List<Pair<String, List<String>>>): Boolean = runCatching {
         required.all { (className, methods) ->

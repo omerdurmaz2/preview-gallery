@@ -42,8 +42,15 @@ import com.android.tools.rendering.parsers.RenderXmlFileSnapshot
  *    while (it.hasMoreCallbacks()) }`, and for a static preview the clock is a `SteppingSessionClock(16.ms)`.
  *
  * The builder options mirror `com.android.tools.idea.preview.rendering.RenderTaskCreatorKt.createRenderTaskFuture`,
- * which is Android Studio's own standalone "render one compose preview element" path (no design surface) — it
- * unconditionally calls `disableDecorations()` and `withRenderingMode(SHRINK)`.
+ * Android Studio's own standalone "render one compose preview element" path (no design surface). That function
+ * takes its own `showDecorations: Boolean = false` parameter (name recovered from its class file's embedded
+ * `LocalVariableTable` — this jar is not fully stripped) and calls `disableDecorations()` + `withRenderingMode(SHRINK)`
+ * only when it is false; when true it calls neither. [renderResolved] now takes exactly that same branch on
+ * [RenderModelResolver.Resolved.showDecorations] (PG4-2 ext, decorations): `false` (plain previews, the common
+ * case) reproduces the PG2-2 fix byte-for-byte; `true` (`@Preview(showSystemUi = true)`) leaves the builder's own
+ * defaults — `showDecorations = true` and a `null` rendering mode, which `RenderTask`'s own constructor defaults to
+ * `NORMAL` (both confirmed on `RenderService$RenderTaskBuilder`/`RenderTask` by bytecode) — full device size with
+ * system-UI chrome, the standard-preview look.
  */
 class LiveRenderer(
     private val project: Project,
@@ -89,17 +96,28 @@ class LiveRenderer(
         val xmlFile = RenderXmlFileSnapshot(project, PREVIEW_FILE_NAME, ResourceFolderType.LAYOUT, xml)
 
         val renderService = StudioRenderService.getInstance(project)
-        val task = renderService
+        var builder = renderService
             .taskBuilder(model.renderModule, model.configuration, model.logger)
             .withPsiFile(xmlFile)
-            // ── The option set AS uses for a standalone compose preview render (RenderTaskCreatorKt). ──
+
+        // ── PG4-2 ext: the same condition AS's own createRenderTaskFuture branches this exact pair of calls on
+        // (see the class doc) — whether the resolved preview element asked for decorations. ──
+        if (!model.showDecorations) {
             // disableDecorations(): no system UI chrome; the ComposeViewAdapter tag is the render root. Without it
             // the builder default (showDecorations = true) wraps the composable in a device-sized decor, which is
-            // what produced a device-sized, entirely empty frame.
-            .disableDecorations()
+            // what produced a device-sized, entirely empty frame (PG2-2). This is the common (plain-preview) case,
+            // and reproduces that fix exactly — untouched.
             // SHRINK: size the rendered image to the measured content instead of to the device. With the default
             // (null → NORMAL) an unmeasured/uncomposed ComposeViewAdapter still yields a full-device blank canvas.
-            .withRenderingMode(SessionParams.RenderingMode.SHRINK)
+            builder = builder
+                .disableDecorations()
+                .withRenderingMode(SessionParams.RenderingMode.SHRINK)
+        }
+        // else (showSystemUi = true): call neither. The builder's own defaults — showDecorations = true, and a
+        // null rendering mode that RenderTask's constructor defaults to NORMAL — are exactly what a standard,
+        // decorated compose preview wants: full device size with the system-UI chrome drawn around the composable.
+
+        val task = builder
             .withLayoutScanner(false)
             .doNotReportOutOfDateUserClasses()
             .disableSecurityManager() // headless render off the EDT; the sandbox blocks layoutlib class loading here
