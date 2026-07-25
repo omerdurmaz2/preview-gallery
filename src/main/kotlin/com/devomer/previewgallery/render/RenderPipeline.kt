@@ -40,6 +40,11 @@ class RenderPipeline(
 
     @Volatile private var generation = 0
 
+    // The entry currently dispatched/rendered, so rerenderCurrent() knows what to re-render without the
+    // selection changing. Volatile like [generation]: onPickerModification (PG4-1) can call rerenderCurrent()
+    // off the EDT, so a plain var would not guarantee this field's latest value is visible to that thread.
+    @Volatile private var currentEntry: PreviewEntry? = null
+
     companion object {
         const val DEBOUNCE_MS = 400
 
@@ -63,7 +68,19 @@ class RenderPipeline(
         alarm.addRequest({ dispatch(entry, gen) }, DEBOUNCE_MS)
     }
 
+    /**
+     * Re-render whatever is currently displayed. Used after the picker edits the @Preview annotation: the
+     * selection has not changed, so [select] would be a no-op, but the source has. Debounced and generation-
+     * guarded like every other render path, so a burst of picker edits does not queue a render each.
+     */
+    fun rerenderCurrent() {
+        val entry = currentEntry ?: return
+        alarm.cancelAllRequests()
+        alarm.addRequest({ render(entry, ++generation) }, DEBOUNCE_MS)
+    }
+
     private fun dispatch(entry: PreviewEntry, gen: Int) {
+        currentEntry = entry
         // PG3-5: no outer read action here anymore. ModuleFreshness.isModuleFresh takes its own short read
         // action for the project-model part only; the filesystem walk it does afterwards must NOT run under a
         // read action (that used to hold the read lock for the whole walk, blocking every write action in the
@@ -89,6 +106,7 @@ class RenderPipeline(
 
     /** Manual retry after a [RenderState.FAILED] render — the Render button's only remaining path (D3/B3). */
     fun requestBuildAndRender(entry: PreviewEntry) {
+        currentEntry = entry
         val gen = ++generation
         onStateChange(RenderResultView(RenderState.RENDERING, null, entry.moduleName))
         buildThenRender(entry, gen)

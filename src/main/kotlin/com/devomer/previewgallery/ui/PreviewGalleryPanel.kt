@@ -13,7 +13,6 @@ import com.intellij.openapi.actionSystem.ActionManager
 import com.intellij.openapi.actionSystem.DefaultActionGroup
 import com.intellij.openapi.application.ModalityState
 import com.intellij.openapi.application.ReadAction
-import com.intellij.openapi.diagnostic.thisLogger
 import com.intellij.openapi.fileEditor.OpenFileDescriptor
 import com.intellij.openapi.project.DumbService
 import com.intellij.openapi.project.Project
@@ -138,12 +137,12 @@ class PreviewGalleryPanel(
 
     /**
      * Fires when [pickerBridge] reports the user changed a value in the picker (spec P3's primary signal).
-     * Stub for now — Task 3 wires this to [RenderPipeline]'s re-render so the panel reflects the edited
-     * `@Preview` annotation without the user reselecting the entry. Logged so the signal is externally
-     * observable (idea.log) during this task's manual `runIde` verification.
+     * Re-renders the currently displayed preview in place via [RenderPipeline.rerenderCurrent]: the selection
+     * has not changed, so [RenderPipeline.select] would be a no-op, but the edited `@Preview` annotation means
+     * the source has.
      */
     private fun onPickerModification() {
-        thisLogger().info("Preview picker reported a modification; re-render wiring lands in Task 3")
+        pipeline.rerenderCurrent()
     }
 
     /** Reloads the index off the EDT. Safe to call repeatedly. */
