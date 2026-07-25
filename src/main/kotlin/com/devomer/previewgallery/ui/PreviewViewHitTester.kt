@@ -7,25 +7,15 @@ import java.awt.Point
 import java.awt.Rectangle
 
 /**
- * Pure geometry for the interactive overlay: where the fitted image is drawn, how a panel point maps to a
- * render-pixel point, and which composable node is innermost at a render point. No Swing, no AS API — unit-tested.
+ * Pure geometry for the interactive overlay: how a panel point maps to a render-pixel point, which composable
+ * node is innermost at a render point, and the source chain at that point. No Swing, no AS API — unit-tested.
  *
- * Resize-safe by construction: [imageDrawRect] takes the CURRENT panel and image dimensions as parameters and
- * derives the scaled, centered draw rectangle from them, so the caller must recompute it (and [toRenderPoint])
- * on every mouse event and paint from the live panel size — never cache a stale rectangle across a resize.
+ * Resize-safe by construction: [toRenderPoint] takes the CURRENT draw rectangle and image size as parameters, so
+ * the caller must recompute the draw rectangle from the live panel/icon size on every mouse event and paint —
+ * never cache a stale rectangle across a resize. (The panel owns that rectangle: it derives it from the actual
+ * scaled icon, which is capped at 1:1, so a generic fit-rect helper here would not match what is painted.)
  */
 object PreviewViewHitTester {
-
-    /** The rectangle the image occupies when scaled to fit [panel] preserving aspect ratio, centered. */
-    fun imageDrawRect(panel: Dimension, image: Dimension): Rectangle {
-        if (image.width <= 0 || image.height <= 0 || panel.width <= 0 || panel.height <= 0) return Rectangle()
-        val scale = minOf(panel.width.toDouble() / image.width, panel.height.toDouble() / image.height)
-        val w = (image.width * scale).toInt()
-        val h = (image.height * scale).toInt()
-        val x = (panel.width - w) / 2
-        val y = (panel.height - h) / 2
-        return Rectangle(x, y, w, h)
-    }
 
     /** Map a panel point to render-pixel space, or null if it falls outside the drawn image. */
     fun toRenderPoint(panelPoint: Point, drawRect: Rectangle, image: Dimension): Point? {

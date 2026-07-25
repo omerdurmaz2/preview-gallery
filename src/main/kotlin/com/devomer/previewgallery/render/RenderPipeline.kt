@@ -42,8 +42,10 @@ class RenderPipeline(
     @Volatile private var generation = 0
 
     // The entry currently dispatched/rendered, so rerenderCurrent() knows what to re-render without the
-    // selection changing. Volatile like [generation]: onPickerModification (PG4-1) can call rerenderCurrent()
-    // off the EDT, so a plain var would not guarantee this field's latest value is visible to that thread.
+    // selection changing. @Volatile like [generation]: the picker's change signal (PG4-1) is documented to fire
+    // on the EDT, but its delivery thread is AS-internal and not contractually guaranteed, so a plain var would
+    // not reliably publish this field to a would-be off-EDT caller; @Volatile plus the thread-safe Alarm keep
+    // rerenderCurrent correct from any thread.
     @Volatile private var currentEntry: PreviewEntry? = null
 
     companion object {
@@ -78,6 +80,11 @@ class RenderPipeline(
      * Re-render whatever is currently displayed. Used after the picker edits the @Preview annotation: the
      * selection has not changed, so [select] would be a no-op, but the source has. Debounced and generation-
      * guarded like every other render path, so a burst of picker edits does not queue a render each.
+     *
+     * Intentionally calls [render] directly, not [dispatch]: a picker edit changes only the `@Preview` arguments,
+     * never the compiled code, so the module's freshness/build verdict is unchanged and re-checking it (or
+     * rebuilding) would be wasted work. The rare edge — editing the picker while a stale module is still doing its
+     * first build — renders directly (likely a transient FAILED) and is self-correcting via the Render button.
      */
     fun rerenderCurrent() {
         val entry = currentEntry ?: return

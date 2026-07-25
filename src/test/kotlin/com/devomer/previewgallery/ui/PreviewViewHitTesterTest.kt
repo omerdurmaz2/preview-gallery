@@ -17,11 +17,6 @@ class PreviewViewHitTesterTest {
     private fun srcNode(x: Int, y: Int, w: Int, h: Int, file: String, line: Int, children: List<PreviewViewNode> = emptyList()) =
         PreviewViewNode(Rectangle(x, y, w, h), PreviewSourceLocation(file, line, null), children)
 
-    @Test fun `draw rect fits and centers`() {
-        // 100x200 image into a 200x200 panel -> scale 1.0 by height, width 100, centered x=50
-        assertEquals(Rectangle(50, 0, 100, 200), PreviewViewHitTester.imageDrawRect(Dimension(200, 200), Dimension(100, 200)))
-    }
-
     @Test fun `panel point outside the image maps to null`() {
         val draw = Rectangle(50, 0, 100, 200)
         assertNull(PreviewViewHitTester.toRenderPoint(Point(10, 10), draw, Dimension(100, 200)))

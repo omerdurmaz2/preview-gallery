@@ -30,6 +30,7 @@ import java.awt.event.MouseMotionAdapter
 import java.awt.image.BufferedImage
 import javax.swing.ImageIcon
 import javax.swing.SwingConstants
+import javax.swing.SwingUtilities
 
 /** The right side of the tool window's split. Shows the six [RenderState]s plus a persistent actions bar. */
 class PreviewRenderPanel(private val project: Project) : JBPanel<PreviewRenderPanel>(BorderLayout()) {
@@ -173,7 +174,10 @@ class PreviewRenderPanel(private val project: Project) : JBPanel<PreviewRenderPa
                 override fun mouseMoved(e: MouseEvent) = updateHover(e.point)
             })
             addMouseListener(object : MouseAdapter() {
-                override fun mouseClicked(e: MouseEvent) = onClick(e.point)
+                override fun mouseClicked(e: MouseEvent) {
+                    // Left-click only — a right-click is a context gesture, not a navigate.
+                    if (SwingUtilities.isLeftMouseButton(e)) onClick(e.point)
+                }
                 override fun mouseExited(e: MouseEvent) = clearHover()
             })
         }
