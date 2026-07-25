@@ -69,8 +69,16 @@ class RenderModelResolver {
 
     fun resolve(entry: PreviewEntry, project: Project): RenderModelResult =
         try {
-            // Project-model / PSI access (module lookup, facet, configuration) must run under a read action.
-            ReadAction.compute<RenderModelResult, RuntimeException> { resolveUnderReadAction(entry, project) }
+            // The config-aware element is fetched FIRST, lock-free (see [findConfigAwareElement]): its finder is a
+            // suspend function that acquires its OWN (smart) read access, and calling it while we already hold the
+            // synchronous read lock below made it wait for smart-mode / write-intent the starved EDT could never
+            // grant — pinning the read lock and freezing the whole IDE (observed: a 65s UI freeze on select). Only
+            // the project-model reads that genuinely need a read action run inside ReadAction.compute below, which
+            // applies the already-fetched element's own @Preview configuration.
+            val configAware = findConfigAwareElement(entry, project)
+            ReadAction.compute<RenderModelResult, RuntimeException> {
+                resolveUnderReadAction(entry, project, configAware)
+            }
         } catch (e: ProcessCanceledException) {
             throw e // Never swallow cancellation — the platform relies on it propagating.
         } catch (e: Exception) {
@@ -81,7 +89,11 @@ class RenderModelResolver {
             RenderModelResult.Failed("Render API is incompatible with this IDE build", e.stackTraceToString())
         }
 
-    private fun resolveUnderReadAction(entry: PreviewEntry, project: Project): RenderModelResult {
+    private fun resolveUnderReadAction(
+        entry: PreviewEntry,
+        project: Project,
+        configAware: SingleComposePreviewElementInstance<*>?,
+    ): RenderModelResult {
         // U1: module → AndroidFacet → AndroidBuildTargetReference → AndroidFacetRenderModelModule.
         val module = ProjectFileIndex.getInstance(project).getModuleForFile(entry.file)
             ?: return RenderModelResult.Failed("File is not part of any module", entry.file.path)
@@ -97,7 +109,16 @@ class RenderModelResolver {
         val logger = StudioRenderService.getInstance(project).createLogger(project)
 
         // U5 + the compose element whose toPreviewXml() drives the ComposeViewAdapter bridge (U2, consumed later).
-        val element = buildPreviewElement(entry, project, configuration)
+        // [configAware] was resolved lock-free by [findConfigAwareElement] before this read action; applying its own
+        // device/api/size/showSystemUi onto [configuration] is the only part of the config-aware path that needs a
+        // read action. A null means the finder was unavailable, found no single-instance match, or threw — fall
+        // back to the default-config element, exactly as before PG4-2.
+        val element: SingleComposePreviewElementInstance<*> =
+            if (configAware != null && applyConfigAware(configAware, configuration)) {
+                configAware
+            } else {
+                buildDefaultPreviewElement(entry)
+            }
 
         // PG4-2 ext: whether this element's own @Preview asked for system-UI chrome (showSystemUi), so LiveRenderer
         // can render WITH decorations instead of always shrink-to-content. Guarded on its own: a signature change on
@@ -108,23 +129,33 @@ class RenderModelResolver {
     }
 
     /**
-     * V1 (PG4-2): tries the config-aware element first ([findConfigAwareElement]); [buildDefaultPreviewElement] is
-     * the fallback whenever the finder is unavailable, finds no match, resolves to a parametrized template rather
-     * than a single instance, or throws (spec R1). The fallback branch mutates nothing new — [configuration] is
-     * left exactly as [resolveUnderReadAction] already built it, so a miss renders exactly as it did before PG4-2.
+     * Applies the config-aware element's own device/api/size/showSystemUi onto [configuration] (needs a read
+     * action — the caller already holds one). Returns `false` if AS's `applyTo` throws, so a config-aware apply
+     * failure degrades to the default-config render (spec §6 D4: the config-aware feature never breaks base
+     * rendering) instead of becoming a hard [RenderModelResult.Failed] via [resolve]'s outer catch.
      */
-    private fun buildPreviewElement(
-        entry: PreviewEntry,
-        project: Project,
+    private fun applyConfigAware(
+        element: SingleComposePreviewElementInstance<*>,
         configuration: Configuration,
-    ): SingleComposePreviewElementInstance<*> =
-        findConfigAwareElement(entry, project, configuration) ?: buildDefaultPreviewElement(entry)
+    ): Boolean = try {
+        element.applyTo(configuration)
+        true
+    } catch (e: ProcessCanceledException) {
+        throw e // Never swallow cancellation — the platform relies on it propagating.
+    } catch (e: Exception) {
+        thisLogger().info("Applying the config-aware @Preview configuration failed; using the default", e)
+        false
+    } catch (e: LinkageError) {
+        thisLogger().info("The config-aware apply API is incompatible with this IDE build; using the default", e)
+        false
+    }
 
     /**
      * Asks Android Studio's own [AnnotationFilePreviewElementFinder] for [entry]'s file's real `@Preview`
      * elements and returns the one matching [entry] by composable FQN + display name — carrying that `@Preview`'s
-     * own device/api/size/showSystemUi, applied onto [configuration] below. Returns `null` (so the caller falls
-     * back to [buildDefaultPreviewElement] unchanged) when:
+     * own device/api/size/showSystemUi (which the caller, [resolveUnderReadAction], applies onto the
+     * `Configuration` under its read action). Returns `null` (so the caller falls back to
+     * [buildDefaultPreviewElement] unchanged) when:
      *  - the probe ([RenderApiProbe.isConfigAwareAvailable]) says the finder is not present on this IDE build —
      *    checked first so an IDE build that lacks it never pays for the read-action + suspend-bridge round trip;
      *  - the finder returns no element whose `methodFqn` AND `displaySettings.name` both match [entry.indexed]'s
@@ -133,46 +164,41 @@ class RenderModelResolver {
      *    rather than an already-resolved single instance — not `XmlSerializable`, and not what one [PreviewEntry]
      *    represents (spec R1); the `as?` below returns `null` for it precisely because that template class does
      *    NOT extend `SingleComposePreviewElementInstance`;
-     *  - the finder call, the match, or applying its configuration throws — guarded against [Exception] and
-     *    [LinkageError] (logged once, at `info` — this is an expected degrade, not a broken feature).
+     *  - the finder call or the match throws — guarded against [Exception] and [LinkageError] (logged once, at
+     *    `info` — this is an expected degrade, not a broken feature; applying the config is guarded separately in
+     *    [applyConfigAware]).
      *
-     * ## The suspend bridge
+     * ## The suspend bridge — deliberately OUTSIDE any read action
      *
-     * [AnnotationFilePreviewElementFinder.findPreviewElements] is `suspend`. [runBlockingCancellable]
-     * (`com.intellij.openapi.progress`, not `com.intellij.openapi.application`) is the platform's own bridge for
-     * calling a suspend function from ordinary blocking code — this whole method runs inside the read action
-     * [resolve] already took. Verified safe for exactly this call shape by decompiling it
-     * (`com.intellij.openapi.progress.CoroutinesKt`, this IDE's `lib/util-8.jar`): its only hard precondition is
-     * a private `assertBackgroundThreadAndNoWriteAction()` — on the EDT it only *logs* (never throws) unless a
-     * write action is active too, and this method never runs on the EDT ([RenderPipeline] always calls into
-     * [LiveRenderer] from a background executor, never `invokeLater`). It is explicitly not forbidden under a
-     * *read* action: the calling thread's lock state is captured into the coroutine context
-     * `runBlockingCancellable` runs on (`CoroutinesKt.getLockContext`/`getLockPermitContext`), so the finder's own
-     * internal `smartReadAction`/`readAction` suspend calls see read access already permitted and run inline
-     * rather than trying to acquire the lock on a different thread — which is what could deadlock. This is a
-     * bytecode-level inference, not a live trace; the runIde gate is the final proof there is no hang.
+     * [AnnotationFilePreviewElementFinder.findPreviewElements] is `suspend`; [runBlockingCancellable]
+     * (`com.intellij.openapi.progress`) bridges it to this blocking, background-thread call. It MUST NOT run while
+     * a synchronous read lock is held. The finder does its own internal `smartReadAction`, which waits for smart
+     * mode and for the EDT to grant write-intent; if we hold the read lock meanwhile, the EDT can never acquire
+     * write-intent, so it starves and the whole IDE freezes — a real 65-second UI freeze was observed doing
+     * exactly that (the read lock came from an outer `ReadAction.compute` this call used to sit inside). So
+     * [resolve] now calls this BEFORE it opens its read action, lock-free: the finder acquires and releases its
+     * own read access as a well-behaved suspend function, and the matched element's own device/api/size is applied
+     * onto the `Configuration` afterwards, inside the short read action in [resolveUnderReadAction].
      *
-     * Once matched, the [applyTo] extension (`ConfigurablePreviewElement.applyTo`) pushes the element's own
-     * device/api/locale/size onto [configuration] — the same `Configuration` `LiveRenderer` later hands to
-     * `RenderService.taskBuilder`. Called only for a genuine match, never on the fallback path.
+     * `runBlockingCancellable` here blocks only this background render thread — never the EDT ([RenderPipeline]
+     * always calls [LiveRenderer] off the EDT) — so a slow finder only makes one render take longer; it can no
+     * longer freeze the IDE. Guarded against [Exception]/[LinkageError] → `null` → the default-config fallback.
      */
     private fun findConfigAwareElement(
         entry: PreviewEntry,
         project: Project,
-        configuration: Configuration,
     ): SingleComposePreviewElementInstance<*>? {
         if (!RenderApiProbe.isConfigAwareAvailable()) return null
         return try {
             val elements = runBlockingCancellable {
                 AnnotationFilePreviewElementFinder.findPreviewElements(project, entry.file)
             }
-            val matched = elements.firstOrNull { element ->
+            // Reads only String properties of the finder's already-resolved snapshot elements (no live PSI), so it
+            // is safe off a read action; the config-aware element itself is applied under one in the caller.
+            elements.firstOrNull { element ->
                 element.methodFqn == entry.indexed.composableFqn &&
                     element.displaySettings.name == entry.indexed.displayName
-            }
-            val single = matched as? SingleComposePreviewElementInstance<*> ?: return null
-            single.applyTo(configuration)
-            single
+            } as? SingleComposePreviewElementInstance<*>
         } catch (e: ProcessCanceledException) {
             throw e // Never swallow cancellation — the platform relies on it propagating.
         } catch (e: Exception) {
