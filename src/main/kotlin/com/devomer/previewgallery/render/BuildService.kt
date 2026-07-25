@@ -14,6 +14,7 @@ import java.util.concurrent.atomic.AtomicReference
 // ── IDE Gradle / external-system integration (design §6). Platform API, not AS-internal render API — this class
 // is NOT part of the LiveRenderer/RenderModelResolver render-coupling boundary — but every signature below was
 // still verified against the real AS 253 jars with javap (see the task report) and every call site is guarded. ──
+import com.intellij.openapi.externalSystem.model.ProjectKeys
 import com.intellij.openapi.externalSystem.model.execution.ExternalSystemTaskExecutionSettings
 import com.intellij.openapi.externalSystem.model.task.ExternalSystemTaskId
 import com.intellij.openapi.externalSystem.model.task.ExternalSystemTaskNotificationListener
@@ -60,10 +61,10 @@ class BuildService(private val project: Project) : Disposable {
     private val generation = AtomicLong(0)
 
     /**
-     * Compiles [module]'s `compileDebugKotlin` Gradle task and calls [onDone] with whether it succeeded. Cancels
-     * any build this service already has running first (single-flight, rule B4). A no-op that immediately calls
-     * `onDone(false)` while [DumbService.isDumb] (rule B5), or when [module] is not part of a linked Gradle
-     * project.
+     * Compiles [module]'s Kotlin compile Gradle task (see [resolveCompileTarget] for which one) and calls
+     * [onDone] with whether it succeeded. Cancels any build this service already has running first
+     * (single-flight, rule B4). A no-op that immediately calls `onDone(false)` while [DumbService.isDumb]
+     * (rule B5), or when [module] is not part of a linked Gradle project.
      */
     fun build(module: Module, onDone: (Boolean) -> Unit) {
         if (DumbService.isDumb(project)) {
@@ -213,10 +214,17 @@ class BuildService(private val project: Project) : Disposable {
             if (identityPath == null) {
                 null
             } else {
+                // A standard AGP Android module has `compileDebugKotlin`, but a Kotlin-Multiplatform or plain
+                // Kotlin/JVM module does not (its Android target is `compileDebugKotlinAndroid`; a pure JVM
+                // module only has `compileKotlin`) — pick whichever candidate the module actually has instead of
+                // assuming COMPILE_TASK_NAME, so a KMP/JVM module doesn't fail with a "task not found" Gradle
+                // error. See chooseCompileTaskName's doc for the candidate priority.
+                val compileTaskName = chooseCompileTaskName(availableTaskNames(data)) ?: COMPILE_TASK_NAME
+                thisLogger().info("Resolved Gradle compile task '$compileTaskName' for module '${module.name}'")
                 val taskPath = if (identityPath.isEmpty() || identityPath == ":") {
-                    ":$COMPILE_TASK_NAME"
+                    ":$compileTaskName"
                 } else {
-                    "$identityPath:$COMPILE_TASK_NAME"
+                    "$identityPath:$compileTaskName"
                 }
                 CompileTarget(projectPath = data.directoryToRunTask, taskPath = taskPath)
             }
@@ -229,11 +237,47 @@ class BuildService(private val project: Project) : Disposable {
         null
     }
 
+    /**
+     * The module's available Gradle task simple-names (e.g. `compileDebugKotlin`), read via
+     * [GradleModuleData.findAll] — a thin, unmangled wrapper (verified with javap: no `kotlin.jvm.JvmName`
+     * remapping, unlike [GradleModuleData.getTaskPathOfSimpleTaskName] above) around
+     * `ExternalSystemApiUtil.findAll(dataNode, ProjectKeys.TASK)` that already unwraps each `DataNode<TaskData>`
+     * to its `TaskData`. Guarded on its own, separately from [resolveCompileTarget]'s own try/catch: a failure
+     * here must not fail compile-target resolution outright — [chooseCompileTaskName] just sees an empty
+     * collection, and the caller falls back to [COMPILE_TASK_NAME], exactly as if this lookup never ran.
+     */
+    private fun availableTaskNames(data: GradleModuleData): Collection<String> = try {
+        data.findAll(ProjectKeys.TASK).mapNotNull { it.name }
+    } catch (e: Exception) {
+        thisLogger().warn("Failed to enumerate Gradle tasks for module '${data.moduleName}'", e)
+        emptyList()
+    } catch (e: LinkageError) {
+        thisLogger().warn("The Gradle task-enumeration API is incompatible with this IDE build", e)
+        emptyList()
+    }
+
     /** [projectPath] is the directory to invoke Gradle from; [taskPath] is the fully qualified task, e.g. `:app:compileDebugKotlin`. */
     private class CompileTarget(val projectPath: String, val taskPath: String)
 
     companion object {
         private const val COMPILE_TASK_NAME = "compileDebugKotlin"
+
+        /**
+         * Priority-ordered Kotlin compile-task candidates for a preview render, checked against a module's
+         * actually-available Gradle tasks by [chooseCompileTaskName]. [COMPILE_TASK_NAME] stays first so a
+         * standard AGP Android module's task choice never regresses; `compileDebugKotlinAndroid` is a
+         * Kotlin-Multiplatform module's Android target, and `compileKotlin` is a plain Kotlin/JVM module.
+         */
+        private val COMPILE_TASK_CANDIDATES = listOf(COMPILE_TASK_NAME, "compileDebugKotlinAndroid", "compileKotlin")
+
+        /**
+         * From the module's available Gradle task simple-names, the best Kotlin compile task for a preview
+         * render: the highest-priority candidate that actually exists. Ordered so a standard AGP Android module
+         * keeps using compileDebugKotlin, a KMP Android target uses compileDebugKotlinAndroid, and a Kotlin/JVM
+         * module uses compileKotlin. Returns null if none of the candidates are present.
+         */
+        internal fun chooseCompileTaskName(availableTaskNames: Collection<String>): String? =
+            COMPILE_TASK_CANDIDATES.firstOrNull { it in availableTaskNames }
 
         fun getInstance(project: Project): BuildService = project.service()
     }
