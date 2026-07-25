@@ -19,9 +19,10 @@ data class RenderResultView(val state: RenderState, val outcome: RenderOutcome?,
 /**
  * Orchestrates selection -> render. A stale module builds automatically on selection (revised D3/B3); the
  * Render button is only a manual retry after a [RenderState.FAILED] render. Debounced with in-flight
- * cancellation so arrow-keying through previews queues no work: [generation] is bumped on every [select] and
- * [requestBuildAndRender] call, and every async completion (build or render) checks it is still current before
- * acting, so a superseded selection's build/render is silently ignored rather than cancelled outright.
+ * cancellation so arrow-keying through previews queues no work: [generation] is bumped on every [select],
+ * [requestBuildAndRender], and [rerenderCurrent] call, and every async completion (build or render) checks it
+ * is still current before acting, so a superseded selection's build/render is silently ignored rather than
+ * cancelled outright.
  */
 class RenderPipeline(
     private val project: Project,
@@ -59,6 +60,11 @@ class RenderPipeline(
     }
 
     fun select(entry: PreviewEntry?) {
+        // Track the selection synchronously (not just inside dispatch/requestBuildAndRender) so a picker-
+        // triggered rerenderCurrent() targets the newly selected entry even before the debounced dispatch below
+        // runs, and so it clears to null on deselection instead of leaving rerenderCurrent() pointed at the
+        // previous, no-longer-selected entry.
+        currentEntry = entry
         alarm.cancelAllRequests()
         val gen = ++generation
         if (entry == null) {
