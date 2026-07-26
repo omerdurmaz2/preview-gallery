@@ -178,6 +178,10 @@ class PreviewRenderPanel(private val project: Project) : JBPanel<PreviewRenderPa
         // listeners then stay inert) and reset zoom to fit the current viewport.
         renderView.setContent(image, success.viewTree)
         centerPanel.add(renderScroll, BorderLayout.CENTER)
+        // The scroll pane is only now placed in the visible hierarchy, and add() does not lay it out synchronously,
+        // so its viewport still reports a 0x0 extent. Validate the subtree first so the viewport has its real size,
+        // then fit — otherwise the first render (before any later revalidate) would show at 100% instead of Fit.
+        centerPanel.validate()
         renderView.fitToViewport()
     }
 
