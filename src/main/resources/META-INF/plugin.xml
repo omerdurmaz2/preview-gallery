@@ -25,6 +25,7 @@
                     factoryClass="com.devomer.previewgallery.ui.PreviewGalleryToolWindowFactory"/>
         <searchEverywhereContributor
             implementation="com.devomer.previewgallery.searcheverywhere.PreviewSearchEverywhereContributorFactory"/>
+        <notificationGroup id="Compose Preview Gallery" displayType="BALLOON"/>
     </extensions>
 
     <!--
