@@ -285,7 +285,7 @@ class PreviewGalleryPanel(
      */
     private fun navigateToSource(chain: List<PreviewSourceLocation>) {
         for (location in chain) {
-            val file = resolveSourceFile(location.fileName) ?: continue
+            val file = resolveSourceFile(location) ?: continue
             // lineNumber straight from AS's SourceLocation into OpenFileDescriptor(project, file, line, column):
             // the gate confirmed the caret lands on the right line (used as a 0-based line, no off-by-one).
             OpenFileDescriptor(project, file, location.lineNumber.coerceAtLeast(0), 0).navigate(true)
@@ -293,15 +293,32 @@ class PreviewGalleryPanel(
         }
     }
 
-    private fun resolveSourceFile(fileName: String): VirtualFile? {
+    /**
+     * Resolves [location] to a [VirtualFile], disambiguating same-named project files via [SourceFileDisambiguator]
+     * (PG5-4). Project scope only (source, not libraries) so a framework file resolves to nothing; skip while
+     * indexing since FilenameIndex is unavailable then.
+     */
+    private fun resolveSourceFile(location: PreviewSourceLocation): VirtualFile? {
         // The clicked node is very often inside the selected preview's own file — prefer it, no index needed.
-        lastSelectedEntry?.file?.let { if (it.name == fileName) return it }
-        // Otherwise a nested component from another project file. Project scope only (source, not libraries) so a
-        // framework file resolves to nothing; skip while indexing since FilenameIndex is unavailable then.
+        lastSelectedEntry?.file?.let { if (it.name == location.fileName) return it }
         if (DumbService.isDumb(project)) return null
         return ReadAction.compute<VirtualFile?, RuntimeException> {
-            FilenameIndex.getVirtualFilesByName(fileName, GlobalSearchScope.projectScope(project)).firstOrNull()
+            val matches = FilenameIndex.getVirtualFilesByName(location.fileName, GlobalSearchScope.projectScope(project)).toList()
+            if (matches.size <= 1) return@compute matches.firstOrNull()
+            val candidates = matches.map { SourceFileDisambiguator.Candidate(it, packageHashOf(it)) }
+            SourceFileDisambiguator.pick(location.packageHash, candidates)
         }
+    }
+
+    /** The same hash AS puts on a SourceLocation, computed from a candidate file's package (V1). Under a read
+     *  action (caller holds one). Returns null when the package can't be resolved -> that candidate won't match. */
+    private fun packageHashOf(file: VirtualFile): Int? {
+        val psi = com.intellij.psi.PsiManager.getInstance(project).findFile(file) as? org.jetbrains.kotlin.psi.KtFile ?: return null
+        val packageFqn = psi.packageFqName.asString()
+        // V1 (javap on design-tools.jar, SourceLocationWithVirtualFileKt.packageNameHash): AS hashes a
+        // PsiClassOwner's package name as Math.abs(name.hashCode()), not a bare hashCode() — confirmed by
+        // decompiling the private packageNameHash(String)/matchesPackage(PsiClassOwner, Int) helpers.
+        return kotlin.math.abs(packageFqn.hashCode())
     }
 
     private fun findPath(entryId: String): TreePath? {

@@ -289,7 +289,11 @@ class LiveRenderer(
             sourceLocation = if (location.isEmpty()) {
                 null
             } else {
-                PreviewSourceLocation(location.fileName, location.lineNumber, null)
+                // V1 (javap on design-tools.jar): SourceLocation.getPackageHash(): Int — a plain field getter on
+                // SourceLocationImpl, so this cannot throw in practice; guarded anyway so a future shape change
+                // degrades to null instead of breaking the whole tree conversion.
+                val hash = runCatching { location.packageHash }.getOrNull()
+                PreviewSourceLocation(location.fileName, location.lineNumber, null, hash)
             },
             children = children.map { it.toPreviewViewNode() },
         )

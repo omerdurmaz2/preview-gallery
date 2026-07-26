@@ -15,7 +15,7 @@ class PreviewViewHitTesterTest {
         PreviewViewNode(Rectangle(x, y, w, h), null, children)
 
     private fun srcNode(x: Int, y: Int, w: Int, h: Int, file: String, line: Int, children: List<PreviewViewNode> = emptyList()) =
-        PreviewViewNode(Rectangle(x, y, w, h), PreviewSourceLocation(file, line, null), children)
+        PreviewViewNode(Rectangle(x, y, w, h), PreviewSourceLocation(file, line, null, null), children)
 
     @Test fun `panel point outside the image maps to null`() {
         val draw = Rectangle(50, 0, 100, 200)
@@ -44,7 +44,7 @@ class PreviewViewHitTesterTest {
         val middle = node(5, 5, 30, 30, listOf(inner))
         val outer = srcNode(0, 0, 100, 100, "Outer.kt", 1, listOf(middle))
         assertEquals(
-            listOf(PreviewSourceLocation("Inner.kt", 5, null), PreviewSourceLocation("Outer.kt", 1, null)),
+            listOf(PreviewSourceLocation("Inner.kt", 5, null, null), PreviewSourceLocation("Outer.kt", 1, null, null)),
             PreviewViewHitTester.sourceChainAt(listOf(outer), Point(12, 12)),
         )
     }
@@ -54,7 +54,7 @@ class PreviewViewHitTesterTest {
         val inner = srcNode(80, 80, 10, 10, "Inner.kt", 5)
         val outer = srcNode(0, 0, 100, 100, "Outer.kt", 1, listOf(inner))
         assertEquals(
-            listOf(PreviewSourceLocation("Outer.kt", 1, null)),
+            listOf(PreviewSourceLocation("Outer.kt", 1, null, null)),
             PreviewViewHitTester.sourceChainAt(listOf(outer), Point(10, 10)),
         )
     }
