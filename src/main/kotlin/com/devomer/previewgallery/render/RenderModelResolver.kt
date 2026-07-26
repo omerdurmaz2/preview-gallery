@@ -1,5 +1,6 @@
 package com.devomer.previewgallery.render
 
+import com.devomer.previewgallery.model.DeviceOption
 import com.devomer.previewgallery.model.PreviewEntry
 import com.intellij.openapi.application.ReadAction
 import com.intellij.openapi.diagnostic.thisLogger
@@ -37,6 +38,10 @@ import org.jetbrains.android.facet.AndroidFacet
  * AS-internal call is guarded against [Exception] and [LinkageError]; a signature change on a newer IDE degrades
  * to [RenderModelResult.Failed] (or, for the config-aware element specifically, to the pre-PG4-2 default element)
  * instead of throwing out of the render.
+ *
+ * PG6-3: also accepts an optional, plugin-owned `deviceOverride` for comparison views, applied AFTER the
+ * config-aware device onto the same `Configuration` — see [applyDeviceOverride]. A `null` override (every caller
+ * until the comparison-view UI lands) leaves this class's behaviour byte-for-byte unchanged.
  */
 class RenderModelResolver {
 
@@ -67,7 +72,7 @@ class RenderModelResolver {
         class Failed(val message: String, val detail: String?) : RenderModelResult
     }
 
-    fun resolve(entry: PreviewEntry, project: Project): RenderModelResult =
+    fun resolve(entry: PreviewEntry, project: Project, deviceOverride: DeviceOption? = null): RenderModelResult =
         try {
             // The config-aware element is fetched FIRST, lock-free (see [findConfigAwareElement]): its finder is a
             // suspend function that acquires its OWN (smart) read access, and calling it while we already hold the
@@ -77,7 +82,7 @@ class RenderModelResolver {
             // applies the already-fetched element's own @Preview configuration.
             val configAware = findConfigAwareElement(entry, project)
             ReadAction.compute<RenderModelResult, RuntimeException> {
-                resolveUnderReadAction(entry, project, configAware)
+                resolveUnderReadAction(entry, project, configAware, deviceOverride)
             }
         } catch (e: ProcessCanceledException) {
             throw e // Never swallow cancellation — the platform relies on it propagating.
@@ -93,6 +98,7 @@ class RenderModelResolver {
         entry: PreviewEntry,
         project: Project,
         configAware: SingleComposePreviewElementInstance<*>?,
+        deviceOverride: DeviceOption?,
     ): RenderModelResult {
         // U1: module → AndroidFacet → AndroidBuildTargetReference → AndroidFacetRenderModelModule.
         val module = ProjectFileIndex.getInstance(project).getModuleForFile(entry.file)
@@ -103,7 +109,10 @@ class RenderModelResolver {
         val renderModule = AndroidFacetRenderModelModule(buildTarget)
 
         // The Configuration (device, theme, locale, target SDK) derived from the composable's own source file.
-        val configuration = ConfigurationManager.getOrCreateInstance(module).getConfiguration(entry.file)
+        // The manager itself is kept (not just its Configuration) because applyDeviceOverride (PG6-3) below needs
+        // it too, to look up a Device by id.
+        val configurationManager = ConfigurationManager.getOrCreateInstance(module)
+        val configuration = configurationManager.getConfiguration(entry.file)
 
         // A logger scoped to this project; layoutlib records missing/broken classes and render problems on it.
         val logger = StudioRenderService.getInstance(project).createLogger(project)
@@ -120,12 +129,53 @@ class RenderModelResolver {
                 buildDefaultPreviewElement(entry)
             }
 
+        // PG6-3: the ephemeral comparison-view device override, applied AFTER the config-aware @Preview device
+        // above so a null override (every caller until the comparison-view UI lands) leaves this path unchanged.
+        if (deviceOverride != null) applyDeviceOverride(deviceOverride, configurationManager, configuration)
+
         // PG4-2 ext: whether this element's own @Preview asked for system-UI chrome (showSystemUi), so LiveRenderer
         // can render WITH decorations instead of always shrink-to-content. Guarded on its own: a signature change on
         // a newer IDE degrades this one flag to false (today's plain-preview behavior), not the whole resolution.
         val showDecorations = runCatching { element.displaySettings.showDecoration }.getOrDefault(false)
 
         return RenderModelResult.Resolved(Resolved(renderModule, configuration, logger, element, showDecorations))
+    }
+
+    /**
+     * Ephemeral device override for comparison views (PG6). Applied AFTER the config-aware `@Preview` device is
+     * already on [configuration] (the caller only reaches here once that has happened), so a shape change or an
+     * unknown [DeviceOption.id] degrades to whatever device [configuration] already carries — never a crash, and
+     * never a swallowed cancellation. Mirrors [applyConfigAware]'s guard shape.
+     *
+     * V1 (javap on `android.jar`, task-3 report): [ConfigurationManager.getDeviceById] is a convenience wrapper
+     * around `getDevices()` that matches by `Device.getId() == id` (confirmed by bytecode) and returns `null`
+     * — not a throw — when the id does not resolve on this build (spec V2: a stale/unresolved curated id is
+     * simply not offered). [Configuration.setDevice] takes `(Device, preserveState: Boolean)`; `true` mirrors
+     * the config-aware path's own state-preserving device change.
+     */
+    private fun applyDeviceOverride(
+        deviceOverride: DeviceOption,
+        configurationManager: ConfigurationManager,
+        configuration: Configuration,
+    ) {
+        try {
+            val device = configurationManager.getDeviceById(deviceOverride.id)
+            if (device != null) {
+                configuration.setDevice(device, true)
+            }
+        } catch (e: ProcessCanceledException) {
+            throw e // Never swallow cancellation — the platform relies on it propagating.
+        } catch (e: Exception) {
+            thisLogger().info(
+                "Device override '${deviceOverride.id}' failed to apply; using the config-aware device",
+                e,
+            )
+        } catch (e: LinkageError) {
+            thisLogger().info(
+                "Device override API is incompatible with this IDE build; using the config-aware device",
+                e,
+            )
+        }
     }
 
     /**

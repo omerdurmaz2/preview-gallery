@@ -45,6 +45,16 @@ object RenderApiProbe {
         "com.android.tools.idea.compose.preview.SourceLocation" to listOf("getFileName", "getLineNumber"),
     )
 
+    // PG6-3: the two calls RenderModelResolver.applyDeviceOverride makes to map a plugin-owned DeviceOption id
+    // onto an AS Device and set it on the render Configuration (task-3 report, V1 — confirmed by javap on
+    // android.jar). Device itself is included as a bare class-presence check since it is the type both methods
+    // exchange, even though its own getId() is not reflected directly (AS's getDeviceById does that internally).
+    private val deviceOverrideRequired = listOf(
+        "com.android.tools.idea.configurations.ConfigurationManager" to listOf("getDeviceById"),
+        "com.android.tools.configurations.Configuration" to listOf("setDevice"),
+        "com.android.sdklib.devices.Device" to emptyList(),
+    )
+
     fun isAvailable(): Boolean = allPresent(required)
 
     /** Whether Android Studio's own @Preview property picker can be driven on this build (spec §5). */
@@ -61,6 +71,13 @@ object RenderApiProbe {
      *  [isAvailable]: a build missing just this parser still renders images; only the view-tree (bounds +
      *  source-location) overlay for a later hit-testing task degrades to an empty list. */
     fun isViewTreeAvailable(): Boolean = allPresent(viewTreeRequired)
+
+    /** Whether [RenderModelResolver] can map a plugin-owned `DeviceOption` id onto an Android Studio `Device` and
+     *  apply it to the render `Configuration` (PG6-3, comparison views). Independent of [isAvailable]: a build
+     *  missing just this capability still renders every preview at its config-aware device; a `deviceOverride`
+     *  passed anyway simply degrades to that same device (guarded in [RenderModelResolver.applyDeviceOverride]).
+     *  This probe is what the later comparison-view UI task gates its device-picker control on. */
+    fun isDeviceOverrideAvailable(): Boolean = allPresent(deviceOverrideRequired)
 
     private fun allPresent(required: List<Pair<String, List<String>>>): Boolean = runCatching {
         required.all { (className, methods) ->

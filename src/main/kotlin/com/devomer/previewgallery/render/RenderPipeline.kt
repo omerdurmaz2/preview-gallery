@@ -1,5 +1,6 @@
 package com.devomer.previewgallery.render
 
+import com.devomer.previewgallery.model.DeviceOption
 import com.devomer.previewgallery.model.PreviewEntry
 import com.devomer.previewgallery.model.RenderOutcome
 import com.intellij.openapi.Disposable
@@ -170,13 +171,17 @@ class RenderPipeline(
      * update, so a superseded selection's result is discarded, not shown; the result still reaches [onStateChange]
      * only on the EDT, at the modality captured here (matching the old `finishOnUiThread` timing exactly); and a
      * disposed panel ([parentDisposable]) is checked right before that UI update too, so this cannot outlive it.
+     *
+     * [deviceOverride] (PG6-3) is forwarded to [LiveRenderer.render] unchanged; it is `null` on every call site
+     * today (a later comparison-view UI task wires in a non-null value), which reproduces this method's exact
+     * pre-PG6-3 behaviour.
      */
-    private fun render(entry: PreviewEntry, gen: Int) {
+    private fun render(entry: PreviewEntry, gen: Int, deviceOverride: DeviceOption? = null) {
         onStateChange(RenderResultView(RenderState.RENDERING, null, entry.moduleName))
         val modality = ModalityState.defaultModalityState()
         AppExecutorUtil.getAppExecutorService().execute {
             val outcome = try {
-                renderer.render(entry)
+                renderer.render(entry, deviceOverride)
             } catch (e: ProcessCanceledException) {
                 // LiveRenderer.render() always re-throws cancellation rather than swallowing it (design §5). With
                 // no ReadAction.nonBlocking around this call anymore, nothing downstream is waiting to catch this

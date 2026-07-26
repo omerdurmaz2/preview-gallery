@@ -1,5 +1,6 @@
 package com.devomer.previewgallery.render
 
+import com.devomer.previewgallery.model.DeviceOption
 import com.devomer.previewgallery.model.PreviewEntry
 import com.devomer.previewgallery.model.PreviewSourceLocation
 import com.devomer.previewgallery.model.PreviewViewNode
@@ -67,13 +68,18 @@ class LiveRenderer(
     /**
      * Render [entry] to a [RenderOutcome]. Never throws (except cancellation). Blocks the calling (background)
      * thread on the render futures, each with a [TIMEOUT_MS] cap.
+     *
+     * [deviceOverride] (PG6-3) is an optional, plugin-owned device to render on instead of [entry]'s config-aware
+     * `@Preview` device — forwarded to [RenderModelResolver.resolve] unchanged, which applies it to the
+     * `Configuration` (guarded; degrades to the config-aware device on any failure). `null` (every caller today)
+     * reproduces the exact pre-PG6-3 config-aware path.
      */
-    fun render(entry: PreviewEntry): RenderOutcome {
+    fun render(entry: PreviewEntry, deviceOverride: DeviceOption? = null): RenderOutcome {
         if (!isAvailable()) {
             return RenderOutcome.Unsupported("Live rendering is unavailable on this IDE build")
         }
         return try {
-            when (val result = resolver.resolve(entry, project)) {
+            when (val result = resolver.resolve(entry, project, deviceOverride)) {
                 is RenderModelResult.NoFacet ->
                     RenderOutcome.Unsupported("Module '${entry.moduleName}' has no Android facet")
                 is RenderModelResult.Failed ->
