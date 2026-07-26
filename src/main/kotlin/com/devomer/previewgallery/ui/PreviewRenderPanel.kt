@@ -6,15 +6,23 @@ import com.devomer.previewgallery.model.PreviewSourceLocation
 import com.devomer.previewgallery.model.RenderOutcome
 import com.devomer.previewgallery.render.RenderResultView
 import com.devomer.previewgallery.render.RenderState
+import com.intellij.icons.AllIcons
 import com.intellij.notification.NotificationGroupManager
 import com.intellij.notification.NotificationType
+import com.intellij.openapi.actionSystem.ActionManager
+import com.intellij.openapi.actionSystem.ActionUpdateThread
+import com.intellij.openapi.actionSystem.AnActionEvent
+import com.intellij.openapi.actionSystem.DefaultActionGroup
+import com.intellij.openapi.actionSystem.ToggleAction
 import com.intellij.openapi.fileChooser.FileChooserFactory
 import com.intellij.openapi.fileChooser.FileSaverDescriptor
+import com.intellij.openapi.project.DumbAware
+import com.intellij.openapi.project.DumbAwareAction
 import com.intellij.openapi.project.Project
+import com.intellij.openapi.util.IconLoader
 import com.intellij.openapi.vfs.VirtualFile
 import com.intellij.ui.awt.RelativePoint
 import com.intellij.ui.components.ActionLink
-import com.intellij.ui.components.JBCheckBox
 import com.intellij.ui.components.JBLabel
 import com.intellij.ui.components.JBPanel
 import com.intellij.ui.components.JBScrollPane
@@ -23,6 +31,7 @@ import com.intellij.util.ui.UIUtil
 import java.awt.BorderLayout
 import java.awt.FlowLayout
 import java.awt.Point
+import javax.swing.Icon
 
 /** The right side of the tool window's split. Shows the six [RenderState]s plus a persistent actions bar. */
 class PreviewRenderPanel(private val project: Project) : JBPanel<PreviewRenderPanel>(BorderLayout()) {
@@ -73,40 +82,93 @@ class PreviewRenderPanel(private val project: Project) : JBPanel<PreviewRenderPa
         revalidate(); repaint()
     }
 
-    /** Rebuilds the persistent top-right actions bar. Zoom/fit/hand-tool/export controls (PG5-3) appear whenever
-     *  there is a live render image; Properties is kept separate so both survive every [show] without flicker. */
+    /** Rebuilds the persistent top-right actions bar as a native icon [com.intellij.openapi.actionSystem.ActionToolbar]
+     *  (PG5-3, iconified): zoom/fit/hand-tool/export controls appear whenever there is a live render image; Properties
+     *  is appended when the picker API is available. Rebuilt per [show] so the Properties anchor tracks the current
+     *  entry and the toolbar reflects the current live/idle state. */
     private fun updateActionsBar(entry: PreviewEntry?) {
         actionsBar.removeAll()
+        val group = DefaultActionGroup()
         if (renderView.rawImage() != null) {
-            renderControls().forEach { actionsBar.add(it) }
+            group.add(ZoomOutAction())
+            group.add(ZoomInAction())
+            group.add(FitAction())
+            group.add(ActualSizeAction())
+            group.addSeparator()
+            group.add(HandToolAction())
+            group.addSeparator()
+            group.add(SavePngAction())
+            group.add(CopyImageAction())
         }
         if (propertiesAvailable && entry != null) {
-            actionsBar.add(propertiesAction(entry))
+            if (group.childrenCount > 0) group.addSeparator()
+            group.add(PropertiesAction(entry))
         }
-        actionsBar.isVisible = actionsBar.componentCount > 0
+        if (group.childrenCount > 0) {
+            val toolbar = ActionManager.getInstance().createActionToolbar(ACTIONS_PLACE, group, true)
+            toolbar.targetComponent = renderView
+            toolbar.component.isOpaque = false
+            actionsBar.add(toolbar.component)
+            actionsBar.isVisible = true
+        } else {
+            actionsBar.isVisible = false
+        }
     }
 
-    /** Zoom out/in, fit, actual-size, hand-tool toggle, and export controls for the live [renderView] (PG5-3). */
-    private fun renderControls(): List<javax.swing.JComponent> {
-        val zoomOut = ActionLink("−") { renderView.zoomFactor = ZoomMath.stepOut(renderView.zoomFactor) }
-        val zoomIn = ActionLink("+") { renderView.zoomFactor = ZoomMath.stepIn(renderView.zoomFactor) }
-        val fit = ActionLink(PreviewGalleryBundle.message("render.fit")) { renderView.fitToViewport() }
-        val actual = ActionLink(PreviewGalleryBundle.message("render.actualSize")) { renderView.zoomFactor = 1.0 }
-        val hand = JBCheckBox(PreviewGalleryBundle.message("render.handTool")).apply {
-            isSelected = renderView.handToolActive
-            addActionListener { renderView.handToolActive = isSelected }
-        }
-        val save = ActionLink(PreviewGalleryBundle.message("render.savePng")) { savePng() }
-        val copy = ActionLink(PreviewGalleryBundle.message("render.copyImage")) { copyImage() }
-        return listOf(zoomOut, zoomIn, fit, actual, hand, save, copy)
+    private inner class ZoomOutAction : DumbAwareAction(
+        PreviewGalleryBundle.message("render.zoomOut"), null, AllIcons.General.ZoomOut,
+    ) {
+        override fun actionPerformed(e: AnActionEvent) { renderView.zoomFactor = ZoomMath.stepOut(renderView.zoomFactor) }
     }
 
-    private fun propertiesAction(entry: PreviewEntry): ActionLink {
-        val link = ActionLink(PreviewGalleryBundle.message("render.properties"))
-        // The anchor is derived from the link's own screen position once clicked (spec P4), not computed eagerly
-        // at construction time, since the component is only laid out (and clickable) once actually shown.
-        link.addActionListener { onProperties(entry, RelativePoint(link, Point(0, link.height))) }
-        return link
+    private inner class ZoomInAction : DumbAwareAction(
+        PreviewGalleryBundle.message("render.zoomIn"), null, AllIcons.General.ZoomIn,
+    ) {
+        override fun actionPerformed(e: AnActionEvent) { renderView.zoomFactor = ZoomMath.stepIn(renderView.zoomFactor) }
+    }
+
+    private inner class FitAction : DumbAwareAction(
+        PreviewGalleryBundle.message("render.fit"), null, AllIcons.General.FitContent,
+    ) {
+        override fun actionPerformed(e: AnActionEvent) { renderView.fitToViewport() }
+    }
+
+    private inner class ActualSizeAction : DumbAwareAction(
+        PreviewGalleryBundle.message("render.actualSize"), null, AllIcons.General.ActualZoom,
+    ) {
+        override fun actionPerformed(e: AnActionEvent) { renderView.zoomFactor = 1.0 }
+    }
+
+    /** Hand-tool as a real toggle so the toolbar shows its pressed state; mirrors [ZoomableRenderView.handToolActive]. */
+    private inner class HandToolAction : ToggleAction(
+        PreviewGalleryBundle.message("render.handTool"), null, HAND_ICON,
+    ), DumbAware {
+        override fun isSelected(e: AnActionEvent): Boolean = renderView.handToolActive
+        override fun setSelected(e: AnActionEvent, state: Boolean) { renderView.handToolActive = state }
+        override fun getActionUpdateThread(): ActionUpdateThread = ActionUpdateThread.EDT
+    }
+
+    private inner class SavePngAction : DumbAwareAction(
+        PreviewGalleryBundle.message("render.savePng"), null, AllIcons.ToolbarDecorator.Export,
+    ) {
+        override fun actionPerformed(e: AnActionEvent) { savePng() }
+    }
+
+    private inner class CopyImageAction : DumbAwareAction(
+        PreviewGalleryBundle.message("render.copyImage"), null, AllIcons.Actions.Copy,
+    ) {
+        override fun actionPerformed(e: AnActionEvent) { copyImage() }
+    }
+
+    /** Opens the Android Studio picker next to the clicked button (spec P4). The anchor is taken from the toolbar
+     *  button that fired the action, falling back to the actions bar when the event carries no component. */
+    private inner class PropertiesAction(private val entry: PreviewEntry) : DumbAwareAction(
+        PreviewGalleryBundle.message("render.properties"), null, AllIcons.General.Settings,
+    ) {
+        override fun actionPerformed(e: AnActionEvent) {
+            val anchor = e.inputEvent?.component ?: actionsBar
+            onProperties(entry, RelativePoint(anchor, Point(0, anchor.height)))
+        }
     }
 
     private fun showImage(success: RenderOutcome.Success?) {
@@ -171,5 +233,10 @@ class PreviewRenderPanel(private val project: Project) : JBPanel<PreviewRenderPa
 
     private fun center(component: javax.swing.JComponent) {
         centerPanel.add(JBPanel<JBPanel<*>>(BorderLayout()).apply { add(component, BorderLayout.CENTER) }, BorderLayout.CENTER)
+    }
+
+    private companion object {
+        private const val ACTIONS_PLACE = "PreviewGalleryRenderToolbar"
+        private val HAND_ICON: Icon = IconLoader.getIcon("/icons/hand.svg", PreviewRenderPanel::class.java)
     }
 }
