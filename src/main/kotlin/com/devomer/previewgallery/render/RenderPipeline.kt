@@ -1,8 +1,8 @@
 package com.devomer.previewgallery.render
 
-import com.devomer.previewgallery.model.DeviceOption
 import com.devomer.previewgallery.model.PreviewEntry
 import com.devomer.previewgallery.model.RenderOutcome
+import com.devomer.previewgallery.model.ViewConfig
 import com.intellij.openapi.Disposable
 import com.intellij.openapi.application.ApplicationManager
 import com.intellij.openapi.application.ModalityState
@@ -93,6 +93,50 @@ class RenderPipeline(
         alarm.addRequest({ render(entry, ++generation) }, DEBOUNCE_MS)
     }
 
+    /**
+     * Off-EDT entry point for a single comparison-view render (PG6-4): renders [entry] with [config] and delivers
+     * [onResult] on the EDT. Deliberately separate from [select]/[dispatch]/[render]/[rerenderCurrent]: those all
+     * share one debounced [generation] for the single Original selection, which does not fit the comparison-view
+     * tab strip's N independent, concurrently-live per-tab renders — a `select`-shaped call for tab 2 would
+     * cancel/supersede tab 1's in-flight render via that same counter (flagged explicitly in the task-3 report,
+     * §4). This method reads and bumps neither [generation] nor [currentEntry], so it can never affect, or be
+     * affected by, the Original selection's render.
+     *
+     * [config] (PG6-7, widened from PG6-3's device-only override) is the three-axis device/theme/font-scale
+     * override for this one comparison copy — forwarded to [LiveRenderer.render] unchanged.
+     *
+     * Submits straight to the same background executor [render] uses (no debounce — every call is expected to be
+     * an explicit, individual user action: add a view, change its device, or activate an unrendered tab), and
+     * takes no outer read action for the same reason [render]'s class doc gives: [renderer] (`LiveRenderer`) and
+     * the model resolver it delegates to already take their own short read actions for the PSI/project-model
+     * slivers they need.
+     *
+     * Its own staleness/cancellation guard is [disposalCheck] — the same "is the panel gone" check
+     * [publishRenderResult] uses — so a torn-down panel never receives a late callback; which *tab*'s result this
+     * is, and whether that tab is still the one the user wants (device changed again, tab closed, or the whole
+     * comparison set was cleared), is [onResult]'s caller's own responsibility (a per-tab generation token in
+     * [com.devomer.previewgallery.ui.PreviewRenderPanel]) — this method has no notion of "tabs" at all.
+     */
+    fun renderVariant(entry: PreviewEntry, config: ViewConfig, onResult: (RenderOutcome) -> Unit) {
+        val modality = ModalityState.defaultModalityState()
+        AppExecutorUtil.getAppExecutorService().execute {
+            val outcome = try {
+                renderer.render(entry, config)
+            } catch (e: ProcessCanceledException) {
+                // Same rationale as render()'s identical catch: never swallow cancellation, and nothing is
+                // waiting to replace this particular request, so simply publish nothing.
+                return@execute
+            }
+            ApplicationManager.getApplication().invokeLater(
+                {
+                    if (disposalCheck.isDisposed) return@invokeLater
+                    onResult(outcome)
+                },
+                modality,
+            )
+        }
+    }
+
     private fun dispatch(entry: PreviewEntry, gen: Int) {
         currentEntry = entry
         // PG3-5: no outer read action here anymore. ModuleFreshness.isModuleFresh takes its own short read
@@ -172,16 +216,18 @@ class RenderPipeline(
      * only on the EDT, at the modality captured here (matching the old `finishOnUiThread` timing exactly); and a
      * disposed panel ([parentDisposable]) is checked right before that UI update too, so this cannot outlive it.
      *
-     * [deviceOverride] (PG6-3) is forwarded to [LiveRenderer.render] unchanged; it is `null` on every call site
-     * today (a later comparison-view UI task wires in a non-null value), which reproduces this method's exact
-     * pre-PG6-3 behaviour.
+     * [viewConfig] (PG6-7, widened from PG6-3's device-only override) is forwarded to [LiveRenderer.render]
+     * unchanged; it is `null` on every call site today ([dispatch], [buildThenRender] and [rerenderCurrent] all
+     * call this with just `(entry, gen)` — the single debounced Original selection never carries a view
+     * override), which reproduces this method's exact pre-override behaviour. A non-null, config-bearing value
+     * only ever reaches [LiveRenderer] via [renderVariant]'s own, separate path.
      */
-    private fun render(entry: PreviewEntry, gen: Int, deviceOverride: DeviceOption? = null) {
+    private fun render(entry: PreviewEntry, gen: Int, viewConfig: ViewConfig? = null) {
         onStateChange(RenderResultView(RenderState.RENDERING, null, entry.moduleName))
         val modality = ModalityState.defaultModalityState()
         AppExecutorUtil.getAppExecutorService().execute {
             val outcome = try {
-                renderer.render(entry, deviceOverride)
+                renderer.render(entry, viewConfig)
             } catch (e: ProcessCanceledException) {
                 // LiveRenderer.render() always re-throws cancellation rather than swallowing it (design §5). With
                 // no ReadAction.nonBlocking around this call anymore, nothing downstream is waiting to catch this

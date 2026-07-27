@@ -1,7 +1,8 @@
 package com.devomer.previewgallery.render
 
-import com.devomer.previewgallery.model.DeviceOption
 import com.devomer.previewgallery.model.PreviewEntry
+import com.devomer.previewgallery.model.ThemeOption
+import com.devomer.previewgallery.model.ViewConfig
 import com.intellij.openapi.application.ReadAction
 import com.intellij.openapi.diagnostic.thisLogger
 import com.intellij.openapi.progress.ProcessCanceledException
@@ -39,9 +40,10 @@ import org.jetbrains.android.facet.AndroidFacet
  * to [RenderModelResult.Failed] (or, for the config-aware element specifically, to the pre-PG4-2 default element)
  * instead of throwing out of the render.
  *
- * PG6-3: also accepts an optional, plugin-owned `deviceOverride` for comparison views, applied AFTER the
- * config-aware device onto the same `Configuration` — see [applyDeviceOverride]. A `null` override (every caller
- * until the comparison-view UI lands) leaves this class's behaviour byte-for-byte unchanged.
+ * PG6-7 (widened from PG6-3's device-only override): also accepts an optional, plugin-owned `viewConfig` for
+ * comparison views — device, theme and font scale — applied AFTER the config-aware `@Preview` values onto the
+ * same `Configuration`, each axis independently guarded (see [resolveUnderReadAction]). A `null` or default
+ * ([ViewConfig.isDefault]) config leaves this class's behaviour byte-for-byte unchanged.
  */
 class RenderModelResolver {
 
@@ -72,7 +74,7 @@ class RenderModelResolver {
         class Failed(val message: String, val detail: String?) : RenderModelResult
     }
 
-    fun resolve(entry: PreviewEntry, project: Project, deviceOverride: DeviceOption? = null): RenderModelResult =
+    fun resolve(entry: PreviewEntry, project: Project, viewConfig: ViewConfig? = null): RenderModelResult =
         try {
             // The config-aware element is fetched FIRST, lock-free (see [findConfigAwareElement]): its finder is a
             // suspend function that acquires its OWN (smart) read access, and calling it while we already hold the
@@ -82,7 +84,7 @@ class RenderModelResolver {
             // applies the already-fetched element's own @Preview configuration.
             val configAware = findConfigAwareElement(entry, project)
             ReadAction.compute<RenderModelResult, RuntimeException> {
-                resolveUnderReadAction(entry, project, configAware, deviceOverride)
+                resolveUnderReadAction(entry, project, configAware, viewConfig)
             }
         } catch (e: ProcessCanceledException) {
             throw e // Never swallow cancellation — the platform relies on it propagating.
@@ -98,7 +100,7 @@ class RenderModelResolver {
         entry: PreviewEntry,
         project: Project,
         configAware: SingleComposePreviewElementInstance<*>?,
-        deviceOverride: DeviceOption?,
+        viewConfig: ViewConfig?,
     ): RenderModelResult {
         // U1: module → AndroidFacet → AndroidBuildTargetReference → AndroidFacetRenderModelModule.
         val module = ProjectFileIndex.getInstance(project).getModuleForFile(entry.file)
@@ -109,8 +111,8 @@ class RenderModelResolver {
         val renderModule = AndroidFacetRenderModelModule(buildTarget)
 
         // The Configuration (device, theme, locale, target SDK) derived from the composable's own source file.
-        // The manager itself is kept (not just its Configuration) because applyDeviceOverride (PG6-3) below needs
-        // it too, to look up a Device by id.
+        // The manager itself is kept (not just its Configuration) because the view-override block below needs it
+        // too, to look up a Device by id.
         val configurationManager = ConfigurationManager.getOrCreateInstance(module)
         val configuration = configurationManager.getConfiguration(entry.file)
 
@@ -129,9 +131,31 @@ class RenderModelResolver {
                 buildDefaultPreviewElement(entry)
             }
 
-        // PG6-3: the ephemeral comparison-view device override, applied AFTER the config-aware @Preview device
-        // above so a null override (every caller until the comparison-view UI lands) leaves this path unchanged.
-        if (deviceOverride != null) applyDeviceOverride(deviceOverride, configurationManager, configuration)
+        // Ephemeral view override for comparison copies (PG6). Applied AFTER the config-aware @Preview values, so a
+        // null/default config leaves today's behaviour untouched. Each axis is independent: an unresolved device or an
+        // unsupported setter degrades to the config-aware value rather than failing the render.
+        if (viewConfig != null && !viewConfig.isDefault) {
+            try {
+                viewConfig.device?.let { option ->
+                    configurationManager.getDeviceById(option.id)?.let { configuration.setDevice(it, true) }
+                }
+                viewConfig.theme?.let { theme ->
+                    configuration.setNightMode(
+                        when (theme) {
+                            ThemeOption.DARK -> com.android.resources.NightMode.NIGHT
+                            ThemeOption.LIGHT -> com.android.resources.NightMode.NOTNIGHT
+                        },
+                    )
+                }
+                viewConfig.fontScale?.let { configuration.setFontScale(it) }
+            } catch (e: ProcessCanceledException) {
+                throw e
+            } catch (e: Exception) {
+                thisLogger().info("Could not apply the comparison view config; keeping the @Preview configuration", e)
+            } catch (e: LinkageError) {
+                thisLogger().info("View-override API is incompatible with this IDE build", e)
+            }
+        }
 
         // PG4-2 ext: whether this element's own @Preview asked for system-UI chrome (showSystemUi), so LiveRenderer
         // can render WITH decorations instead of always shrink-to-content. Guarded on its own: a signature change on
@@ -139,43 +163,6 @@ class RenderModelResolver {
         val showDecorations = runCatching { element.displaySettings.showDecoration }.getOrDefault(false)
 
         return RenderModelResult.Resolved(Resolved(renderModule, configuration, logger, element, showDecorations))
-    }
-
-    /**
-     * Ephemeral device override for comparison views (PG6). Applied AFTER the config-aware `@Preview` device is
-     * already on [configuration] (the caller only reaches here once that has happened), so a shape change or an
-     * unknown [DeviceOption.id] degrades to whatever device [configuration] already carries — never a crash, and
-     * never a swallowed cancellation. Mirrors [applyConfigAware]'s guard shape.
-     *
-     * V1 (javap on `android.jar`, task-3 report): [ConfigurationManager.getDeviceById] is a convenience wrapper
-     * around `getDevices()` that matches by `Device.getId() == id` (confirmed by bytecode) and returns `null`
-     * — not a throw — when the id does not resolve on this build (spec V2: a stale/unresolved curated id is
-     * simply not offered). [Configuration.setDevice] takes `(Device, preserveState: Boolean)`; `true` mirrors
-     * the config-aware path's own state-preserving device change.
-     */
-    private fun applyDeviceOverride(
-        deviceOverride: DeviceOption,
-        configurationManager: ConfigurationManager,
-        configuration: Configuration,
-    ) {
-        try {
-            val device = configurationManager.getDeviceById(deviceOverride.id)
-            if (device != null) {
-                configuration.setDevice(device, true)
-            }
-        } catch (e: ProcessCanceledException) {
-            throw e // Never swallow cancellation — the platform relies on it propagating.
-        } catch (e: Exception) {
-            thisLogger().info(
-                "Device override '${deviceOverride.id}' failed to apply; using the config-aware device",
-                e,
-            )
-        } catch (e: LinkageError) {
-            thisLogger().info(
-                "Device override API is incompatible with this IDE build; using the config-aware device",
-                e,
-            )
-        }
     }
 
     /**
