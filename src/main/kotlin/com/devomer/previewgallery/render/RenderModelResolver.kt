@@ -42,8 +42,9 @@ import org.jetbrains.android.facet.AndroidFacet
  *
  * PG6-7 (widened from PG6-3's device-only override): also accepts an optional, plugin-owned `viewConfig` for
  * comparison views — device, theme and font scale — applied AFTER the config-aware `@Preview` values onto the
- * same `Configuration`, each axis independently guarded (see [resolveUnderReadAction]). A `null` or default
- * ([ViewConfig.isDefault]) config leaves this class's behaviour byte-for-byte unchanged.
+ * same `Configuration`, each axis independently guarded (see [applyAxis]): a thrown failure applying one axis
+ * never prevents the others from being attempted. A `null` or default ([ViewConfig.isDefault]) config leaves
+ * this class's behaviour byte-for-byte unchanged.
  */
 class RenderModelResolver {
 
@@ -132,14 +133,17 @@ class RenderModelResolver {
             }
 
         // Ephemeral view override for comparison copies (PG6). Applied AFTER the config-aware @Preview values, so a
-        // null/default config leaves today's behaviour untouched. Each axis is independent: an unresolved device or an
-        // unsupported setter degrades to the config-aware value rather than failing the render.
+        // null/default config leaves today's behaviour untouched. Each axis is applied through its own [applyAxis]
+        // guard: an unresolved device (getDeviceById returning null) or a setter that throws degrades ONLY that
+        // axis to its config-aware value — it never prevents the remaining axes from being attempted.
         if (viewConfig != null && !viewConfig.isDefault) {
-            try {
-                viewConfig.device?.let { option ->
+            viewConfig.device?.let { option ->
+                applyAxis("device ${option.id}") {
                     configurationManager.getDeviceById(option.id)?.let { configuration.setDevice(it, true) }
                 }
-                viewConfig.theme?.let { theme ->
+            }
+            viewConfig.theme?.let { theme ->
+                applyAxis("theme ${theme.name}") {
                     configuration.setNightMode(
                         when (theme) {
                             ThemeOption.DARK -> com.android.resources.NightMode.NIGHT
@@ -147,13 +151,9 @@ class RenderModelResolver {
                         },
                     )
                 }
-                viewConfig.fontScale?.let { configuration.setFontScale(it) }
-            } catch (e: ProcessCanceledException) {
-                throw e
-            } catch (e: Exception) {
-                thisLogger().info("Could not apply the comparison view config; keeping the @Preview configuration", e)
-            } catch (e: LinkageError) {
-                thisLogger().info("View-override API is incompatible with this IDE build", e)
+            }
+            viewConfig.fontScale?.let { scale ->
+                applyAxis("font scale $scale") { configuration.setFontScale(scale) }
             }
         }
 
@@ -163,6 +163,21 @@ class RenderModelResolver {
         val showDecorations = runCatching { element.displaySettings.showDecoration }.getOrDefault(false)
 
         return RenderModelResult.Resolved(Resolved(renderModule, configuration, logger, element, showDecorations))
+    }
+
+    /** Applies one comparison-view axis, guarded independently so a failure in one axis never prevents the others
+     *  from being applied; the axis simply keeps its config-aware value. [axis] names the axis (and, where useful,
+     *  the value being applied) purely for the log message — never swallows [ProcessCanceledException]. */
+    private inline fun applyAxis(axis: String, apply: () -> Unit) {
+        try {
+            apply()
+        } catch (e: ProcessCanceledException) {
+            throw e
+        } catch (e: Exception) {
+            thisLogger().info("Could not apply comparison view $axis; keeping the @Preview configuration", e)
+        } catch (e: LinkageError) {
+            thisLogger().info("Comparison view $axis is unsupported on this IDE build", e)
+        }
     }
 
     /**
