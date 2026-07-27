@@ -481,3 +481,424 @@ Add an "Added — comparison views: view the current preview on extra devices in
 git add CHANGELOG.md
 git commit -m "[PG6-5] - Changelog for comparison views"
 ```
+
+---
+
+## Revision (2026-07-27): copies, not device pickers
+
+The user refined the design after Tasks 1–3 landed and while Task 4 was still uncommitted. **Tasks 1–3's
+device-only model is superseded by Tasks 6–8 below**; Task 4's tab-strip work stays as the base that Task 8
+reworks. The new shape (see the revised spec, decisions D2–D6):
+
+- **＋ Add view** adds an exact **copy of Original** — no setting is chosen at add time; it renders identically.
+- **Properties is context-aware**: on Original it opens Android Studio's `@Preview` picker exactly as today; on a
+  copy it opens the plugin's own **ephemeral view-settings** popup (device / theme / font scale) that never
+  writes source. AS's picker is source-editing — verified in the AS 253 jars:
+  `PsiCallParameterPropertyItem.setValue` → `writeNewValue` → `WriteCommandAction.runWriteCommandAction` +
+  `KtPsiFactory.createArgument` — so routing a copy's edits through it would rewrite the shared `@Preview` and
+  change every tab, defeating comparison.
+- **Each tab carries a title**: `Original`, `View N` for an unconfigured copy, else a settings summary.
+- **Three axes**, all confirmed present on `com.android.tools.configurations.Configuration`:
+  `setDevice(Device, boolean)`, `setNightMode(NightMode)`, `setFontScale(float)`.
+
+---
+
+### Task 6: `ViewConfig` model + `ViewTitle` + `ComparisonViewList` migration
+
+**Goal:** Replace the device-only view state with a three-axis `ViewConfig`, add pure tab-title derivation, and
+migrate `ComparisonViewList` to carry a config. All pure, no Swing, no AS.
+
+**Files:**
+- Create: `src/main/kotlin/com/devomer/previewgallery/model/ViewConfig.kt`
+- Create: `src/test/kotlin/com/devomer/previewgallery/model/ViewConfigTest.kt`
+- Create: `src/main/kotlin/com/devomer/previewgallery/ui/ViewTitle.kt`
+- Create: `src/test/kotlin/com/devomer/previewgallery/ui/ViewTitleTest.kt`
+- Modify: `src/main/kotlin/com/devomer/previewgallery/ui/ComparisonViewList.kt` (device → config)
+- Modify: `src/test/kotlin/com/devomer/previewgallery/ui/ComparisonViewListTest.kt` (same migration)
+
+**Interfaces:**
+- Consumes: `DeviceOption`, `DeviceCatalog.DEFAULT` (Task 1, unchanged).
+- Produces:
+  - `enum class ThemeOption(val label: String) { LIGHT("Light"), DARK("Dark") }`
+  - `data class ViewConfig(device: DeviceOption? = null, theme: ThemeOption? = null, fontScale: Float? = null)`
+    with `val isDefault: Boolean`
+  - `object ViewSettingsCatalog { val DEVICES: List<DeviceOption>; val FONT_SCALES: List<Float> }`
+  - `object ViewTitle { fun of(view: ComparisonView, ordinal: Int): String }`
+  - `ComparisonView(val id: Int, val config: ViewConfig)`; `ComparisonViewList.add(config: ViewConfig)`,
+    `setConfig(id: Int, config: ViewConfig)`
+
+- [ ] **Step 1: Write the failing tests**
+
+`src/test/kotlin/com/devomer/previewgallery/model/ViewConfigTest.kt`:
+
+```kotlin
+package com.devomer.previewgallery.model
+
+import org.junit.Assert.assertEquals
+import org.junit.Assert.assertFalse
+import org.junit.Assert.assertTrue
+import org.junit.Test
+
+class ViewConfigTest {
+
+    @Test fun `an empty config is default`() {
+        assertTrue(ViewConfig().isDefault)
+    }
+
+    @Test fun `any set axis makes it non-default`() {
+        assertFalse(ViewConfig(device = DeviceOption("pixel_7", "Pixel 7")).isDefault)
+        assertFalse(ViewConfig(theme = ThemeOption.DARK).isDefault)
+        assertFalse(ViewConfig(fontScale = 1.3f).isDefault)
+    }
+
+    @Test fun `catalog devices are the curated list and font scales are sane`() {
+        assertEquals(DeviceCatalog.DEFAULT, ViewSettingsCatalog.DEVICES)
+        assertTrue(ViewSettingsCatalog.FONT_SCALES.isNotEmpty())
+        assertTrue(ViewSettingsCatalog.FONT_SCALES.all { it > 0f })
+        assertTrue(ViewSettingsCatalog.FONT_SCALES.contains(1.0f))
+        assertEquals(ViewSettingsCatalog.FONT_SCALES.size, ViewSettingsCatalog.FONT_SCALES.toSet().size)
+    }
+
+    @Test fun `theme options carry display labels`() {
+        assertEquals("Light", ThemeOption.LIGHT.label)
+        assertEquals("Dark", ThemeOption.DARK.label)
+    }
+}
+```
+
+`src/test/kotlin/com/devomer/previewgallery/ui/ViewTitleTest.kt`:
+
+```kotlin
+package com.devomer.previewgallery.ui
+
+import com.devomer.previewgallery.model.DeviceOption
+import com.devomer.previewgallery.model.ThemeOption
+import com.devomer.previewgallery.model.ViewConfig
+import org.junit.Assert.assertEquals
+import org.junit.Test
+
+class ViewTitleTest {
+
+    private val pixel7 = DeviceOption("pixel_7", "Pixel 7")
+
+    @Test fun `the original view is titled Original`() {
+        assertEquals("Original", ViewTitle.of(ComparisonView(ComparisonViewList.ORIGINAL_ID, ViewConfig()), 0))
+    }
+
+    @Test fun `an unconfigured copy is titled by its tab position`() {
+        assertEquals("View 2", ViewTitle.of(ComparisonView(1, ViewConfig()), 1))
+        assertEquals("View 3", ViewTitle.of(ComparisonView(2, ViewConfig()), 2))
+    }
+
+    @Test fun `a single axis titles just that axis`() {
+        assertEquals("Pixel 7", ViewTitle.of(ComparisonView(1, ViewConfig(device = pixel7)), 1))
+        assertEquals("Dark", ViewTitle.of(ComparisonView(1, ViewConfig(theme = ThemeOption.DARK)), 1))
+        assertEquals("1.3×", ViewTitle.of(ComparisonView(1, ViewConfig(fontScale = 1.3f)), 1))
+    }
+
+    @Test fun `whole-number font scales drop the decimal`() {
+        assertEquals("1×", ViewTitle.of(ComparisonView(1, ViewConfig(fontScale = 1.0f)), 1))
+        assertEquals("2×", ViewTitle.of(ComparisonView(1, ViewConfig(fontScale = 2.0f)), 1))
+        assertEquals("0.85×", ViewTitle.of(ComparisonView(1, ViewConfig(fontScale = 0.85f)), 1))
+    }
+
+    @Test fun `several axes are joined in device theme scale order`() {
+        val config = ViewConfig(device = pixel7, theme = ThemeOption.DARK, fontScale = 1.3f)
+        assertEquals("Pixel 7 · Dark · 1.3×", ViewTitle.of(ComparisonView(1, config), 1))
+    }
+}
+```
+
+Migrate `src/test/kotlin/com/devomer/previewgallery/ui/ComparisonViewListTest.kt`: replace every
+`DeviceOption` argument with a `ViewConfig`, `add(pixel7)` → `add(ViewConfig(device = pixel7))`,
+`setDevice(id, tablet)` → `setConfig(id, ViewConfig(device = tablet))`, and assert on `views[i].config`
+(e.g. `assertEquals(ViewConfig(device = tablet), list.views[1].config)`; Original asserts
+`assertTrue(list.views[0].config.isDefault)`). Keep all seven behaviours (start state, add, cap, close,
+setConfig-ignores-Original, clearExtras, non-reused ids) — only the payload type changes.
+
+- [ ] **Step 2: Run the tests, verify they fail**
+
+Run: `./gradlew test --no-configuration-cache --tests "com.devomer.previewgallery.model.ViewConfigTest" --tests "com.devomer.previewgallery.ui.ViewTitleTest"`
+Expected: FAIL — `ViewConfig`, `ThemeOption`, `ViewSettingsCatalog`, `ViewTitle` unresolved.
+
+- [ ] **Step 3: Write the model**
+
+`src/main/kotlin/com/devomer/previewgallery/model/ViewConfig.kt`:
+
+```kotlin
+package com.devomer.previewgallery.model
+
+/** Light or dark rendering for a comparison copy. Mapped to Android Studio's `NightMode` inside `render/`. */
+enum class ThemeOption(val label: String) { LIGHT("Light"), DARK("Dark") }
+
+/**
+ * One comparison copy's ephemeral view settings. Every axis is optional: `null` means "inherit whatever the
+ * preview's own `@Preview` says", which is exactly what a freshly added copy of Original looks like. Pure data —
+ * no Swing, no AS; the mapping to a render `Configuration` lives in `render/`.
+ */
+data class ViewConfig(
+    val device: DeviceOption? = null,
+    val theme: ThemeOption? = null,
+    val fontScale: Float? = null,
+) {
+    /** True when nothing is overridden — the copy renders exactly like Original. */
+    val isDefault: Boolean get() = device == null && theme == null && fontScale == null
+}
+
+/** The curated option lists offered in a copy's view-settings popup. Deliberately small (spec non-goal: no full
+ *  AS device catalog, no manual sizes). */
+object ViewSettingsCatalog {
+    val DEVICES: List<DeviceOption> = DeviceCatalog.DEFAULT
+    val FONT_SCALES: List<Float> = listOf(0.85f, 1.0f, 1.15f, 1.3f, 1.5f, 2.0f)
+}
+```
+
+`src/main/kotlin/com/devomer/previewgallery/ui/ViewTitle.kt`:
+
+```kotlin
+package com.devomer.previewgallery.ui
+
+import com.devomer.previewgallery.PreviewGalleryBundle
+import com.devomer.previewgallery.model.ViewConfig
+
+/**
+ * Pure tab-title derivation for the comparison-view strip: Original is named as such, an unconfigured copy is
+ * named by its tab position, and a configured copy summarises its own settings so tabs are self-describing while
+ * comparing. No Swing, no AS — unit-tested.
+ */
+object ViewTitle {
+
+    /** [ordinal] is the view's index in the strip (0 = Original), so the first copy reads "View 2". */
+    fun of(view: ComparisonView, ordinal: Int): String {
+        if (view.id == ComparisonViewList.ORIGINAL_ID) return PreviewGalleryBundle.message("render.originalView")
+        val config = view.config
+        if (config.isDefault) return PreviewGalleryBundle.message("render.viewNumbered", ordinal + 1)
+        return listOfNotNull(
+            config.device?.label,
+            config.theme?.label,
+            config.fontScale?.let { "${formatScale(it)}×" },
+        ).joinToString(" · ")
+    }
+
+    /** 1.0 -> "1", 2.0 -> "2", 1.15 -> "1.15": whole scales read better without a decimal tail. */
+    private fun formatScale(scale: Float): String =
+        if (scale == scale.toInt().toFloat()) scale.toInt().toString() else scale.toString()
+}
+```
+
+Add to `src/main/resources/messages/PreviewGalleryBundle.properties`:
+
+```
+render.viewNumbered=View {0}
+```
+
+- [ ] **Step 4: Migrate `ComparisonViewList`**
+
+In `src/main/kotlin/com/devomer/previewgallery/ui/ComparisonViewList.kt`: change `ComparisonView`'s payload from
+`device: DeviceOption?` to `config: ViewConfig`, seed Original with `ViewConfig()`, rename `add(device)` →
+`add(config: ViewConfig)` and `setDevice(id, device)` → `setConfig(id, config: ViewConfig)` (same guards:
+`index <= 0` returns, cap check unchanged, ids still monotonic and never reused). Update the KDoc so it describes
+settings rather than a device.
+
+- [ ] **Step 5: Run the tests, verify they pass**
+
+Run: `./gradlew test --no-configuration-cache`
+Expected: BUILD SUCCESSFUL. The suite gains ViewConfig 4 + ViewTitle 5 = **150** (141 + 9), with the migrated
+`ComparisonViewListTest` still at 7. Report the real number.
+
+- [ ] **Step 6: Commit**
+
+```bash
+git add src/main/kotlin/com/devomer/previewgallery/model/ViewConfig.kt src/test/kotlin/com/devomer/previewgallery/model/ViewConfigTest.kt src/main/kotlin/com/devomer/previewgallery/ui/ViewTitle.kt src/test/kotlin/com/devomer/previewgallery/ui/ViewTitleTest.kt src/main/kotlin/com/devomer/previewgallery/ui/ComparisonViewList.kt src/test/kotlin/com/devomer/previewgallery/ui/ComparisonViewListTest.kt src/main/resources/messages/PreviewGalleryBundle.properties
+git commit -m "[PG6-6] - Three-axis view config, tab titles, and view-list migration"
+```
+
+---
+
+### Task 7: Apply a `ViewConfig` in the render pipeline (AS-internal)
+
+**Goal:** Widen the committed device-only override to the three-axis `ViewConfig`: device, theme (night mode) and
+font scale, all guarded, plus the capability probe. Behaviour stays inert when the config is null/default.
+
+**Files:**
+- Modify: `src/main/kotlin/com/devomer/previewgallery/render/RenderPipeline.kt`
+- Modify: `src/main/kotlin/com/devomer/previewgallery/render/LiveRenderer.kt`
+- Modify: `src/main/kotlin/com/devomer/previewgallery/render/RenderModelResolver.kt`
+- Modify: `src/main/kotlin/com/devomer/previewgallery/render/RenderApiProbe.kt`
+
+**Interfaces:**
+- Consumes: `ViewConfig`, `ThemeOption`, `DeviceOption` (Task 6).
+- Produces:
+  - `RenderPipeline.renderVariant(entry: PreviewEntry, config: ViewConfig, onResult: (RenderOutcome) -> Unit)`
+  - `LiveRenderer.render(entry: PreviewEntry, viewConfig: ViewConfig? = null): RenderOutcome`
+  - `RenderApiProbe.isViewOverrideAvailable(): Boolean`
+
+- [ ] **Step 1: Replace the `DeviceOption?` parameter with `ViewConfig?`**
+
+Read `RenderPipeline.kt`, `LiveRenderer.kt` and `RenderModelResolver.kt` first. Change the committed
+`deviceOverride: DeviceOption?` parameter (threaded in `[PG6-3]`) to `viewConfig: ViewConfig?` everywhere it
+appears, including `renderVariant`, which now takes a non-null `ViewConfig`. Keep the plugin-owned types in every
+signature — no AS type may appear there.
+
+- [ ] **Step 2: Apply all three axes in `RenderModelResolver` (guarded)**
+
+Replace the committed device-only override block with one that applies each set axis, keeping the existing guard
+shape (re-throw `ProcessCanceledException`; degrade on `Exception` and `LinkageError`; a null/default config
+leaves today's path untouched):
+
+```kotlin
+// Ephemeral view override for comparison copies (PG6). Applied AFTER the config-aware @Preview values, so a
+// null/default config leaves today's behaviour untouched. Each axis is independent: an unresolved device or an
+// unsupported setter degrades to the config-aware value rather than failing the render.
+if (viewConfig != null && !viewConfig.isDefault) {
+    try {
+        viewConfig.device?.let { option ->
+            configurationManager.getDeviceById(option.id)?.let { configuration.setDevice(it, true) }
+        }
+        viewConfig.theme?.let { theme ->
+            configuration.setNightMode(
+                when (theme) {
+                    ThemeOption.DARK -> com.android.resources.NightMode.NIGHT
+                    ThemeOption.LIGHT -> com.android.resources.NightMode.NOTNIGHT
+                },
+            )
+        }
+        viewConfig.fontScale?.let { configuration.setFontScale(it) }
+    } catch (e: ProcessCanceledException) {
+        throw e
+    } catch (e: Exception) {
+        thisLogger().info("Could not apply the comparison view config; keeping the @Preview configuration", e)
+    } catch (e: LinkageError) {
+        thisLogger().info("View-override API is incompatible with this IDE build", e)
+    }
+}
+```
+
+Use the accessors already confirmed against the AS 253 jars: `ConfigurationManager.getDeviceById(String): Device?`,
+`Configuration.setDevice(Device, Boolean)`, `Configuration.setNightMode(com.android.resources.NightMode)`,
+`Configuration.setFontScale(Float)`.
+
+- [ ] **Step 3: Widen the probe**
+
+In `RenderApiProbe.kt`, rename the committed `isDeviceOverrideAvailable()` to `isViewOverrideAvailable()` and
+extend its required-member list so it also covers `setNightMode` and `setFontScale` alongside `getDeviceById` and
+`setDevice`, mirroring the existing probe style (any `Exception`/`LinkageError` → false).
+
+- [ ] **Step 4: Compile and run the suite**
+
+Run: `./gradlew compileKotlin --no-configuration-cache` — Expected: BUILD SUCCESSFUL.
+Run: `./gradlew test --no-configuration-cache` — Expected: **150 green** (no new tests; this is plumbing).
+Report the real number.
+
+- [ ] **Step 5: Commit**
+
+```bash
+git add src/main/kotlin/com/devomer/previewgallery/render/RenderPipeline.kt src/main/kotlin/com/devomer/previewgallery/render/LiveRenderer.kt src/main/kotlin/com/devomer/previewgallery/render/RenderModelResolver.kt src/main/kotlin/com/devomer/previewgallery/render/RenderApiProbe.kt
+git commit -m "[PG6-7] - Apply device, theme and font-scale overrides in the render pipeline"
+```
+
+---
+
+### Task 8: Copy tabs, titles, and context-aware Properties (GATE)
+
+**Goal:** Rework the tab strip to the copy model: ＋ Add view adds an unconfigured copy of Original, every tab
+carries a title, and Properties edits whatever is active — AS's picker on Original, the plugin's ephemeral
+view-settings popup on a copy. Settles V1 (do the axes render), V2 (which device ids resolve), V3 (memory).
+
+**Files:**
+- Create: `src/main/kotlin/com/devomer/previewgallery/ui/ViewSettingsPopup.kt`
+- Modify: `src/main/kotlin/com/devomer/previewgallery/ui/PreviewRenderPanel.kt`
+- Modify: `src/main/resources/messages/PreviewGalleryBundle.properties`
+
+**Interfaces:**
+- Consumes: `ComparisonViewList`/`ComparisonView` + `ViewTitle` (Task 6), `ViewConfig`/`ThemeOption`/
+  `ViewSettingsCatalog` (Task 6), `RenderPipeline.renderVariant(entry, config, onResult)` +
+  `RenderApiProbe.isViewOverrideAvailable()` (Task 7), `ZoomableRenderView`, `RenderOutcome.Success`.
+- Produces: `ViewSettingsPopup.show(anchor: JComponent, config: ViewConfig, onChange: (ViewConfig) -> Unit)`.
+
+- [ ] **Step 1: Write `ViewSettingsPopup`**
+
+A plugin-owned, AS-free popup (`JBPopupFactory.getInstance().createComponentPopupBuilder(...)`) holding three
+labelled rows — Device, Theme, Font scale — each a `ComboBox` whose first item is a "Default (@Preview)" entry
+representing `null`:
+
+- Device: `null` + `ViewSettingsCatalog.DEVICES`, rendered by `DeviceOption.label`.
+- Theme: `null` + `ThemeOption.values()`, rendered by `ThemeOption.label`.
+- Font scale: `null` + `ViewSettingsCatalog.FONT_SCALES`, rendered as `1.3×` (whole numbers without a decimal
+  tail, matching `ViewTitle`).
+
+Every change builds a new `ViewConfig` from the three current selections and calls `onChange(config)` — the popup
+never writes source and holds no AS type. Bundle keys: `render.viewSettings`, `render.viewSettings.device`,
+`render.viewSettings.theme`, `render.viewSettings.fontScale`, `render.viewSettings.default`.
+
+- [ ] **Step 2: ＋ Add view adds a copy**
+
+In `PreviewRenderPanel`, change the ＋ Add view action (added only when `deviceOverrideAvailable` — now fed by
+`RenderApiProbe.isViewOverrideAvailable()` — and a live Original image exists) so it adds an **unconfigured**
+copy and renders it:
+
+```kotlin
+val view = comparisonViews.add(ViewConfig()) ?: return   // null at the cap
+addExtraTab(view)
+renderInto(view)                                          // renders identically to Original
+```
+
+Remove the per-tab device `ComboBox` from the tab header — a tab header now carries only its **title** (from
+`ViewTitle.of(view, ordinal)`) and the close button. Refresh a tab's title whenever its config changes.
+
+- [ ] **Step 3: Context-aware Properties**
+
+Make the Properties action target the active tab:
+
+```kotlin
+override fun actionPerformed(e: AnActionEvent) {
+    val anchor = e.inputEvent?.component ?: actionsBar
+    val entry = currentEntry ?: return
+    val view = activeComparisonView()          // null (or ORIGINAL_ID) => Original
+    if (view == null || view.id == ComparisonViewList.ORIGINAL_ID) {
+        onProperties(entry, RelativePoint(anchor, Point(0, anchor.height)))   // today's AS picker
+    } else {
+        ViewSettingsPopup.show(anchor as JComponent, view.config) { updated ->
+            comparisonViews.setConfig(view.id, updated)
+            refreshTabTitle(view.id)
+            renderInto(comparisonViews.views.first { it.id == view.id })
+        }
+    }
+}
+```
+
+Add `activeComparisonView(): ComparisonView?` next to the existing `activeView()` helper (same
+`viewTabs.selectedComponent` → extra-id lookup, then `comparisonViews.views.firstOrNull { it.id == id }`).
+Rebuild the actions bar on tab change so the Properties action's gating matches the active tab: it is added when
+the active tab is Original and `propertiesAvailable`, or when the active tab is a copy and the view-override
+capability is available — never as a dead control.
+
+- [ ] **Step 4: Compile and run the suite**
+
+Run: `./gradlew compileKotlin --no-configuration-cache` — Expected: BUILD SUCCESSFUL.
+Run: `./gradlew test --no-configuration-cache` — Expected: **150 green** (UI is gate-verified, no new unit tests).
+Report the real number.
+
+- [ ] **Step 5: runIde gate (needs the user)**
+
+Do NOT commit before this passes. Start a fresh `runIde` (no other sandbox live), open a Compose project, select a
+preview, then verify:
+1. **Copy (AC1):** ＋ Add view adds a tab that looks identical to Original, with **no setting prompt**.
+2. **Copy settings (AC2/V1):** with the copy active, Properties opens the view-settings popup; changing device,
+   theme and font scale re-renders **only that tab**; Original and the `@Preview` **source** are unchanged.
+3. **Original Properties (AC3):** with Original active, Properties opens Android Studio's picker as before.
+4. **Titles (AC4):** `Original`, `View 2` before configuring, then the settings summary.
+5. **Several copies (AC5):** each with its own settings; per-tab zoom/pan/click-to-source; the toolbar's
+   zoom/fit/hand-tool/Save-PNG/Copy act on the **active** tab.
+6. **Ephemeral (AC6/V3):** selecting another preview drops every copy; closing a tab frees it; with no copies the
+   strip is hidden.
+7. **Degrade + failure (AC7):** ＋ Add view absent when the capability is unavailable; a failed copy render shows
+   a retry inside its own tab.
+8. **V2:** record which of Pixel 4a / 7 / Tablet / Fold actually render as that device.
+
+- [ ] **Step 6: Commit (after the gate passes)**
+
+```bash
+git add src/main/kotlin/com/devomer/previewgallery/ui/ViewSettingsPopup.kt src/main/kotlin/com/devomer/previewgallery/ui/PreviewRenderPanel.kt src/main/resources/messages/PreviewGalleryBundle.properties
+git commit -m "[PG6-8] - Copy tabs with titles and context-aware view settings"
+```
