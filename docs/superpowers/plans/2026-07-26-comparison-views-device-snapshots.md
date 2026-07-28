@@ -902,3 +902,378 @@ preview, then verify:
 git add src/main/kotlin/com/devomer/previewgallery/ui/ViewSettingsPopup.kt src/main/kotlin/com/devomer/previewgallery/ui/PreviewRenderPanel.kt src/main/resources/messages/PreviewGalleryBundle.properties
 git commit -m "[PG6-8] - Copy tabs with titles and context-aware view settings"
 ```
+
+---
+
+## Revision 2 (2026-07-27): the real picker, over an in-memory model
+
+The PG6-8 gate showed the copy tabs working (add, titles, per-tab render, toolbar) but the user rejected the
+reduced three-axis popup: a copy must offer **the same dialog with the same properties as Original**, held in
+memory per tab. Two feasibility studies against the AS 253 jars settled how:
+
+- **The picker's source-writing lives in its property items, not its UI.** `PsiPickerManager.show(Point, String,
+  PsiPropertiesModel, Balloon.Position)` takes the **abstract** `PsiPropertiesModel`, and the whole chain
+  (`createPickerPanel` → `PsiPropertyView` → `PropertiesPanel`) touches no PSI. Subclass `PsiPropertiesModel`
+  (public no-arg constructor; implement `properties`, `inspectorBuilder`, `tracker`), fill it with a subclass of
+  the **open** `MemoryParameterPropertyItem` that overrides `setValue` to notify us (its own `setValue` is a bare
+  field write), reuse AS's `PreviewPropertiesInspectorBuilder(EnumSupportValuesProvider)` for the identical
+  layout, and get the dropdown values from the public `PreviewPickerValuesProvider.createPreviewValuesProvider(
+  module, file)`.
+- **Applying the overrides:** derive a preview element with
+  `ComposePreviewElementInstance.createDerivedInstance(displaySettings, configuration)` and let AS's own
+  `applyTo(configuration)` — already used by `RenderModelResolver.applyConfigAware` — do the mapping. This covers
+  every property including the ones no `Configuration` setter reaches (`showBackground`/`backgroundColor`/
+  `widthDp`/`heightDp` travel through the bridge XML that AS's `toPreviewXml()` writes).
+- **Trap (spec V4):** `PreviewConfiguration.Companion.cleanAndGet(...)` treats `null` as "reset to the layoutlib
+  sentinel" (`UNDEFINED_API_LEVEL = -1`, `UNDEFINED_DIMENSION = -1`, `NO_DEVICE_SPEC = ""`, `UNSET_UI_MODE_VALUE
+  = 0`, `NO_WALLPAPER_SELECTED = -1`), **not** "keep the current value". Every unedited axis must be passed
+  through explicitly from the base configuration.
+
+**Tasks 6–8's `ViewConfig` (device/theme/fontScale) is superseded by `ViewOverride`** below; the interim
+`ViewSettingsPopup` and the `applyAxis` block are removed with it, so there is only ever one override mechanism.
+
+---
+
+### Task 9: `ViewOverride` — the full-property override model (TDD)
+
+**Goal:** Replace the three-axis `ViewConfig` with a plugin-owned, name→value override carrying whatever the
+picker offers. Pure, no Swing, no AS.
+
+**Files:**
+- Create: `src/main/kotlin/com/devomer/previewgallery/model/ViewOverride.kt`
+- Create: `src/test/kotlin/com/devomer/previewgallery/model/ViewOverrideTest.kt`
+- Modify: `src/main/kotlin/com/devomer/previewgallery/ui/ComparisonViewList.kt` (payload `ViewConfig` → `ViewOverride`)
+- Modify: `src/test/kotlin/com/devomer/previewgallery/ui/ComparisonViewListTest.kt`
+- Modify: `src/main/kotlin/com/devomer/previewgallery/ui/ViewTitle.kt` (summarise an override)
+- Modify: `src/test/kotlin/com/devomer/previewgallery/ui/ViewTitleTest.kt`
+- Delete: `src/main/kotlin/com/devomer/previewgallery/model/ViewConfig.kt`, `src/test/kotlin/com/devomer/previewgallery/model/ViewConfigTest.kt`,
+  `src/main/kotlin/com/devomer/previewgallery/model/DeviceOption.kt`, `src/test/kotlin/com/devomer/previewgallery/model/DeviceCatalogTest.kt`,
+  `src/main/kotlin/com/devomer/previewgallery/ui/ViewSettingsPopup.kt`
+
+**Interfaces:**
+- Produces:
+  - `data class ViewOverride(val values: Map<String, String> = emptyMap())` with `val isDefault: Boolean` and
+    `fun with(name: String, value: String): ViewOverride`
+  - `ComparisonView(val id: Int, val override: ViewOverride)`; `ComparisonViewList.add(override)`,
+    `setOverride(id, override)`
+  - `ViewTitle.of(view: ComparisonView, ordinal: Int): String`
+
+- [ ] **Step 1: Write the failing tests**
+
+`src/test/kotlin/com/devomer/previewgallery/model/ViewOverrideTest.kt`:
+
+```kotlin
+package com.devomer.previewgallery.model
+
+import org.junit.Assert.assertEquals
+import org.junit.Assert.assertFalse
+import org.junit.Assert.assertTrue
+import org.junit.Test
+
+class ViewOverrideTest {
+
+    @Test fun `an empty override is default`() {
+        assertTrue(ViewOverride().isDefault)
+    }
+
+    @Test fun `any value makes it non-default`() {
+        assertFalse(ViewOverride(mapOf("device" to "id:pixel_7")).isDefault)
+    }
+
+    @Test fun `with adds a value without mutating the original`() {
+        val base = ViewOverride()
+        val next = base.with("fontScale", "1.3")
+        assertTrue(base.isDefault)
+        assertEquals(mapOf("fontScale" to "1.3"), next.values)
+    }
+
+    @Test fun `with replaces an existing value`() {
+        val override = ViewOverride().with("fontScale", "1.3").with("fontScale", "2.0")
+        assertEquals(mapOf("fontScale" to "2.0"), override.values)
+    }
+
+    @Test fun `with keeps the other values`() {
+        val override = ViewOverride().with("device", "id:pixel_7").with("fontScale", "1.3")
+        assertEquals(2, override.values.size)
+        assertEquals("id:pixel_7", override.values["device"])
+    }
+}
+```
+
+Rewrite `ViewTitleTest` for the new payload — same three behaviours, override-shaped:
+
+```kotlin
+package com.devomer.previewgallery.ui
+
+import com.devomer.previewgallery.model.ViewOverride
+import org.junit.Assert.assertEquals
+import org.junit.Test
+
+class ViewTitleTest {
+
+    @Test fun `the original view is titled Original`() {
+        assertEquals("Original", ViewTitle.of(ComparisonView(ComparisonViewList.ORIGINAL_ID, ViewOverride()), 0))
+    }
+
+    @Test fun `an untouched copy is titled by its tab position`() {
+        assertEquals("View 2", ViewTitle.of(ComparisonView(1, ViewOverride()), 1))
+        assertEquals("View 3", ViewTitle.of(ComparisonView(2, ViewOverride()), 2))
+    }
+
+    @Test fun `a single override is summarised as name and value`() {
+        val view = ComparisonView(1, ViewOverride(mapOf("fontScale" to "1.3")))
+        assertEquals("fontScale 1.3", ViewTitle.of(view, 1))
+    }
+
+    @Test fun `several overrides are joined in insertion order`() {
+        val override = ViewOverride().with("device", "Pixel 7").with("fontScale", "1.3")
+        assertEquals("device Pixel 7 · fontScale 1.3", ViewTitle.of(ComparisonView(1, override), 1))
+    }
+}
+```
+
+And migrate `ComparisonViewListTest`: every `ViewConfig(...)` becomes a `ViewOverride(...)`, `add(config)` →
+`add(override)`, `setConfig(id, ...)` → `setOverride(id, ...)`, assertions read `views[i].override`. Keep all
+seven behaviours (start state, add, cap, close, setOverride-ignores-Original, clearExtras, non-reused ids).
+
+- [ ] **Step 2: Run the tests, verify they fail**
+
+Run: `./gradlew test --no-configuration-cache --tests "com.devomer.previewgallery.model.ViewOverrideTest" --tests "com.devomer.previewgallery.ui.ViewTitleTest"`
+Expected: FAIL — `ViewOverride` unresolved.
+
+- [ ] **Step 3: Write `ViewOverride`**
+
+`src/main/kotlin/com/devomer/previewgallery/model/ViewOverride.kt`:
+
+```kotlin
+package com.devomer.previewgallery.model
+
+/**
+ * One comparison copy's ephemeral property overrides, keyed by Android Studio's own `@Preview` picker property
+ * names ("device", "apiLevel", "locale", "fontScale", "uiMode", "showSystemUi", "showBackground",
+ * "backgroundColor", "widthDp", "heightDp", "wallpaper"). Values are the picker's own strings; `render/` maps
+ * them onto AS types, so no AS type ever reaches `model/` or `ui/`. An empty map is an untouched copy of
+ * Original. Insertion order is preserved so a tab title reads in the order the user edited.
+ */
+data class ViewOverride(val values: Map<String, String> = emptyMap()) {
+
+    /** True when nothing is overridden — the copy renders exactly like Original. */
+    val isDefault: Boolean get() = values.isEmpty()
+
+    /** This override plus [name] = [value]; replaces an existing entry, keeps the rest, never mutates this one. */
+    fun with(name: String, value: String): ViewOverride =
+        ViewOverride(LinkedHashMap(values).apply { put(name, value) })
+}
+```
+
+- [ ] **Step 4: Migrate `ComparisonViewList` and `ViewTitle`**
+
+In `ComparisonViewList.kt`: `ComparisonView`'s payload becomes `override: ViewOverride`, Original is seeded with
+`ViewOverride()`, `add(override: ViewOverride)` and `setOverride(id, override: ViewOverride)` replace their
+config-named counterparts; guards (`index <= 0`, the cap check, monotonic `nextId`) are unchanged.
+
+In `ViewTitle.kt`, the summary comes from the override's entries instead of three typed fields:
+
+```kotlin
+    fun of(view: ComparisonView, ordinal: Int): String {
+        if (view.id == ComparisonViewList.ORIGINAL_ID) return PreviewGalleryBundle.message("render.originalView")
+        val override = view.override
+        if (override.isDefault) return PreviewGalleryBundle.message("render.viewNumbered", ordinal + 1)
+        return override.values.entries.joinToString(" · ") { "${it.key} ${it.value}" }
+    }
+```
+
+Delete `ViewConfig.kt`, `ViewConfigTest.kt`, `DeviceOption.kt`, `DeviceCatalogTest.kt` and `ViewSettingsPopup.kt`
+(the interim three-axis model and popup), and drop their references from `PreviewRenderPanel` — the panel's
+Properties action now calls the bridge added in Task 10; until that task lands, have the copy branch do nothing
+(a one-line TODO-free no-op is not acceptable, so instead keep the panel compiling by leaving the copy branch
+calling `onRequestVariant` with the unchanged override, i.e. a plain re-render).
+
+- [ ] **Step 5: Run the suite**
+
+Run: `./gradlew test --no-configuration-cache`
+Expected: BUILD SUCCESSFUL. The suite loses ViewConfig 4 + DeviceCatalog 3 and gains ViewOverride 5, with
+`ViewTitleTest` back to 4 and `ComparisonViewListTest` at 7 — report the real number.
+
+- [ ] **Step 6: Commit**
+
+```bash
+git add -A src/main/kotlin/com/devomer/previewgallery/model src/main/kotlin/com/devomer/previewgallery/ui src/test/kotlin/com/devomer/previewgallery
+git commit -m "[PG6-9] - Replace the three-axis view config with a full property override"
+```
+
+---
+
+### Task 10: `EphemeralPickerBridge` + full override application (AS-internal)
+
+**Goal:** Show AS's own picker over an in-memory model for a copy, and apply the resulting overrides to that
+copy's render by deriving a preview element.
+
+**Files:**
+- Create: `src/main/kotlin/com/devomer/previewgallery/render/EphemeralPickerBridge.kt`
+- Modify: `src/main/kotlin/com/devomer/previewgallery/render/RenderModelResolver.kt`
+- Modify: `src/main/kotlin/com/devomer/previewgallery/render/LiveRenderer.kt`, `RenderPipeline.kt` (`ViewConfig` → `ViewOverride`)
+- Modify: `src/main/kotlin/com/devomer/previewgallery/render/RenderApiProbe.kt`
+- Modify: `src/main/kotlin/com/devomer/previewgallery/ui/PreviewRenderPanel.kt`, `PreviewGalleryPanel.kt` (wire the bridge)
+
+**Interfaces:**
+- Consumes: `ViewOverride` (Task 9).
+- Produces: `EphemeralPickerBridge.showEphemeralPicker(entry, override, at, onEdit): Boolean`,
+  `RenderApiProbe.isViewOverrideAvailable()`.
+
+- [ ] **Step 1: Write `EphemeralPickerBridge`**
+
+Model it on the existing `PreviewPickerBridge.kt` — read that file first; it already carries the
+`@file:Suppress("INVISIBLE_REFERENCE", "INVISIBLE_MEMBER")` header these Kotlin-`internal` AS types need, the
+off-EDT + read-action discipline, and the `Exception`/`LinkageError` guards. The new bridge:
+
+1. Resolves the module + file for the entry (same lookup the existing bridge uses).
+2. `val enumProvider = PreviewPickerValuesProvider.createPreviewValuesProvider(module, entry.file)`.
+3. Builds one notifying item per property, seeded from the entry's current `@Preview` values merged with
+   [override]:
+   ```kotlin
+   private class NotifyingItem(
+       name: String,
+       defaultValue: String,
+       private val onEdit: (String, String) -> Unit,
+   ) : MemoryParameterPropertyItem(name, defaultValue, { null }) {
+       override fun setValue(value: String?) {
+           super.setValue(value)
+           if (value != null) onEdit(name, value)
+       }
+   }
+   ```
+   (Confirm `MemoryParameterPropertyItem`'s exact constructor and `setValue` signature with `javap` first; the
+   validator parameter's type is `Function1<String, Pair<EditingErrorCategory, String>>`.)
+4. Builds the model:
+   ```kotlin
+   private class EphemeralModel(
+       private val items: List<PsiPropertyItem>,
+       private val enumProvider: EnumSupportValuesProvider,
+   ) : PsiPropertiesModel() {
+       override fun getProperties(): PropertiesTable<PsiPropertyItem> {
+           val table = HashBasedTable.create<String, String, PsiPropertyItem>()
+           items.forEach { table.put(it.namespace, it.name, it) }
+           return PropertiesTable.create(table)
+       }
+       override fun getInspectorBuilder(): PsiPropertiesInspectorBuilder =
+           PreviewPropertiesInspectorBuilder(enumProvider)
+       override fun getTracker(): ComposePickerTracker = GalleryPickerTracker {}
+   }
+   ```
+5. `PsiPickerManager.show(at.screenPoint, entry.indexed.displayName, model, Balloon.Position.below)` on the EDT,
+   after the model is built off the EDT — mirroring `PreviewPickerBridge`'s `buildModelAndShow`/`showPopup` split
+   and its `at.component.isShowing` re-check.
+
+Every AS-internal call stays inside the existing guard shape (re-throw `ProcessCanceledException`, then degrade
+on `Exception` and `LinkageError`, logging once).
+
+- [ ] **Step 2: Apply the override in `RenderModelResolver`**
+
+Replace the `applyAxis` three-axis block with a derived-element path. After the config-aware element is resolved
+(`configAware ?: buildDefaultPreviewElement(entry)`), when the override is non-default:
+
+```kotlin
+val base = /* the resolved element */
+val derived = runCatching {
+    val merged = mergeConfiguration(base.configuration, override)          // pure helper, Step 3
+    val display = base.displaySettings.copy(
+        showDecoration = override.values["showSystemUi"]?.toBooleanStrictOrNull()
+            ?: base.displaySettings.showDecoration,
+    )
+    base.createDerivedInstance(display, merged)
+}.getOrNull() ?: base
+```
+
+then run the existing `applyTo(configuration)` path against `derived` instead of `base`. Guard exactly as the
+surrounding code does (PCE re-thrown, `Exception`/`LinkageError` degrade to `base`). **Spec V4:** never pass
+`null` into `PreviewConfiguration.Companion.cleanAndGet(...)` for an axis the user did not edit — pass the base
+configuration's current value through.
+
+- [ ] **Step 3: The merge helper is pure and unit-tested**
+
+Put the name→field merge in a plugin-owned object so V4's trap is covered by tests rather than by a gate:
+
+`src/main/kotlin/com/devomer/previewgallery/render/OverrideMerge.kt`
+
+```kotlin
+package com.devomer.previewgallery.render
+
+import com.devomer.previewgallery.model.ViewOverride
+
+/** The base-preserving merge behind the render override (spec V4): for every axis the user did not edit, the
+ *  base value must be passed through explicitly — Android Studio's `cleanAndGet` treats a null as "reset to the
+ *  layoutlib sentinel", not "keep". Pure and unit-tested; the AS types are assembled by the caller. */
+data class MergedConfig(
+    val apiLevel: Int, val width: Int, val height: Int, val locale: String,
+    val fontScale: Float, val uiMode: Int, val deviceSpec: String, val wallpaper: Int,
+)
+
+object OverrideMerge {
+    fun merge(base: MergedConfig, override: ViewOverride): MergedConfig = MergedConfig(
+        apiLevel = override.values["apiLevel"]?.toIntOrNull() ?: base.apiLevel,
+        width = override.values["widthDp"]?.toIntOrNull() ?: base.width,
+        height = override.values["heightDp"]?.toIntOrNull() ?: base.height,
+        locale = override.values["locale"] ?: base.locale,
+        fontScale = override.values["fontScale"]?.toFloatOrNull() ?: base.fontScale,
+        uiMode = override.values["uiMode"]?.toIntOrNull() ?: base.uiMode,
+        deviceSpec = override.values["device"] ?: base.deviceSpec,
+        wallpaper = override.values["wallpaper"]?.toIntOrNull() ?: base.wallpaper,
+    )
+}
+```
+
+with `src/test/kotlin/com/devomer/previewgallery/render/OverrideMergeTest.kt` asserting: an empty override
+returns the base unchanged; each axis overrides only itself; an unparseable value falls back to the base value
+(never to a sentinel).
+
+- [ ] **Step 4: Probe + wiring**
+
+Extend `RenderApiProbe.isViewOverrideAvailable()` to also require `createDerivedInstance` and the picker-model
+members. In `PreviewRenderPanel`, the copy branch of `PropertiesAction` calls a new
+`var onEphemeralProperties: (PreviewEntry, ViewOverride, RelativePoint, (String, String) -> Unit) -> Unit`
+(wired in `PreviewGalleryPanel` to `EphemeralPickerBridge.showEphemeralPicker`), and each `onEdit` does
+`comparisonViews.setOverride(view.id, view.override.with(name, value))`, refreshes the tab titles, and
+re-renders that view.
+
+- [ ] **Step 5: Compile and run the suite**
+
+Run: `./gradlew compileKotlin --no-configuration-cache` — Expected: BUILD SUCCESSFUL.
+Run: `./gradlew test --no-configuration-cache` — Expected: the Task 9 total plus `OverrideMergeTest`. Report it.
+
+- [ ] **Step 6: runIde gate (needs the user)**
+
+Do NOT commit before this passes. Fresh `runIde`, open a Compose project, select a preview, then:
+1. **Same dialog (AC2):** ＋ Add view, then Properties on the copy → **Android Studio's own picker**, with the
+   same properties Original shows, seeded from the copy's values.
+2. Change device, apiLevel, uiMode, fontScale, showBackground/backgroundColor, widthDp/heightDp → **only that
+   tab** re-renders; Original and the other tabs are untouched; the `@Preview` **source file is unmodified**
+   (check the editor / VCS diff).
+3. Each copy keeps its own values; switching tabs switches between the configured renders (AC2's memory clause).
+4. Properties on **Original** still opens the picker that edits source (AC3).
+5. Titles track the overrides (AC4); ephemeral clearing on preview switch still holds (AC6).
+6. Record which properties visibly take effect (V1) and whether the dialog's layout matches Original's (V2).
+
+- [ ] **Step 7: Commit (after the gate passes)**
+
+```bash
+git add src/main/kotlin/com/devomer/previewgallery/render src/main/kotlin/com/devomer/previewgallery/ui src/test/kotlin/com/devomer/previewgallery/render
+git commit -m "[PG6-10] - Ephemeral Android Studio picker and full override rendering for comparison copies"
+```
+
+---
+
+### Task 11: Changelog & final verification
+
+**Files:** Modify `CHANGELOG.md`
+
+- [ ] **Step 1:** `./gradlew test --no-configuration-cache` — report the real total, no skips.
+- [ ] **Step 2:** Confirm AC1–AC8 from the spec in `runIde` (needs the user).
+- [ ] **Step 3:** Add an "Added — comparison views: open extra copies of a preview in tabs and configure each one
+  with Android Studio's own `@Preview` picker, in memory, without touching the source" entry under `### Added`,
+  then:
+
+```bash
+git add CHANGELOG.md
+git commit -m "[PG6-11] - Changelog for comparison views"
+```

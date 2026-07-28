@@ -31,9 +31,9 @@ Let a user see the *same* preview under more than one set of view settings at on
 |---|----------|-----------|
 | D1 | Add a **tab strip** to `PreviewRenderPanel`'s `LIVE` state. Tab 0 = **Original** (the preview at its own `@Preview` config — today's render, untouched). Extra tabs = ephemeral copies. With only Original present, the strip is **hidden** so the panel looks exactly as today. | Opt-in by construction: invisible until the user adds a view. Original is a stable baseline. |
 | D2 | **＋ Add view** creates a tab that is an exact **copy of Original** — same `PreviewEntry`, empty view settings, so it renders identically. **No setting is required at add time.** | The user's model: "her yeni sekme orijinalin bir kopyası olsun… cihaz seçmek zorunlu olmasın." Adding a view is one click; configuring it is a separate, optional step. |
-| D3 | **Context-aware Properties.** The existing Properties action targets whatever tab is active: on **Original** it opens Android Studio's `@Preview` picker exactly as today (source-editing); on a **copy** it opens the plugin's own ephemeral **view settings** popup, which never touches source. | The user asked to change a copy's look "properties butonuna basıp." AS's picker cannot serve a copy — see D4 — so the same button dispatches to the right editor for what you are looking at. |
-| D4 | **AS's picker is source-editing, so copies get a plugin-owned settings popup.** Verified from the AS 253 jars: `PsiCallParameterPropertyItem.setValue` → `writeNewValue` → `WriteCommandAction.runWriteCommandAction(...)` + `KtPsiFactory.createArgument`, i.e. the picker rewrites the `@Preview` annotation in source. Routing a copy's edits through it would mutate the shared annotation and change **every** tab including Original, defeating comparison. (`MemoryParameterPropertyItem` exists but is a single in-memory property item, not a usable model; driving AS's picker UI ephemerally would mean reimplementing `PsiCallPropertiesModel` + its enum/inspector providers — deep, fragile AS-internal coupling.) | Evidence-based: the whole feature depends on a copy's settings being ephemeral. |
-| D5 | **View settings axes (v1): device, theme, font scale** — each optional, `null` meaning "inherit the `@Preview`'s own value." Confirmed settable on AS's `com.android.tools.configurations.Configuration`: `setDevice(Device, boolean)`, `setNightMode(NightMode)`, `setFontScale(float)`. Devices come from a small **curated** list; theme is Light/Dark; font scale is a curated ladder. | The three highest-value axes for design QA, all reachable through one already-owned `Configuration` seam. Curated lists keep the popup small and the render count bounded. |
+| D3 | **Context-aware Properties.** The existing Properties action targets whatever tab is active: on **Original** it opens Android Studio's `@Preview` picker backed by the annotation PSI, exactly as today (edits write source); on a **copy** it opens **the same picker UI** backed by an *in-memory* model, so edits change only that tab. | The user asked for the *same* dialog with the *same* configs on every copy, held in memory and comparable by switching tabs — not a reduced plugin-drawn popup. |
+| D4 | **The picker's source-writing lives in its PSI model, not its UI — so we drive the same UI with an in-memory model.** Verified in the AS 253 jars: source writes come from `PsiCallParameterPropertyItem.setValue` → `writeNewValue` → `WriteCommandAction.runWriteCommandAction(...)` + `KtPsiFactory.createArgument`, i.e. from the *property items*, while `PsiPickerManager.show(Point, String, PsiPropertiesModel, Balloon.Position)` takes the **abstract** `PsiPropertiesModel` and its whole call chain (`createPickerPanel` → `PsiPropertyView` → `PropertiesPanel`) touches no PSI. So a copy's picker is the same dialog built from: our own `PsiPropertiesModel` subclass (public no-arg constructor; three members to implement — `properties`, `inspectorBuilder`, `tracker`), items that are a subclass of the **open** `MemoryParameterPropertyItem` overriding `setValue` to notify us (its own `setValue` is a bare field write that notifies nothing), AS's own `PreviewPropertiesInspectorBuilder(EnumSupportValuesProvider)` for an identical layout, and the dropdown values from the public factory `PreviewPickerValuesProvider.createPreviewValuesProvider(module, file)`. | Gives the user the real dialog with every config, while keeping a copy's edits ephemeral. Evidence-based; the earlier assumption that this needed reimplementing `PsiCallPropertiesModel` was wrong — that class is only one of three model layers, and the picker accepts the abstract base. |
+| D5 | **A copy's override carries the full `@Preview` property set**, not a curated three-axis subset: device/deviceSpec, apiLevel, locale, fontScale, uiMode, showSystemUi, showBackground, backgroundColor, widthDp, heightDp, wallpaper (plus the hardware sub-rows the picker derives from the device spec). It is applied by deriving a preview element — `ComposePreviewElementInstance.createDerivedInstance(displaySettings, configuration)` — and letting AS's own `applyTo(configuration)` (already used by `RenderModelResolver.applyConfigAware`) do the work. This **replaces** the interim three-axis `ViewConfig`/`setDevice`+`setNightMode`+`setFontScale` path. | One override mechanism instead of two competing ones (AS's packed `uiMode` vs our `NightMode` would otherwise need a precedence rule), and it reuses AS's own mapping for every axis — including the ones we cannot set on a `Configuration` at all (`showBackground`/`backgroundColor`/`widthDp`/`heightDp` reach the render through the bridge XML that AS's `toPreviewXml()` generates). |
 | D6 | **Tab titles.** A copy's tab is titled `View N` while its settings are empty, and otherwise summarises them (e.g. `Pixel 7 · Dark · 1.3×`). Original's tab is titled `Original`. | The user asked for a title on the tab; deriving it from the settings makes each tab self-describing during comparison. |
 | D7 | **Ephemeral lifecycle.** Copies and their cached image/viewTree exist only while the current `PreviewEntry` is selected. Selecting a **different** preview discards every copy (frees memory) and resets to Original alone; closing a tab frees that view's image; a **max copies cap** bounds memory. Another state update for the *same* entry (RENDERING→LIVE, a picker-triggered re-render) leaves copies alone. | Matches "farklı previewe geçildiği anda bellek gider." Bounded + ephemeral, with no unbounded cache. |
 | D8 | Render a copy by **reusing** the pipeline through a dedicated `renderVariant` entry point that takes a plugin-owned `ViewConfig` (*not* an AS type). It runs **off the EDT**, delivers on the EDT, and never touches the pipeline's debounced selection `generation`, so Original is unaffected. Only the **active** tab renders eagerly; an inactive tab renders on first activation, then caches. | Keeps one render in flight per tab, reuses the proven pipeline, and keeps AS types out of `ui/`. |
@@ -46,51 +46,51 @@ Let a user see the *same* preview under more than one set of view settings at on
 
 ```kotlin
 // model/ — pure, unit-tested, no Swing/AS
-data class DeviceOption(val id: String, val label: String)     // id maps to an AS Device in render/
-enum class ThemeOption(val label: String) { LIGHT("Light"), DARK("Dark") }
-
-/** One comparison copy's ephemeral view settings. Every field null = "inherit the @Preview's own value",
- *  which is exactly what a freshly added copy of Original looks like. */
-data class ViewConfig(
-    val device: DeviceOption? = null,
-    val theme: ThemeOption? = null,
-    val fontScale: Float? = null,
-) {
-    val isDefault: Boolean get() = device == null && theme == null && fontScale == null
-}
-
-object ViewSettingsCatalog {
-    val DEVICES: List<DeviceOption>      // curated: Pixel 4a / Pixel 7 / Pixel Tablet / Pixel Fold
-    val FONT_SCALES: List<Float>         // curated ladder: 0.85, 1.0, 1.15, 1.3, 1.5, 2.0
+/** One comparison copy's ephemeral overrides, keyed by the picker's own property names ("device", "apiLevel",
+ *  "fontScale", "uiMode", "showSystemUi", "showBackground", "backgroundColor", "widthDp", "heightDp", "locale",
+ *  "wallpaper"). Empty = an untouched copy of Original. Plugin-owned strings — the picker produces strings and
+ *  `render/` maps them onto AS types, so no AS type ever reaches `model/` or `ui/`. */
+data class ViewOverride(val values: Map<String, String> = emptyMap()) {
+    val isDefault: Boolean get() = values.isEmpty()
+    fun with(name: String, value: String): ViewOverride
 }
 
 // ui/ — ephemeral comparison-view state + title (no Swing/AS)
-data class ComparisonView(val id: Int, val config: ViewConfig)   // Original = ORIGINAL_ID with a default config
+data class ComparisonView(val id: Int, val override: ViewOverride)  // Original = ORIGINAL_ID, empty override
 class ComparisonViewList {
     val views: List<ComparisonView>
-    fun add(config: ViewConfig): ComparisonView?   // null at the cap
-    fun close(id: Int)                             // no-op for Original
-    fun setConfig(id: Int, config: ViewConfig)     // ignores Original
-    fun clearExtras()                              // on preview switch → Original only
+    fun add(override: ViewOverride): ComparisonView?    // null at the cap
+    fun close(id: Int)                                  // no-op for Original
+    fun setOverride(id: Int, override: ViewOverride)    // ignores Original
+    fun clearExtras()                                   // on preview switch → Original only
 }
 object ViewTitle {
-    fun of(view: ComparisonView, ordinal: Int): String   // "Original" / "View 2" / "Pixel 7 · Dark · 1.3×"
+    fun of(view: ComparisonView, ordinal: Int): String   // "Original" / "View 2" / "Pixel 7 · uiMode 32 · 1.3×"
 }
 
-// render/ — the override on the existing pipeline (AS-internal mapping stays here)
-// RenderPipeline.renderVariant(entry: PreviewEntry, config: ViewConfig, onResult: (RenderOutcome) -> Unit)
-// LiveRenderer.render(entry: PreviewEntry, config: ViewConfig? = null): RenderOutcome
-// RenderModelResolver: ViewConfig → Configuration.setDevice / setNightMode / setFontScale; null → unchanged.
-// RenderApiProbe.isViewOverrideAvailable(): Boolean
+// render/ — AS-internal: the ephemeral picker and the override application both live here
+class EphemeralPickerBridge(project: Project) {          // sibling of the existing PreviewPickerBridge
+    fun isAvailable(): Boolean
+    /** Shows AS's own picker UI over an in-memory model seeded from [entry]'s current @Preview values plus
+     *  [override]; every edit calls [onEdit] with the property name and its new value. Writes no source. */
+    fun showEphemeralPicker(entry: PreviewEntry, override: ViewOverride, at: RelativePoint,
+                            onEdit: (String, String) -> Unit): Boolean
+}
+// RenderPipeline.renderVariant(entry: PreviewEntry, override: ViewOverride, onResult: (RenderOutcome) -> Unit)
+// LiveRenderer.render(entry: PreviewEntry, override: ViewOverride? = null): RenderOutcome
+// RenderModelResolver: ViewOverride → PreviewConfiguration/PreviewDisplaySettings →
+//     ComposePreviewElementInstance.createDerivedInstance(displaySettings, configuration) → existing applyTo path.
+// RenderApiProbe.isViewOverrideAvailable(): Boolean   // now also covers createDerivedInstance + the picker model
 ```
 
 ## Unknowns (discovery gates — settled in `runIde`, like every prior AS-internal task)
 
 | # | Unknown | Where it bites | Degrade |
 |---|---------|----------------|---------|
-| V1 | Whether applying device / night mode / font scale to the `Configuration` actually re-renders that way on our layoutlib path (the setters exist; the render effect is unverified). | D5/D9 — the feature's engine. | Probe fails → hide ＋ Add view; panel is exactly today's. An axis that does not take effect degrades to Original's look. |
-| V2 | Which curated device ids resolve on this build (`pixel_4a`, `pixel_7`, `pixel_tablet`, `pixel_fold`). | D5 curated list. | Unresolved id → that device renders unchanged; the gate records which resolve. |
+| V1 | Whether a derived element (`createDerivedInstance` + AS's `applyTo`) actually re-renders with each overridden property on our layoutlib path — the seams are verified, the render effect is not. | D5 — the feature's engine. | Probe fails → hide ＋ Add view; panel is exactly today's. A property that does not take effect degrades to Original's look, never a crash. |
+| V2 | Whether AS's picker UI renders correctly over our in-memory model — the layout comes from `PreviewPropertiesInspectorBuilder`, whose grouping keys are hardcoded strings, and whether the item names we seed match what it expects (a mismatch is documented as cosmetic: the row falls into the default section). | D4 — the dialog itself. | A missing/renamed member throws `LinkageError`/`NoSuchMethodError` at the guarded call site → the copy-side Properties degrades (no dialog) while Original's picker is untouched. |
 | V3 | Memory/latency of holding N rendered images + re-rendering per tab. | D7 cap + lazy render. | Cap the copies; render lazily; free on switch/close. |
+| V4 | `PreviewConfiguration.Companion.cleanAndGet(...)` treats `null` as "reset to the layoutlib sentinel", **not** "keep the current value", so every unedited axis must be passed through explicitly from the base configuration. | D5 — a wrong merge silently resets properties the user never touched. | Merge helper is pure and unit-tested against the base-preserving contract before it reaches the render. |
 
 ## Architecture
 
@@ -124,15 +124,15 @@ PreviewRenderPanel (LIVE)
 
 | Unit | Responsibility | AS-internal? |
 |------|----------------|--------------|
-| `DeviceOption` / `ThemeOption` / `ViewConfig` / `ViewSettingsCatalog` (model/) | Plugin-owned view-settings model + curated option lists | No |
-| `ComparisonView` / `ComparisonViewList` (ui/) | Ephemeral tab state: add/close/setConfig/clearExtras, Original-at-0 + max cap | No |
-| `ViewTitle` (ui/) | Pure tab-title derivation from a view's config and ordinal | No |
-| `ViewSettingsPopup` (ui/) | The ephemeral settings editor for a copy (device / theme / font scale); never writes source | No |
+| `ViewOverride` (model/) | A copy's ephemeral property overrides as plugin-owned name→value strings | No |
+| `ComparisonView` / `ComparisonViewList` (ui/) | Ephemeral tab state: add/close/setOverride/clearExtras, Original-at-0 + max cap | No |
+| `ViewTitle` (ui/) | Pure tab-title derivation from a view's override and ordinal | No |
+| `EphemeralPickerBridge` (render/) | AS's own picker UI over an in-memory `PsiPropertiesModel`; reports each edit, writes no source | **Yes** |
 | `PreviewRenderPanel` (ui/) | Tab strip, one `ZoomableRenderView` per view, ＋Add view, context-aware Properties, active-tab toolbar targeting, clear-on-selection-change | No |
 | `ZoomableRenderView` (ui/) | Reused per tab, unchanged | No |
-| `RenderPipeline.renderVariant` (render/) | Off-EDT per-tab render with a `ViewConfig`, EDT delivery, independent of the selection generation | Yes (impl) |
-| `RenderModelResolver` (render/) | Apply `ViewConfig` to the `Configuration` (device / night mode / font scale), guarded | **Yes** |
-| `RenderApiProbe` (render/) | View-override capability probe → gates ＋Add view | **Yes** |
+| `RenderPipeline.renderVariant` (render/) | Off-EDT per-tab render with a `ViewOverride`, EDT delivery, independent of the selection generation | Yes (impl) |
+| `RenderModelResolver` (render/) | Map `ViewOverride` → `PreviewConfiguration`/`PreviewDisplaySettings`, derive the element via `createDerivedInstance`, apply through AS's own `applyTo`, guarded | **Yes** |
+| `RenderApiProbe` (render/) | Capability probe (derived-instance + picker model) → gates ＋Add view and the copy-side Properties | **Yes** |
 
 ## Testing
 
@@ -152,9 +152,9 @@ PreviewRenderPanel (LIVE)
 ## Acceptance Criteria
 
 - **AC1** With a preview selected, **＋ Add view** adds a tab that is an exact copy of Original — it renders identically, and **no setting has to be chosen** to add it.
-- **AC2** Pressing **Properties** while a copy is active opens that copy's ephemeral view settings; changing device, theme, or font scale re-renders **only that tab**, leaving Original, the other tabs, and the `@Preview` **source** unchanged.
-- **AC3** Pressing **Properties** while **Original** is active opens Android Studio's `@Preview` picker exactly as today.
-- **AC4** Each tab shows a title: `Original` for tab 0, `View N` for an unconfigured copy, and a settings summary (e.g. `Pixel 7 · Dark · 1.3×`) once configured.
+- **AC2** Pressing **Properties** while a copy is active opens **the same picker dialog Original shows**, with the same properties, seeded from that copy's current values; changing any of them re-renders **only that tab** and leaves Original, the other tabs, and the `@Preview` **source** unchanged. Each copy keeps its own values in memory, so switching tabs switches between the configured renders.
+- **AC3** Pressing **Properties** while **Original** is active opens Android Studio's `@Preview` picker exactly as today, and its edits still write source exactly as today.
+- **AC4** Each tab shows a title: `Original` for tab 0, `View N` for an untouched copy, and a summary of the overridden properties once edited.
 - **AC5** Several copies can coexist, each with its own settings; each supports zoom/pan and click-to-source independently, and the toolbar's zoom/fit/hand-tool/Save-PNG/Copy act on the **active** tab.
 - **AC6** Selecting a **different** preview discards every copy and its cached image (memory freed), leaving only Original; closing a tab frees that view's image; with no copies the tab strip is hidden and the panel is exactly today's.
 - **AC7** When the view-override capability is unavailable on this build, **＋ Add view** is hidden and the panel behaves exactly as today; a copy whose render fails shows a failed/retry state within its own tab.
