@@ -38,4 +38,19 @@
     <extensions defaultExtensionNs="org.jetbrains.kotlin">
         <supportsKotlinPluginMode supportsK2="true"/>
     </extensions>
+
+    <projectListeners>
+        <listener class="com.devomer.previewgallery.editor.PreviewToolbarInjector$Listener"
+                  topic="com.intellij.openapi.fileEditor.FileEditorManagerListener"/>
+    </projectListeners>
+
+    <actions>
+        <!--
+            Registered by id so the button survives the toolbar injection failing: Android Studio's Compose preview
+            toolbar is programmatic and cannot be reached with add-to-group, so PreviewToolbarInjector adds this
+            instance at runtime. Without a toolbar the action is still reachable from Find Action / a shortcut.
+        -->
+        <action id="PreviewGallery.ShowAllPreviews"
+                class="com.devomer.previewgallery.editor.ShowAllPreviewsAction"/>
+    </actions>
 </idea-plugin>
