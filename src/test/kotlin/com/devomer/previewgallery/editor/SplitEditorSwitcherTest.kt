@@ -1,5 +1,6 @@
 package com.devomer.previewgallery.editor
 
+import com.intellij.openapi.fileEditor.FileEditorManager
 import com.intellij.testFramework.fixtures.BasePlatformTestCase
 
 class SplitEditorSwitcherTest : BasePlatformTestCase() {
@@ -15,5 +16,14 @@ class SplitEditorSwitcherTest : BasePlatformTestCase() {
     fun `test a file that is not open is a no-op`() {
         val file = myFixture.addFileToProject("Bar.kt", "package com.example\n").virtualFile
         SplitEditorSwitcher.switchToCodeOnly(project, file)
+    }
+
+    fun `test the single-editor overload is also a no-op for a plain text editor`() {
+        val file = myFixture.addFileToProject("Baz.kt", "package com.example\n").virtualFile
+        myFixture.openFileInEditor(file)
+        val editor = FileEditorManager.getInstance(project).getSelectedEditor(file)
+        assertNotNull(editor)
+        // Same degrade-to-no-op contract as the file-based overload, exercised directly on a single editor.
+        if (editor != null) SplitEditorSwitcher.switchToCodeOnly(editor)
     }
 }

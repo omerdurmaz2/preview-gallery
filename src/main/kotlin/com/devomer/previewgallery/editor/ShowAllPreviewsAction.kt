@@ -8,10 +8,13 @@ import com.intellij.icons.AllIcons
 import com.intellij.openapi.actionSystem.ActionUpdateThread
 import com.intellij.openapi.actionSystem.AnAction
 import com.intellij.openapi.actionSystem.AnActionEvent
+import com.intellij.openapi.actionSystem.PlatformCoreDataKeys
 import com.intellij.openapi.application.ModalityState
 import com.intellij.openapi.application.ReadAction
 import com.intellij.openapi.fileEditor.FileDocumentManager
 import com.intellij.openapi.fileEditor.FileEditorManager
+import com.intellij.openapi.fileEditor.TextEditor
+import com.intellij.openapi.fileEditor.impl.text.TextEditorProvider
 import com.intellij.openapi.project.DumbAware
 import com.intellij.openapi.project.Project
 import com.intellij.openapi.vfs.VirtualFile
@@ -37,13 +40,23 @@ class ShowAllPreviewsAction : AnAction(
 
     override fun actionPerformed(event: AnActionEvent) {
         val project = event.project ?: return
-        // Read the caret from the selected text editor rather than the event: the toolbar this button is injected
-        // into belongs to the design surface, whose data context carries no editor.
-        val editor = FileEditorManager.getInstance(project).selectedTextEditor
+        // The toolbar this button is injected into belongs to the design surface: CommonDataKeys.EDITOR carries no
+        // editor there, but DesignSurface.uiDataSnapshot does sink PlatformCoreDataKeys.FILE_EDITOR — the exact
+        // SplitEditor (a TextEditor) the clicked toolbar sits in. That is what makes this correct with the editor
+        // split into panes: without it, the wrong pane's editor would be resolved and collapsed. The selected-editor
+        // fallback only fires for the Find Action path, which has no toolbar data context at all.
+        val eventEditor = event.getData(PlatformCoreDataKeys.FILE_EDITOR) as? TextEditor
+        val selectedTextEditor = FileEditorManager.getInstance(project).selectedTextEditor
+        val targetEditor = eventEditor ?: selectedTextEditor?.let(TextEditorProvider.getInstance()::getTextEditor)
+
+        val editor = targetEditor?.editor ?: selectedTextEditor
         val file = editor?.let { FileDocumentManager.getInstance().getFile(it.document) }
         val caretOffset = editor?.caretModel?.offset ?: 0
 
-        if (file != null) SplitEditorSwitcher.switchToCodeOnly(project, file)
+        when {
+            targetEditor != null -> SplitEditorSwitcher.switchToCodeOnly(targetEditor)
+            file != null -> SplitEditorSwitcher.switchToCodeOnly(project, file)
+        }
 
         val toolWindow = ToolWindowManager.getInstance(project).getToolWindow(PreviewGalleryToolWindowFactory.ID)
             ?: return
