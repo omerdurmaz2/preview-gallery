@@ -66,8 +66,9 @@ class PreviewGalleryPanel(
     private var lastSelectedEntry: PreviewEntry? = null
 
     /** An entry another surface asked to reveal before the tree could show it (the tool window may have been
-     *  created by that very request, so [entries] can still be loading). Applied by [applyFilter] and cleared
-     *  once the selection lands. */
+     *  created by that very request, so [entries] can still be loading). Applied by [applyFilter], and dropped
+     *  as soon as [entries] is loaded — whether or not the node was actually found — so a stale or filtered-out
+     *  id never outlives the "still loading" window it exists for. */
     private var pendingSelectionId: String? = null
 
     /** Suppresses [pipeline] notifications while [applyFilter] is rebuilding tree nodes and restoring the
@@ -255,9 +256,11 @@ class PreviewGalleryPanel(
             val pending = pendingSelectionId
             if (pending != null) {
                 // A reveal request outranks the restore: it is an explicit user action, while the restore only
-                // exists to survive the rebuild. Keep it pending until the node actually exists.
+                // exists to survive the rebuild. Keep it pending only until entries have actually loaded — once
+                // they have, either the node was found, or the id is simply unreachable (stale, or filtered out
+                // by the active-module filter) and must not keep retrying on every later rebuild.
                 selectEntry(pending)
-                if (selectedEntry()?.id == pending) pendingSelectionId = null
+                if (selectedEntry()?.id == pending || entries.isNotEmpty()) pendingSelectionId = null
             } else if (previousSelectionId != null) {
                 // No-op if the previously selected entry was filtered out; selection then stays empty.
                 selectEntry(previousSelectionId)

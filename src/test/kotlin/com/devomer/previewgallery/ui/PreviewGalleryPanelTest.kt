@@ -146,4 +146,31 @@ class PreviewGalleryPanelTest : BasePlatformTestCase() {
         panel.reloadSynchronously()
         assertEquals(entryId, panel.selectedEntryIdForTest())
     }
+
+    fun `test an unreachable revealed id does not outrank later selections`() {
+        myFixture.addFileToProject(
+            "Foo.kt",
+            """
+            package com.example
+
+            import androidx.compose.ui.tooling.preview.Preview
+
+            @Preview
+            fun BarPreview() {}
+            """.trimIndent(),
+        )
+        val panel = panel()
+        panel.reloadSynchronously()
+        val entry = PreviewIndexService.getInstance(project).findAll().single()
+
+        panel.revealEntry("com.example.NoSuchPreview#NoSuchPreview")
+        panel.selectEntry(entry.id)
+        assertEquals(entry.id, panel.selectedEntryIdForTest())
+
+        // A later rebuild must not let the stale, unreachable reveal request keep retrying and clobber the
+        // selection the user made afterwards.
+        panel.applyQueryForTest("")
+
+        assertEquals(entry.id, panel.selectedEntryIdForTest())
+    }
 }
