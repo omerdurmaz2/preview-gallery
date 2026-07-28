@@ -53,10 +53,7 @@ class ShowAllPreviewsAction : AnAction(
         val file = editor?.let { FileDocumentManager.getInstance().getFile(it.document) }
         val caretOffset = editor?.caretModel?.offset ?: 0
 
-        when {
-            targetEditor != null -> SplitEditorSwitcher.switchToCodeOnly(targetEditor)
-            file != null -> SplitEditorSwitcher.switchToCodeOnly(project, file)
-        }
+        if (targetEditor != null) SplitEditorSwitcher.switchToCodeOnly(targetEditor)
 
         val toolWindow = ToolWindowManager.getInstance(project).getToolWindow(PreviewGalleryToolWindowFactory.ID)
             ?: return

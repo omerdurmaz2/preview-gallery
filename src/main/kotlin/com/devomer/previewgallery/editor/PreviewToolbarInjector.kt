@@ -43,17 +43,22 @@ class PreviewToolbarInjector(private val project: Project) : Disposable {
      *
      * A no-op for files that cannot host a Compose preview (see [handlesFile]). If the project is currently
      * indexing, the schedule is also re-run once dumb mode ends, in case that is what pushed the toolbar's
-     * construction past the retry window.
+     * construction past the retry window — but only if [file] is still open by then, so a stale deferred restart
+     * from a file the user has since closed cannot cancel the in-flight schedule for the file actually on screen.
      */
     fun scheduleInjection(file: VirtualFile) {
         if (!handlesFile(file)) return
         restartAttempts(file)
         if (DumbService.isDumb(project)) {
             DumbService.getInstance(project).runWhenSmart {
-                if (!project.isDisposed) restartAttempts(file)
+                if (!project.isDisposed && isStillOpen(file)) restartAttempts(file)
             }
         }
     }
+
+    /** True when [file] is still open in this project, i.e. this deferred restart is still relevant. */
+    private fun isStillOpen(file: VirtualFile): Boolean =
+        FileEditorManager.getInstance(project).getAllEditors(file).isNotEmpty()
 
     private fun restartAttempts(file: VirtualFile) {
         alarm.cancelAllRequests()
@@ -80,9 +85,8 @@ class PreviewToolbarInjector(private val project: Project) : Disposable {
             for (toolbar in ToolbarLocator.findByPlace(editor.component, RHS_TOOLBAR_PLACE)) {
                 val group = toolbar.actionGroup as? DefaultActionGroup ?: continue
                 if (ActionGroupInjector.addOnce(group, action)) {
-                    // Synchronous on purpose: the async update variant queues the refresh and returns immediately,
-                    // which would race this loop's "stop retrying" signal (`present = true` below) if the toolbar
-                    // hadn't actually finished updating yet.
+                    // Synchronous on purpose: the async update variant queues the refresh for the next update cycle,
+                    // so the button would only appear later, on a subsequent event pump turn, instead of right away.
                     toolbar.updateActionsImmediately()
                 }
                 present = true
