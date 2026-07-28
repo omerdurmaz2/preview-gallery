@@ -6,6 +6,7 @@ import com.devomer.previewgallery.model.PreviewSourceLocation
 import com.devomer.previewgallery.render.BuildService
 import com.devomer.previewgallery.render.LiveRenderer
 import com.devomer.previewgallery.render.PreviewPickerBridge
+import com.devomer.previewgallery.render.RenderApiProbe
 import com.devomer.previewgallery.render.RenderPipeline
 import com.devomer.previewgallery.search.PreviewModuleFilter
 import com.devomer.previewgallery.service.PreviewIndexService
@@ -124,6 +125,12 @@ class PreviewGalleryPanel(
         renderPanel.propertiesAvailable = pickerBridge.isAvailable()
         renderPanel.onProperties = { entry, point -> pickerBridge.showPicker(entry, point, ::onPickerModification) }
         renderPanel.onNavigateToSource = { navigateToSource(it) }
+        // PG6-4: comparison-view tab strip. RenderApiProbe is a plugin-owned object (render/) returning a plain
+        // Boolean, so this stays AS-free despite gating an AS-backed capability; renderVariant is the dedicated,
+        // non-debounced per-tab render entry point (task-3 report §4 / PG6-4 design), independent of the single
+        // debounced Original selection this pipeline otherwise drives.
+        renderPanel.deviceOverrideAvailable = RenderApiProbe.isViewOverrideAvailable()
+        renderPanel.onRequestVariant = { entry, config, callback -> pipeline.renderVariant(entry, config, callback) }
 
         val actionGroup = DefaultActionGroup(
             RefreshAction(project) { reload() },

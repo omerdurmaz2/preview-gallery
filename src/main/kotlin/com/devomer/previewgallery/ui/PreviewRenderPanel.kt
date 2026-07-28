@@ -4,6 +4,7 @@ import com.devomer.previewgallery.PreviewGalleryBundle
 import com.devomer.previewgallery.model.PreviewEntry
 import com.devomer.previewgallery.model.PreviewSourceLocation
 import com.devomer.previewgallery.model.RenderOutcome
+import com.devomer.previewgallery.model.ViewConfig
 import com.devomer.previewgallery.render.RenderResultView
 import com.devomer.previewgallery.render.RenderState
 import com.intellij.icons.AllIcons
@@ -21,17 +22,20 @@ import com.intellij.openapi.project.DumbAwareAction
 import com.intellij.openapi.project.Project
 import com.intellij.openapi.util.IconLoader
 import com.intellij.openapi.vfs.VirtualFile
+import com.intellij.ui.InplaceButton
 import com.intellij.ui.awt.RelativePoint
 import com.intellij.ui.components.ActionLink
 import com.intellij.ui.components.JBLabel
 import com.intellij.ui.components.JBPanel
 import com.intellij.ui.components.JBScrollPane
+import com.intellij.ui.components.JBTabbedPane
 import com.intellij.util.ui.JBUI
 import com.intellij.util.ui.UIUtil
 import java.awt.BorderLayout
 import java.awt.FlowLayout
 import java.awt.Point
 import javax.swing.Icon
+import javax.swing.JComponent
 
 /** The right side of the tool window's split. Shows the six [RenderState]s plus a persistent actions bar. */
 class PreviewRenderPanel(private val project: Project) : JBPanel<PreviewRenderPanel>(BorderLayout()) {
@@ -39,8 +43,10 @@ class PreviewRenderPanel(private val project: Project) : JBPanel<PreviewRenderPa
     var onRender: (PreviewEntry) -> Unit = {}
     var onOpenFile: (PreviewEntry) -> Unit = {}
 
-    /** Fires when the user clicks Properties, with a screen anchor for the popup to open next to the button
-     *  (design/spec P4). Only ever wired to fire when [propertiesAvailable] is true — see [updateActionsBar]. */
+    /** Fires when the user clicks Properties **while Original is the active tab**, with a screen anchor for the
+     *  popup to open next to the button (design/spec P4). Only ever wired to fire when Original is active and
+     *  [propertiesAvailable] is true — see [updateActionsBar]/`PropertiesAction`. A copy tab dispatches to
+     *  [ViewSettingsPopup] instead (PG6-8) and never reaches this callback at all. */
     var onProperties: (PreviewEntry, RelativePoint) -> Unit = { _, _ -> }
 
     /** Fires when the user clicks a composable in the rendered image (PG4-5): the hit-tested node's source
@@ -54,10 +60,57 @@ class PreviewRenderPanel(private val project: Project) : JBPanel<PreviewRenderPa
      *  not a dead control. */
     var propertiesAvailable: Boolean = false
 
+    /** Requests an off-EDT render of a [PreviewEntry] with a specific [ViewConfig] for one comparison-view tab
+     *  (PG6-4; widened to the full device/theme/font-scale config in PG6-7). Wired by
+     *  [com.devomer.previewgallery.ui.PreviewGalleryPanel] to
+     *  [com.devomer.previewgallery.render.RenderPipeline.renderVariant]; the callback is always delivered on the
+     *  EDT. Kept separate from [onRender] so a tab-strip render never touches the pipeline's single debounced
+     *  Original selection. */
+    var onRequestVariant: (PreviewEntry, ViewConfig, (RenderOutcome) -> Unit) -> Unit = { _, _, _ -> }
+
+    /** Whether Android Studio's view-override render path is available on this build (PG6-3, widened in PG6-7).
+     *  Set once by the owner ([com.devomer.previewgallery.ui.PreviewGalleryPanel], from
+     *  `RenderApiProbe.isViewOverrideAvailable()`) before the first [show] call, mirroring [propertiesAvailable].
+     *  When false, the ＋ Add view action is never added to the toolbar — comparison views are invisible, not a
+     *  dead control, on a build missing the capability. PG6-8: also gates Properties whenever a copy tab is the
+     *  active one (see [updateActionsBar]) — a copy's own [ViewSettingsPopup] needs the same render capability a
+     *  copy itself does, so the two share this one flag rather than a separate probe. */
+    var deviceOverrideAvailable: Boolean = false
+
     private val renderView = ZoomableRenderView()
     private val renderScroll = JBScrollPane(renderView)
     private val actionsBar = JBPanel<JBPanel<*>>(FlowLayout(FlowLayout.RIGHT, 4, 0))
     private val centerPanel = JBPanel<JBPanel<*>>(BorderLayout())
+
+    // ── PG6-4: the comparison-view tab strip. [comparisonViews] is the pure id/device model (Task 2); every
+    // other field below is this panel's own Swing-side state, keyed by extra id. Original has no entry in any of
+    // them — it is always [renderView]/[renderScroll], never rebuilt. ──
+    private val comparisonViews = ComparisonViewList()
+    private val viewTabs = JBTabbedPane()
+    private val extraViews = HashMap<Int, ZoomableRenderView>()
+    private val extraScrolls = HashMap<Int, JBScrollPane>()
+
+    /** Per-extra-id tab header title label (PG6-8), so [refreshExtraTabTitles] can update a tab's visible title
+     *  in place — from [ViewTitle] — whenever its config changes or a close shifts its ordinal, without rebuilding
+     *  the whole header component (which would also mean re-registering a fresh close button on every refresh). */
+    private val extraTabLabels = HashMap<Int, JBLabel>()
+
+    /** Per-extra-id staleness token: bumped by [renderInto] every time it (re)requests a render for that id. An
+     *  async result is applied only if this still matches the token it was issued with — a mismatch means the
+     *  config changed again, the tab closed, or [clearComparisonExtras] ran, so the result is dropped. Scoped
+     *  per-tab, deliberately independent of [com.devomer.previewgallery.render.RenderPipeline]'s own shared
+     *  `generation` (which [onRequestVariant]'s render path never touches, by design — see its doc). */
+    private val extraGenerations = HashMap<Int, Int>()
+
+    /** Ids that have had at least one render requested, so [viewTabs]'s change listener (first-activation render,
+     *  below) never fires a redundant second request for a tab [addExtraTab] already triggered. */
+    private val extraRequested = HashSet<Int>()
+
+    /** The entry the panel is currently showing. Tracked so ＋ Add view / a [ViewSettingsPopup] change know what to
+     *  render, and so [show] can tell a genuinely new selection (clear the extras — PG6-4/V3) from another state
+     *  update for the same entry (e.g. RENDERING -> LIVE, or a picker-triggered re-render), which must leave them
+     *  alone. */
+    private var currentEntry: PreviewEntry? = null
 
     init {
         border = JBUI.Borders.empty(8)
@@ -65,9 +118,34 @@ class PreviewRenderPanel(private val project: Project) : JBPanel<PreviewRenderPa
         actionsBar.isOpaque = false
         add(actionsBar, BorderLayout.NORTH)
         add(centerPanel, BorderLayout.CENTER)
+
+        // First activation of a not-yet-rendered extra tab (brief step 4). addExtraTab already marks its id as
+        // requested before this can fire for it, so in practice this is a defensive fallback, not the primary
+        // trigger — but it is what makes switching to an unrendered tab always safe.
+        viewTabs.addChangeListener {
+            val component = viewTabs.selectedComponent
+            val id = extraScrolls.entries.firstOrNull { it.value === component }?.key
+            if (id != null && extraRequested.add(id)) {
+                comparisonViews.views.firstOrNull { it.id == id }?.let { renderInto(it) }
+            }
+            // PG6-8: a plain tab switch (no model change at all) can still change what Properties should do —
+            // Original's AS picker vs. a copy's ViewSettingsPopup — so the actions bar is rebuilt here too, not
+            // just from show()/a config change.
+            updateActionsBar(currentEntry)
+        }
     }
 
     fun show(view: RenderResultView, entry: PreviewEntry?) {
+        // PG6-4/V3: a genuinely new selection (including to/from nothing selected) drops every comparison-view
+        // extra and frees its image; another state update for the SAME entry (e.g. a retry's RENDERING -> LIVE,
+        // or a picker-triggered re-render) must leave them alone. Compared by id, not reference, so a fresh
+        // PreviewEntry instance re-resolved for the same preview still counts as "unchanged" for this guard —
+        // but currentEntry itself is still refreshed unconditionally below, so a same-id update never leaves it
+        // pinned to the first PreviewEntry instance ever seen for that preview.
+        if (entry?.id != currentEntry?.id) {
+            clearComparisonExtras()
+        }
+        currentEntry = entry
         centerPanel.removeAll()
         renderView.clearContent()
         when (view.state) {
@@ -84,8 +162,10 @@ class PreviewRenderPanel(private val project: Project) : JBPanel<PreviewRenderPa
 
     /** Rebuilds the persistent top-right actions bar as a native icon [com.intellij.openapi.actionSystem.ActionToolbar]
      *  (PG5-3, iconified): zoom/fit/hand-tool/export controls appear whenever there is a live render image; Properties
-     *  is appended when the picker API is available. Rebuilt per [show] so the Properties anchor tracks the current
-     *  entry and the toolbar reflects the current live/idle state. */
+     *  is appended when it has somewhere to go for the *active* tab (PG6-8 — see below). Rebuilt per [show] (so the
+     *  Properties anchor tracks the current entry and the toolbar reflects the current live/idle state) and per
+     *  [viewTabs] tab change (so a plain switch between Original and a copy — no model change at all — still keeps
+     *  Properties' target current). */
     private fun updateActionsBar(entry: PreviewEntry?) {
         actionsBar.removeAll()
         val group = DefaultActionGroup()
@@ -99,52 +179,98 @@ class PreviewRenderPanel(private val project: Project) : JBPanel<PreviewRenderPa
             group.addSeparator()
             group.add(SavePngAction())
             group.add(CopyImageAction())
+            // PG6-4: a comparison view needs a live Original image to duplicate, and the device-override render
+            // path itself — probed once, up front, by the owner; never AS-internal in this file.
+            if (deviceOverrideAvailable) {
+                group.addSeparator()
+                group.add(AddViewAction())
+            }
         }
-        if (propertiesAvailable && entry != null) {
+        // PG6-8: Properties is context-aware (brief step 3) — with Original active it needs the AS picker
+        // ([propertiesAvailable]); with a copy active it needs the plugin's own [ViewSettingsPopup] instead, which
+        // needs only the view-override render capability, not the picker. Never both, never neither once one of
+        // the two is actually available — a build missing the relevant capability simply never gets the control,
+        // matching every other capability gate in this class (never a dead control).
+        val activeCopy = activeComparisonView()
+        val originalActive = activeCopy == null || activeCopy.id == ComparisonViewList.ORIGINAL_ID
+        val propertiesGated = if (originalActive) propertiesAvailable else deviceOverrideAvailable
+        if (propertiesGated && entry != null) {
             if (group.childrenCount > 0) group.addSeparator()
             group.add(PropertiesAction(entry))
         }
         if (group.childrenCount > 0) {
             val toolbar = ActionManager.getInstance().createActionToolbar(ACTIONS_PLACE, group, true)
-            toolbar.targetComponent = renderView
+            // The target component must always be SHOWING: the platform silently refuses to perform a toolbar
+            // action whose target is hidden ("Action is not performed because target component is not showing").
+            // Original's [renderView] stops showing the moment a comparison tab is selected — JTabbedPane hides
+            // the unselected tabs — which killed every toolbar action on a copy tab. This panel is showing
+            // whenever the toolbar is, and these actions read their state from it directly rather than from the
+            // action DataContext, so it is the correct target.
+            toolbar.targetComponent = this
             toolbar.component.isOpaque = false
             actionsBar.add(toolbar.component)
             actionsBar.isVisible = true
         } else {
             actionsBar.isVisible = false
         }
+        // This method swaps the bar's children (removeAll + add), which only marks the container invalid — nothing
+        // lays the new toolbar out until someone revalidates it, and an unlaid-out toolbar has zero-sized buttons
+        // that swallow every click while the previous toolbar's pixels stay on screen. show() happens to revalidate
+        // the whole panel afterwards, but the tab-change path does not, so a rebuild triggered by switching to (or
+        // adding) a comparison view produced a dead toolbar. Revalidating here covers every call site.
+        actionsBar.revalidate()
+        actionsBar.repaint()
+    }
+
+    /** The ZoomableRenderView the user is currently looking at: the selected extra tab's view, else Original's
+     *  [renderView]. The toolbar's zoom/fit/hand-tool/export actions target THIS so they act on the visible tab
+     *  (not always Original). Falls back to [renderView] whenever no extra tab owns the selected component. */
+    private fun activeView(): ZoomableRenderView {
+        val selected = viewTabs.selectedComponent
+        val id = extraScrolls.entries.firstOrNull { it.value === selected }?.key
+        return if (id != null) extraViews[id] ?: renderView else renderView
+    }
+
+    /** The [ComparisonView] backing the currently visible tab (PG6-8, brief step 3): the same selected-component
+     *  -> extra-id lookup [activeView] uses, resolved against the pure model instead of a Swing widget. Null for
+     *  Original (which has no entry in [extraScrolls] at all, by design — see the class doc) — callers treat a
+     *  null result exactly like an explicit [ComparisonViewList.ORIGINAL_ID], never separately. */
+    private fun activeComparisonView(): ComparisonView? {
+        val selected = viewTabs.selectedComponent
+        val id = extraScrolls.entries.firstOrNull { it.value === selected }?.key ?: return null
+        return comparisonViews.views.firstOrNull { it.id == id }
     }
 
     private inner class ZoomOutAction : DumbAwareAction(
         PreviewGalleryBundle.message("render.zoomOut"), null, AllIcons.General.ZoomOut,
     ) {
-        override fun actionPerformed(e: AnActionEvent) { renderView.zoomFactor = ZoomMath.stepOut(renderView.zoomFactor) }
+        override fun actionPerformed(e: AnActionEvent) { activeView().zoomFactor = ZoomMath.stepOut(activeView().zoomFactor) }
     }
 
     private inner class ZoomInAction : DumbAwareAction(
         PreviewGalleryBundle.message("render.zoomIn"), null, AllIcons.General.ZoomIn,
     ) {
-        override fun actionPerformed(e: AnActionEvent) { renderView.zoomFactor = ZoomMath.stepIn(renderView.zoomFactor) }
+        override fun actionPerformed(e: AnActionEvent) { activeView().zoomFactor = ZoomMath.stepIn(activeView().zoomFactor) }
     }
 
     private inner class FitAction : DumbAwareAction(
         PreviewGalleryBundle.message("render.fit"), null, AllIcons.General.FitContent,
     ) {
-        override fun actionPerformed(e: AnActionEvent) { renderView.fitToViewport() }
+        override fun actionPerformed(e: AnActionEvent) { activeView().fitToViewport() }
     }
 
     private inner class ActualSizeAction : DumbAwareAction(
         PreviewGalleryBundle.message("render.actualSize"), null, AllIcons.General.ActualZoom,
     ) {
-        override fun actionPerformed(e: AnActionEvent) { renderView.zoomFactor = 1.0 }
+        override fun actionPerformed(e: AnActionEvent) { activeView().zoomFactor = 1.0 }
     }
 
     /** Hand-tool as a real toggle so the toolbar shows its pressed state; mirrors [ZoomableRenderView.handToolActive]. */
     private inner class HandToolAction : ToggleAction(
         PreviewGalleryBundle.message("render.handTool"), null, HAND_ICON,
     ), DumbAware {
-        override fun isSelected(e: AnActionEvent): Boolean = renderView.handToolActive
-        override fun setSelected(e: AnActionEvent, state: Boolean) { renderView.handToolActive = state }
+        override fun isSelected(e: AnActionEvent): Boolean = activeView().handToolActive
+        override fun setSelected(e: AnActionEvent, state: Boolean) { activeView().handToolActive = state }
         override fun getActionUpdateThread(): ActionUpdateThread = ActionUpdateThread.EDT
     }
 
@@ -160,14 +286,41 @@ class PreviewRenderPanel(private val project: Project) : JBPanel<PreviewRenderPa
         override fun actionPerformed(e: AnActionEvent) { copyImage() }
     }
 
-    /** Opens the Android Studio picker next to the clicked button (spec P4). The anchor is taken from the toolbar
-     *  button that fired the action, falling back to the actions bar when the event carries no component. */
+    /** ＋ Add view (PG6-8: the copy model): appends an ephemeral, **unconfigured** copy of Original — an all-null
+     *  [ViewConfig] that therefore renders identically to it, no setting prompt of any kind. The user configures
+     *  it afterwards, per-tab, via Properties -> [ViewSettingsPopup] ([PropertiesAction]); the `@Preview` source
+     *  itself is never touched. Only ever added to the toolbar when [deviceOverrideAvailable] (see
+     *  [updateActionsBar]), so this action is never invoked on a build that cannot render an override. */
+    private inner class AddViewAction : DumbAwareAction(
+        PreviewGalleryBundle.message("render.addView"), null, AllIcons.General.Add,
+    ) {
+        override fun actionPerformed(e: AnActionEvent) { handleAddView() }
+    }
+
+    /** Properties, context-aware by active tab (PG6-8, brief step 3): with Original active, opens Android
+     *  Studio's picker next to the clicked button exactly as before (spec P4); with a copy active, opens the
+     *  plugin's own ephemeral [ViewSettingsPopup] instead — AS-free, and it never writes the `@Preview` source.
+     *  The anchor is taken from the toolbar button that fired the action, falling back to the actions bar when
+     *  the event carries no component; that anchor is always a [JComponent] in practice (an [AnActionEvent]'s
+     *  input-event component is a toolbar's own [com.intellij.openapi.actionSystem.ActionButton], and the
+     *  fallback is [actionsBar] itself), matching the brief's own indicative cast. Only ever wired into a group
+     *  when [updateActionsBar]'s gating already matches the active tab, so the branch taken here never disagrees
+     *  with why this action was shown in the first place. */
     private inner class PropertiesAction(private val entry: PreviewEntry) : DumbAwareAction(
         PreviewGalleryBundle.message("render.properties"), null, AllIcons.General.Settings,
     ) {
         override fun actionPerformed(e: AnActionEvent) {
             val anchor = e.inputEvent?.component ?: actionsBar
-            onProperties(entry, RelativePoint(anchor, Point(0, anchor.height)))
+            val view = activeComparisonView()
+            if (view == null || view.id == ComparisonViewList.ORIGINAL_ID) {
+                onProperties(entry, RelativePoint(anchor, Point(0, anchor.height)))
+            } else {
+                ViewSettingsPopup.show(anchor as JComponent, view.config) { updated ->
+                    comparisonViews.setConfig(view.id, updated)
+                    refreshExtraTabTitles()
+                    comparisonViews.views.firstOrNull { it.id == view.id }?.let { renderInto(it) }
+                }
+            }
         }
     }
 
@@ -177,7 +330,8 @@ class PreviewRenderPanel(private val project: Project) : JBPanel<PreviewRenderPa
         // Feed the hover/click overlay the plugin-owned view tree (empty when Feature B is unavailable — the
         // listeners then stay inert) and reset zoom to fit the current viewport.
         renderView.setContent(image, success.viewTree)
-        centerPanel.add(renderScroll, BorderLayout.CENTER)
+        // PG6-4: renderScroll directly (today's look) with no extras, or as viewTabs' Original tab once one exists.
+        refreshLiveContainer()
         // The scroll pane is only now placed in the visible hierarchy, and add() does not lay it out synchronously,
         // so its viewport still reports a 0x0 extent. Validate the subtree first so the viewport has its real size,
         // then fit — otherwise the first render (before any later revalidate) would show at 100% instead of Fit.
@@ -185,10 +339,199 @@ class PreviewRenderPanel(private val project: Project) : JBPanel<PreviewRenderPa
         renderView.fitToViewport()
     }
 
+    // ── PG6-4: comparison-view tab strip ──────────────────────────────────────────────────────────────────
+
+    /** Chooses what [centerPanel] should show for a live Original render: the raw [renderScroll] (today's look,
+     *  byte-for-byte unchanged) when [comparisonViews] has no extras, or [viewTabs] — with [renderScroll]
+     *  reparented in as its Original tab — once at least one exists. Does not revalidate/repaint; callers follow
+     *  up as their own context needs (an immediate synchronous fit in [showImage], or a plain async repaint for
+     *  an add/close that did not otherwise touch the Original render). */
+    private fun refreshLiveContainer() {
+        val target: JComponent = if (comparisonViews.views.size > 1) {
+            ensureOriginalTabPresent()
+            viewTabs
+        } else {
+            // Back down to Original-only: detach it from viewTabs so it is free to be re-added directly below.
+            if (renderScroll.parent === viewTabs) viewTabs.remove(renderScroll)
+            renderScroll
+        }
+        centerPanel.removeAll()
+        centerPanel.add(target, BorderLayout.CENTER)
+    }
+
+    private fun ensureOriginalTabPresent() {
+        if (viewTabs.indexOfComponent(renderScroll) < 0) {
+            viewTabs.insertTab(PreviewGalleryBundle.message("render.originalView"), null, renderScroll, null, 0)
+        }
+    }
+
+    /** Drops every comparison-view extra (PG6-4/V3): the pure model, every per-tab staleness token, and every
+     *  Swing widget/image. Removing the extras from [viewTabs] (not just clearing this panel's own maps) is what
+     *  actually releases the memory — a [ZoomableRenderView] still parented inside [viewTabs] would keep holding
+     *  its image regardless of what these maps say. Safe to call when there is nothing to clear (a no-op).
+     *  Bookkeeping is cleared before the Swing teardown so a change event the teardown itself provokes sees empty
+     *  maps rather than dangling entries. */
+    private fun clearComparisonExtras() {
+        comparisonViews.clearExtras()
+        extraGenerations.clear()
+        extraRequested.clear()
+        extraViews.clear()
+        extraScrolls.clear()
+        extraTabLabels.clear()
+        for (i in viewTabs.tabCount - 1 downTo 0) {
+            if (viewTabs.getComponentAt(i) !== renderScroll) viewTabs.removeTabAt(i)
+        }
+        if (renderScroll.parent === viewTabs) viewTabs.remove(renderScroll)
+    }
+
+    /** ＋ Add view (PG6-8, brief step 2 — the copy model): appends an **unconfigured** copy of Original (an
+     *  all-null [ViewConfig], so it renders identically until the user configures it) and requests its render
+     *  immediately. A silent no-op once [comparisonViews] is at its cap ([ComparisonViewList.add] returns null)
+     *  or if there is somehow no current entry — matching [ComparisonViewList]'s own "cap reached -> no-op"
+     *  contract rather than surfacing an error for a control the user cannot actually misuse this way (the action
+     *  is only ever on the toolbar when a live Original image already exists). */
+    private fun handleAddView() {
+        if (currentEntry == null) return
+        val view = comparisonViews.add(ViewConfig()) ?: return
+        addExtraTab(view)
+        renderInto(view)
+    }
+
+    /** Builds one extra tab's widgets — a [ZoomableRenderView] + [JBScrollPane], a title header (see
+     *  [extraTabHeader]) — wires click-to-source, and switches to it. Does not itself render; [handleAddView]
+     *  requests that right after, matching the brief's wiring exactly. Marks [view]'s id as requested before
+     *  switching tabs so [viewTabs]'s change listener does not also fire a redundant render for it. */
+    private fun addExtraTab(view: ComparisonView) {
+        // NOT `.apply { onNavigateToSource = { onNavigateToSource(it) } }`: inside that apply block the implicit
+        // receiver is the new ZoomableRenderView itself, which also has an `onNavigateToSource` property, so the
+        // inner call would shadow-resolve to itself (infinite recursion) instead of this panel's own callback.
+        // Plain dot-assignment keeps the only implicit receiver in scope this@PreviewRenderPanel, exactly like
+        // the Original renderView's wiring in init{} above.
+        val extraView = ZoomableRenderView()
+        extraView.onNavigateToSource = { onNavigateToSource(it) }
+        val scroll = JBScrollPane(extraView)
+        extraViews[view.id] = extraView
+        extraScrolls[view.id] = scroll
+
+        refreshLiveContainer() // ensure viewTabs exists (Original already its tab 0) before indexing into it below
+        // view was just appended, so its ordinal is simply its position in the current list; looked up rather
+        // than assumed (e.g. views.size - 1) so this stays correct even if that ever stops being true.
+        val ordinal = comparisonViews.views.indexOfFirst { it.id == view.id }
+        viewTabs.addTab(ViewTitle.of(view, ordinal), scroll)
+        val index = viewTabs.indexOfComponent(scroll)
+        viewTabs.setTabComponentAt(index, extraTabHeader(view, ordinal))
+        extraRequested.add(view.id)
+        viewTabs.selectedIndex = index
+
+        // Same rationale as showImage's PG5-6 fix: the new tab's viewport is only laid out once this subtree is
+        // validated, and its render (async, via renderInto) reads that viewport's real size the moment content
+        // arrives. Validating now — while this tab is the selected one, so the tabbed pane's UI delegate actually
+        // sizes it — means that read is never racing an as-yet-uncommitted layout.
+        centerPanel.validate()
+        centerPanel.repaint()
+    }
+
+    /** The small header a [viewTabs] extra tab carries in place of a plain title (PG6-8, brief step 2): just the
+     *  tab's own title (from [ViewTitle], tracked live in [extraTabLabels] — see [refreshExtraTabTitles]) and a
+     *  close button. No per-tab device selector any more — a copy's settings now live in [ViewSettingsPopup],
+     *  opened from Properties, not the tab strip itself. */
+    private fun extraTabHeader(view: ComparisonView, ordinal: Int): JBPanel<*> {
+        val label = JBLabel(ViewTitle.of(view, ordinal))
+        extraTabLabels[view.id] = label
+        val close = InplaceButton("", AllIcons.Actions.Close) { closeExtraTab(view.id) }
+        return JBPanel<JBPanel<*>>(FlowLayout(FlowLayout.LEFT, 4, 0)).apply {
+            isOpaque = false
+            add(label)
+            add(close)
+        }
+    }
+
+    /** Re-derives every extra tab's visible title from the current model (PG6-8, brief steps 2/3): a config
+     *  change can turn an unconfigured copy's "View N" into a settings summary (or back to it, if reset to
+     *  default), and closing a tab shifts every later tab's ordinal, which the "View N" fallback depends on
+     *  ([ViewTitle.of]) — so every mutation that could affect a title re-derives all of them, from
+     *  [comparisonViews] itself, rather than trying to track which single one actually changed. Cheap: at most
+     *  [ComparisonViewList.DEFAULT_MAX_EXTRAS] label-text assignments. A no-op for any id with no header built
+     *  yet (there is none, in practice — every extra gets one in [addExtraTab] before it can be selected). */
+    private fun refreshExtraTabTitles() {
+        comparisonViews.views.forEachIndexed { ordinal, view ->
+            if (view.id == ComparisonViewList.ORIGINAL_ID) return@forEachIndexed
+            extraTabLabels[view.id]?.text = ViewTitle.of(view, ordinal)
+        }
+    }
+
+    /** Close (brief step 3): drops the model entry, its staleness token, and its widgets/image, then removes the
+     *  tab itself — freeing the [ZoomableRenderView]'s image (AC4) — and collapses back to the plain
+     *  [renderScroll] if that was the last extra. */
+    private fun closeExtraTab(id: Int) {
+        comparisonViews.close(id)
+        extraGenerations.remove(id)
+        extraRequested.remove(id)
+        extraViews.remove(id)
+        extraTabLabels.remove(id)
+        val scroll = extraScrolls.remove(id)
+        if (scroll != null) {
+            val index = viewTabs.indexOfComponent(scroll)
+            if (index >= 0) viewTabs.removeTabAt(index)
+        }
+        // PG6-8: closing a middle tab shifts every later tab's ordinal, which an unconfigured neighbour's
+        // "View N" title depends on — refresh every survivor's title, not just drop this one's own bookkeeping.
+        refreshExtraTabTitles()
+        refreshLiveContainer()
+        centerPanel.revalidate()
+        centerPanel.repaint()
+    }
+
+    /**
+     * Renders [view] with its own [ViewConfig] via [onRequestVariant] (brief step 4) and delivers the result to
+     * its tab, off the EDT throughout: [onRequestVariant] is wired to
+     * [com.devomer.previewgallery.render.RenderPipeline.renderVariant], which runs on a background executor and
+     * only ever calls back on the EDT. [view]'s config may be entirely default (PG6-8: a freshly-added,
+     * unconfigured copy) — that is not a reason to skip rendering, it is exactly the "renders identically to
+     * Original" case (AC1); [RenderPipeline.renderVariant]/[com.devomer.previewgallery.render.LiveRenderer]
+     * already degrade an all-null [ViewConfig] to Original's own values, axis by axis. Guards staleness with a
+     * fresh per-id generation token — if [view]'s id has moved on to a newer token by the time the result arrives
+     * (another [renderInto] call for the same id, e.g. a newer setting from [ViewSettingsPopup], or the tab/entry
+     * was cleared) the result is dropped rather than applied. A no-op if there is no current entry or the tab was
+     * already closed before this call (`view.id !in extraViews` — true for Original, which never has an entry
+     * there, and for any id [closeExtraTab]/[clearComparisonExtras] already tore down) — neither of which should
+     * ever actually reach here.
+     */
+    private fun renderInto(view: ComparisonView) {
+        val entry = currentEntry ?: return
+        if (view.id !in extraViews) return
+        val generation = (extraGenerations[view.id] ?: 0) + 1
+        extraGenerations[view.id] = generation
+        onRequestVariant(entry, view.config) { outcome ->
+            if (extraGenerations[view.id] != generation) return@onRequestVariant
+            val extraView = extraViews[view.id] ?: return@onRequestVariant
+            val scroll = extraScrolls[view.id] ?: return@onRequestVariant
+            when (outcome) {
+                is RenderOutcome.Success -> {
+                    scroll.setViewportView(extraView)
+                    extraView.setContent(outcome.image, outcome.viewTree)
+                }
+                else -> showExtraFailed(view, scroll)
+            }
+        }
+    }
+
+    /** Failure/retry affordance inside one extra tab (brief step 4), reusing the same `render.failed` wording as
+     *  Original's own [failed] and `render.render` for the retry link. Temporarily swaps the scroll pane's
+     *  viewport view away from the [ZoomableRenderView]; a successful retry in [renderInto] swaps it back. */
+    private fun showExtraFailed(view: ComparisonView, scroll: JBScrollPane) {
+        scroll.setViewportView(
+            JBPanel<JBPanel<*>>(BorderLayout()).apply {
+                add(JBLabel(PreviewGalleryBundle.message("render.failed")), BorderLayout.NORTH)
+                add(ActionLink(PreviewGalleryBundle.message("render.render")) { renderInto(view) }, BorderLayout.CENTER)
+            },
+        )
+    }
+
     /** Writes the current raw render (no overlay) to a user-chosen PNG file (PG5-3/V2). No-op if there is no live
      *  image, or if the user cancels the save dialog. */
     private fun savePng() {
-        val image = renderView.rawImage() ?: return
+        val image = activeView().rawImage() ?: return
         val descriptor = FileSaverDescriptor(PreviewGalleryBundle.message("render.savePng"), "", "png")
         val dialog = FileChooserFactory.getInstance().createSaveFileDialog(descriptor, project)
         val wrapper = dialog.save(null as VirtualFile?, "preview.png") ?: return
@@ -200,7 +543,7 @@ class PreviewRenderPanel(private val project: Project) : JBPanel<PreviewRenderPa
     /** Copies the current raw render (no overlay) to the system clipboard (PG5-3/V2). No-op if there is no live
      *  image. */
     private fun copyImage() {
-        val image = renderView.rawImage() ?: return
+        val image = activeView().rawImage() ?: return
         try {
             RenderImageExporter.copyToClipboard(image)
         } catch (e: Exception) {
