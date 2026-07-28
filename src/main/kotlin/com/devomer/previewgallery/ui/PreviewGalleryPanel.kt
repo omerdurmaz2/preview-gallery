@@ -4,6 +4,7 @@ import com.devomer.previewgallery.PreviewGalleryBundle
 import com.devomer.previewgallery.model.PreviewEntry
 import com.devomer.previewgallery.model.PreviewSourceLocation
 import com.devomer.previewgallery.render.BuildService
+import com.devomer.previewgallery.render.EphemeralPickerBridge
 import com.devomer.previewgallery.render.LiveRenderer
 import com.devomer.previewgallery.render.PreviewPickerBridge
 import com.devomer.previewgallery.render.RenderApiProbe
@@ -79,6 +80,7 @@ class PreviewGalleryPanel(
         parentDisposable,
     ) { view -> renderPanel.show(view, lastSelectedEntry) }
     private val pickerBridge = PreviewPickerBridge(project)
+    private val ephemeralPickerBridge = EphemeralPickerBridge(project)
 
     init {
         tree.isRootVisible = false
@@ -131,6 +133,12 @@ class PreviewGalleryPanel(
         // debounced Original selection this pipeline otherwise drives.
         renderPanel.deviceOverrideAvailable = RenderApiProbe.isViewOverrideAvailable()
         renderPanel.onRequestVariant = { entry, override, callback -> pipeline.renderVariant(entry, override, callback) }
+        // PG6-10: a copy tab's Properties opens Android Studio's own picker over an in-memory model instead of
+        // re-rendering directly; each edit flows back through onEphemeralProperties' own onEdit callback (wired
+        // in PreviewRenderPanel itself, not here) to update ComparisonViewList and re-render just that tab.
+        renderPanel.onEphemeralProperties = { entry, override, point, onEdit ->
+            ephemeralPickerBridge.showEphemeralPicker(entry, override, point, onEdit)
+        }
 
         val actionGroup = DefaultActionGroup(
             RefreshAction(project) { reload() },

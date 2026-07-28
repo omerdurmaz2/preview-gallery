@@ -45,9 +45,19 @@ class PreviewRenderPanel(private val project: Project) : JBPanel<PreviewRenderPa
 
     /** Fires when the user clicks Properties **while Original is the active tab**, with a screen anchor for the
      *  popup to open next to the button (design/spec P4). Only ever wired to fire when Original is active and
-     *  [propertiesAvailable] is true — see [updateActionsBar]/`PropertiesAction`. A copy tab re-renders itself
-     *  instead (PG6-9; a plugin-driven picker for a copy arrives in PG6-10) and never reaches this callback at all. */
+     *  [propertiesAvailable] is true — see [updateActionsBar]/`PropertiesAction`. A copy tab opens
+     *  [onEphemeralProperties] instead (PG6-10) and never reaches this callback at all. */
     var onProperties: (PreviewEntry, RelativePoint) -> Unit = { _, _ -> }
+
+    /** Fires when the user clicks Properties **while a copy tab is active** (PG6-10), with that copy's own
+     *  current [ViewOverride], a screen anchor for the popup, and an `onEdit: (name, value) -> Unit` callback the
+     *  bridge invokes once per edited property. Wired by
+     *  [com.devomer.previewgallery.ui.PreviewGalleryPanel] to
+     *  [com.devomer.previewgallery.render.EphemeralPickerBridge.showEphemeralPicker]; each `onEdit` call updates
+     *  [comparisonViews] and re-renders just that tab — see `PropertiesAction`. Only ever wired to fire when a
+     *  copy is active and [deviceOverrideAvailable] is true (mirroring [onProperties]'s own gating for Original). */
+    var onEphemeralProperties: (PreviewEntry, ViewOverride, RelativePoint, (String, String) -> Unit) -> Unit =
+        { _, _, _, _ -> }
 
     /** Fires when the user clicks a composable in the rendered image (PG4-5): the hit-tested node's source
      *  location. [PreviewGalleryPanel] resolves it to an editor open. Only ever fires for a [RenderState.LIVE]
@@ -298,12 +308,12 @@ class PreviewRenderPanel(private val project: Project) : JBPanel<PreviewRenderPa
     }
 
     /** Properties, context-aware by active tab (PG6-8): with Original active, opens Android Studio's picker next
-     *  to the clicked button exactly as before (spec P4); with a copy active, re-renders that copy with its
-     *  current override instead (PG6-9 — the plugin-drawn popup is gone; the real AS picker for a copy arrives in
-     *  PG6-10). The anchor is taken from the toolbar button that fired the action, falling back to the actions bar
-     *  when the event carries no component. Only ever wired into a group when [updateActionsBar]'s gating already
-     *  matches the active tab, so the branch taken here never disagrees with why this action was shown in the
-     *  first place. */
+     *  to the clicked button exactly as before (spec P4); with a copy active, opens [onEphemeralProperties] —
+     *  Android Studio's OWN picker again, but over that copy's in-memory [ViewOverride] instead of the `@Preview`
+     *  source (PG6-10, design D4). The anchor is taken from the toolbar button that fired the action, falling
+     *  back to the actions bar when the event carries no component. Only ever wired into a group when
+     *  [updateActionsBar]'s gating already matches the active tab, so the branch taken here never disagrees with
+     *  why this action was shown in the first place. */
     private inner class PropertiesAction(private val entry: PreviewEntry) : DumbAwareAction(
         PreviewGalleryBundle.message("render.properties"), null, AllIcons.General.Settings,
     ) {
@@ -313,7 +323,16 @@ class PreviewRenderPanel(private val project: Project) : JBPanel<PreviewRenderPa
             if (view == null || view.id == ComparisonViewList.ORIGINAL_ID) {
                 onProperties(entry, RelativePoint(anchor, Point(0, anchor.height)))
             } else {
-                renderInto(view)
+                onEphemeralProperties(entry, view.override, RelativePoint(anchor, Point(0, anchor.height))) { name, value ->
+                    // Re-read the current override from the model on every edit, not the [view] closed over above:
+                    // a picker session that edits more than one property must fold each edit onto the LATEST
+                    // override, not the one captured when Properties was first clicked (which would silently
+                    // discard every edit but the last).
+                    val current = comparisonViews.views.firstOrNull { it.id == view.id } ?: return@onEphemeralProperties
+                    comparisonViews.setOverride(view.id, current.override.with(name, value))
+                    refreshExtraTabTitles()
+                    comparisonViews.views.firstOrNull { it.id == view.id }?.let { renderInto(it) }
+                }
             }
         }
     }
@@ -428,7 +447,7 @@ class PreviewRenderPanel(private val project: Project) : JBPanel<PreviewRenderPa
     /** The small header a [viewTabs] extra tab carries in place of a plain title (PG6-8, brief step 2): just the
      *  tab's own title (from [ViewTitle], tracked live in [extraTabLabels] — see [refreshExtraTabTitles]) and a
      *  close button. No per-tab device selector any more — a copy's override comes from Properties, driven by
-     *  Android Studio's own picker once PG6-10 wires it up; today Properties on a copy simply re-renders it. */
+     *  Android Studio's own picker over an in-memory model (PG6-10; see [onEphemeralProperties]). */
     private fun extraTabHeader(view: ComparisonView, ordinal: Int): JBPanel<*> {
         val label = JBLabel(ViewTitle.of(view, ordinal))
         extraTabLabels[view.id] = label
@@ -482,8 +501,8 @@ class PreviewRenderPanel(private val project: Project) : JBPanel<PreviewRenderPa
      * [com.devomer.previewgallery.render.RenderPipeline.renderVariant], which runs on a background executor and
      * only ever calls back on the EDT. [view]'s override may be entirely default (PG6-8: a freshly-added,
      * untouched copy) — that is not a reason to skip rendering, it is exactly the "renders identically to
-     * Original" case (AC1); a default [ViewOverride] renders exactly like Original's own values, and even a
-     * non-default one has no effect on the render yet (PG6-9 — applying its values is a later task). Guards
+     * Original" case (AC1); a default [ViewOverride] renders exactly like Original's own values, and a
+     * non-default one is applied onto the render by `RenderModelResolver.applyOverride` (PG6-10). Guards
      * staleness with a fresh per-id generation token — if [view]'s id has moved on to a newer token by the time
      * the result arrives (another [renderInto] call for the same id, e.g. Properties re-rendering it again, or
      * the tab/entry was cleared) the result is dropped rather than applied. A no-op if there is no current entry

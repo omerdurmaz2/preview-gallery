@@ -39,11 +39,13 @@ import org.jetbrains.android.facet.AndroidFacet
  * to [RenderModelResult.Failed] (or, for the config-aware element specifically, to the pre-PG4-2 default element)
  * instead of throwing out of the render.
  *
- * PG6-9: also accepts an optional, plugin-owned [ViewOverride] for comparison views — a name→value property map
- * from Android Studio's own `@Preview` picker. This resolver does not yet apply it to the `Configuration`; the
- * parameter is threaded through so the signature is ready for the task that derives a preview element from it. A
- * `null` or default ([ViewOverride.isDefault]) override leaves this class's behaviour byte-for-byte unchanged,
- * exactly like before.
+ * PG6-9/PG6-10: also accepts an optional, plugin-owned [ViewOverride] for comparison views — a name→value
+ * property map from Android Studio's own `@Preview` picker (the real, source-editing picker for Original;
+ * [EphemeralPickerBridge]'s in-memory one for a copy). [applyOverride] applies it by deriving a new preview
+ * element via AS's own `createDerivedInstance` and running the existing `applyTo` path against it (design D5),
+ * merging every axis the user did NOT edit from the base configuration first ([mergeConfiguration] /
+ * [OverrideMerge] — spec V4's `cleanAndGet` trap). A `null` or default ([ViewOverride.isDefault]) override
+ * leaves this class's behaviour byte-for-byte unchanged, exactly like before PG6-9.
  */
 class RenderModelResolver {
 
@@ -129,19 +131,27 @@ class RenderModelResolver {
                 buildDefaultPreviewElement(entry)
             }
 
+        // PG6-10: a non-default comparison-view override — from EphemeralPickerBridge's in-memory picker for a
+        // copy; always null/default for Original — is applied on top of whichever element the config-aware/
+        // default resolution above produced. A null or default override returns [element] itself, unchanged, so
+        // Original's render is byte-for-byte identical to before PG6-9/PG6-10.
+        val finalElement = applyOverride(element, configuration, override)
+
         // PG4-2 ext: whether this element's own @Preview asked for system-UI chrome (showSystemUi), so LiveRenderer
         // can render WITH decorations instead of always shrink-to-content. Guarded on its own: a signature change on
         // a newer IDE degrades this one flag to false (today's plain-preview behavior), not the whole resolution.
-        val showDecorations = runCatching { element.displaySettings.showDecoration }.getOrDefault(false)
+        val showDecorations = runCatching { finalElement.displaySettings.showDecoration }.getOrDefault(false)
 
-        return RenderModelResult.Resolved(Resolved(renderModule, configuration, logger, element, showDecorations))
+        return RenderModelResult.Resolved(Resolved(renderModule, configuration, logger, finalElement, showDecorations))
     }
 
     /**
-     * Applies the config-aware element's own device/api/size/showSystemUi onto [configuration] (needs a read
-     * action — the caller already holds one). Returns `false` if AS's `applyTo` throws, so a config-aware apply
-     * failure degrades to the default-config render (spec §6 D4: the config-aware feature never breaks base
-     * rendering) instead of becoming a hard [RenderModelResult.Failed] via [resolve]'s outer catch.
+     * Applies [element]'s own device/api/size/showSystemUi onto [configuration] via AS's `applyTo` (needs a read
+     * action — every caller already holds one). Returns `false` if `applyTo` throws, so an apply failure degrades
+     * to the caller's own fallback instead of becoming a hard [RenderModelResult.Failed] via [resolve]'s outer
+     * catch. Despite the name (kept from PG4-2, its original and still most common caller), this helper is
+     * generic in [element] — PG6-10's [applyOverride] reuses it verbatim for an override-derived element, where a
+     * throw here falls back to that override's own base element rather than the default-config render.
      */
     private fun applyConfigAware(
         element: SingleComposePreviewElementInstance<*>,
@@ -157,6 +167,125 @@ class RenderModelResolver {
     } catch (e: LinkageError) {
         thisLogger().info("The config-aware apply API is incompatible with this IDE build; using the default", e)
         false
+    }
+
+    /**
+     * PG6-10: applies [override]'s values onto [base] by deriving a new preview element via AS's own
+     * `ComposePreviewElementInstance.createDerivedInstance` and running it through [applyConfigAware] (design
+     * D5) — replacing the interim three-axis `setDevice`/`setNightMode`/`setFontScale` mechanism (PG6-7,
+     * superseded — see [RenderApiProbe.isViewOverrideAvailable]'s updated requirements). A `null` or default
+     * override ([ViewOverride.isDefault]) returns [base] itself, unchanged: Original's own render (whose
+     * override is always `null`) and a freshly-added, untouched comparison copy (AC1) are both exactly as
+     * before this task.
+     *
+     * Guarded like every other AS-internal call in this class, via [deriveOverriddenElement] and
+     * [applyConfigAware]: [ProcessCanceledException] re-thrown first, then [Exception]/[LinkageError] degrade to
+     * [base] — an override that fails to derive or apply on this IDE build renders the copy at its base
+     * configuration instead of failing the whole render (design D11).
+     */
+    private fun applyOverride(
+        base: SingleComposePreviewElementInstance<*>,
+        configuration: Configuration,
+        override: ViewOverride?,
+    ): SingleComposePreviewElementInstance<*> {
+        if (override == null || override.isDefault) return base
+        val derived = deriveOverriddenElement(base, override) ?: return base
+        return if (applyConfigAware(derived, configuration)) derived else base
+    }
+
+    /**
+     * The actual `createDerivedInstance` call (spec D5), isolated from [applyOverride] so it can return `null` on
+     * failure the same way [findConfigAwareElement] does, instead of juggling try/catch + a definite-assignment
+     * `val` across a `when applyOverride` caller. [mergeConfiguration] handles spec V4's `cleanAndGet` trap for
+     * the 8 `Configuration`-mapped axes; `showDecoration` (`showSystemUi`) and `background`
+     * (`showBackground`/`backgroundColor`, via [mergeBackground] — Fix round 1) are folded into the derived
+     * display settings in the same `copy(...)` call, so every offered picker property reaches the render.
+     */
+    private fun deriveOverriddenElement(
+        base: SingleComposePreviewElementInstance<*>,
+        override: ViewOverride,
+    ): SingleComposePreviewElementInstance<*>? = try {
+        val merged = mergeConfiguration(base.configuration, override)
+        val display = base.displaySettings.copy(
+            showDecoration = override.values["showSystemUi"]?.toBooleanStrictOrNull()
+                ?: base.displaySettings.showDecoration,
+            background = mergeBackground(base.displaySettings.background, override),
+        )
+        base.createDerivedInstance(display, merged)
+    } catch (e: ProcessCanceledException) {
+        throw e // Never swallow cancellation — the platform relies on it propagating.
+    } catch (e: Exception) {
+        thisLogger().info("Deriving the view-override preview element failed; using the base configuration", e)
+        null
+    } catch (e: LinkageError) {
+        thisLogger().info(
+            "The view-override derive API is incompatible with this IDE build; using the base configuration",
+            e,
+        )
+        null
+    }
+
+    /**
+     * Fix round 1: folds `showBackground`/`backgroundColor` onto [base] (spec D5 — these travel through the
+     * bridge XML via [PreviewDisplaySettings], not a `Configuration` setter). `PreviewDisplaySettings.Background`
+     * is a 4-variant Kotlin sealed interface (javap-confirmed against `android.jar`): the singleton objects
+     * `None` and `Default`, `Color(color: String)`, and `Image(image: Consumer<BufferedImage>)` — the last is
+     * unreachable from the picker's two string properties and is preserved, not clobbered, when [base] already
+     * carries one (see the final branch below). `backgroundColor`'s string is passed straight through into
+     * `Color(...)` unchanged, exactly like `device`/`locale` elsewhere ([OverrideMerge]) — no format was
+     * reverse-engineered or assumed; whatever string the picker's own editor round-trips through `Color.color`
+     * when seeding is the same string handed back to `Color(...)` here.
+     *
+     * Base-preserving per spec V4, same rule as [mergeConfiguration]: `shown`/`color` each fall back to reading
+     * [base] itself — `shown` from `base !is Background.None`, `color` from `(base as? Background.Color)?.color`
+     * — when the corresponding property was not edited this session, so an untouched axis reproduces [base]'s
+     * own value instead of a fabricated default.
+     */
+    private fun mergeBackground(base: PreviewDisplaySettings.Background, override: ViewOverride): PreviewDisplaySettings.Background {
+        val baseShown = base !is PreviewDisplaySettings.Background.None
+        val baseColor = (base as? PreviewDisplaySettings.Background.Color)?.color
+        val shown = override.values["showBackground"]?.toBooleanStrictOrNull() ?: baseShown
+        val color = override.values["backgroundColor"] ?: baseColor
+        return when {
+            !shown -> PreviewDisplaySettings.Background.None
+            color != null -> PreviewDisplaySettings.Background.Color(color)
+            baseShown -> base // shown, no color either way, and base already had SOME visible background (Default/Image) — keep it as-is.
+            else -> PreviewDisplaySettings.Background.Default // newly toggled on, no color yet: a sensible starting point, not a guess.
+        }
+    }
+
+    /**
+     * The AS [PreviewConfiguration] ⇄ [MergedConfig] conversion at the AS boundary (spec V4): [OverrideMerge.merge]
+     * itself (Step 3) never touches an AS type, is pure, and is unit-tested directly. [base]'s own
+     * `colorBlindImageTransformation` — outside [ViewOverride]'s property set entirely, so the picker can never
+     * edit it — is always passed straight through for the same reason every unedited axis is: `cleanAndGet`
+     * would otherwise reset it to its sentinel.
+     */
+    private fun mergeConfiguration(base: PreviewConfiguration, override: ViewOverride): PreviewConfiguration {
+        val merged = OverrideMerge.merge(
+            MergedConfig(
+                apiLevel = base.apiLevel,
+                width = base.width,
+                height = base.height,
+                locale = base.locale,
+                fontScale = base.fontScale,
+                uiMode = base.uiMode,
+                deviceSpec = base.deviceSpec,
+                wallpaper = base.wallpaper,
+            ),
+            override,
+        )
+        return PreviewConfiguration.cleanAndGet(
+            /* apiLevel = */ merged.apiLevel,
+            /* width = */ merged.width,
+            /* height = */ merged.height,
+            /* locale = */ merged.locale,
+            /* fontScale = */ merged.fontScale,
+            /* uiMode = */ merged.uiMode,
+            /* deviceSpec = */ merged.deviceSpec,
+            /* wallpaper = */ merged.wallpaper,
+            /* colorBlindImageTransformation = */ base.colorBlindImageTransformation,
+        )
     }
 
     /**
@@ -267,4 +396,16 @@ class RenderModelResolver {
             /* previewWrapperProviderFqn = */ null,
         )
     }
+
+    /**
+     * PG6-10: [entry]'s own current preview element — config-aware when available, else the layoutlib-default
+     * fallback; the exact "real `@Preview` args, else sentinel defaults" resolution [resolveUnderReadAction]
+     * itself uses for rendering (just without applying it onto a `Configuration`). `internal`, not `private`, so
+     * [EphemeralPickerBridge] can seed its ephemeral picker's items from the SAME values a render would use,
+     * without duplicating [findConfigAwareElement]'s lock-free-before-any-read-action discipline (see its own
+     * doc for why). Must be called OUTSIDE a read action for the same reason [findConfigAwareElement] alone must
+     * be — [buildDefaultPreviewElement] takes none itself, so the combination carries no extra constraint.
+     */
+    internal fun resolveCurrentElement(entry: PreviewEntry, project: Project): SingleComposePreviewElementInstance<*> =
+        findConfigAwareElement(entry, project) ?: buildDefaultPreviewElement(entry)
 }

@@ -45,16 +45,26 @@ object RenderApiProbe {
         "com.android.tools.idea.compose.preview.SourceLocation" to listOf("getFileName", "getLineNumber"),
     )
 
-    // The AS calls a comparison-view override will need to map its values onto the render Configuration — device
-    // (task-3 report, V1 — confirmed by javap on android.jar), night mode and font scale (task-7 report). Not
-    // called by RenderModelResolver yet (PG6-9: applying an override is a later task); this list only gates the
-    // probe below. Device itself is included as a bare class-presence check since it is the type
-    // getDeviceById/setDevice exchange, even though its own getId() is not reflected directly (AS's getDeviceById
-    // does that internally).
+    // PG6-10: what RenderModelResolver.applyOverride + EphemeralPickerBridge actually call now — deriving an
+    // overridden preview element (createDerivedInstance) and letting AS's own applyTo map it onto the render
+    // Configuration (design D5), plus the ephemeral in-memory picker that edits it (design D4). This SUPERSEDES
+    // the interim setDevice/setNightMode/setFontScale + getDeviceById probe (PG6-3/PG6-7): that mechanism was
+    // replaced, not extended (spec D5), and grep confirms nothing in this plugin calls those four members any
+    // more — keeping them here would gate the feature on a capability it no longer exercises.
+    // Fix round 1 (review): getProperties (PsiPropertiesModel, inherited from PropertiesModel<P> — reflected the
+    // same way as its two directly-declared members) and EditingErrorCategory (the validator lambda's return
+    // type, adt-ui.jar — NotifyingItem's constructor call can't build without it) were both actually depended on
+    // but missing from this list.
     private val viewOverrideRequired = listOf(
-        "com.android.tools.idea.configurations.ConfigurationManager" to listOf("getDeviceById"),
-        "com.android.tools.configurations.Configuration" to listOf("setDevice", "setNightMode", "setFontScale"),
-        "com.android.sdklib.devices.Device" to emptyList(),
+        "com.android.tools.preview.ComposePreviewElementInstance" to listOf("createDerivedInstance"),
+        "com.android.tools.idea.compose.pickers.PsiPickerManager" to listOf("show"),
+        "com.android.tools.idea.compose.pickers.base.model.PsiPropertiesModel" to listOf("getInspectorBuilder", "getTracker", "getProperties"),
+        "com.android.tools.idea.compose.pickers.base.property.MemoryParameterPropertyItem" to listOf("getValue", "setValue"),
+        "com.android.tools.idea.compose.pickers.preview.inspector.PreviewPropertiesInspectorBuilder" to emptyList(),
+        "com.android.tools.idea.compose.pickers.preview.enumsupport.PreviewPickerValuesProvider" to listOf("createPreviewValuesProvider"),
+        "com.android.tools.property.panel.api.PropertiesTable\$Companion" to listOf("create"),
+        "com.android.tools.idea.compose.pickers.base.tracking.ComposePickerTracker" to emptyList(),
+        "com.android.tools.adtui.model.stdui.EditingErrorCategory" to emptyList(),
     )
 
     fun isAvailable(): Boolean = allPresent(required)
@@ -74,11 +84,12 @@ object RenderApiProbe {
      *  source-location) overlay for a later hit-testing task degrades to an empty list. */
     fun isViewTreeAvailable(): Boolean = allPresent(viewTreeRequired)
 
-    /** Whether the AS device/theme/font-scale render APIs a comparison-view override will need are present on
-     *  this build (PG6-7 probe; comparison views). Independent of [isAvailable]: a build missing just this
-     *  capability still renders every preview at its config-aware values. PG6-9: [RenderModelResolver] does not
-     *  call these yet — applying a plugin-owned override onto the `Configuration` is a later task; this probe is
-     *  still what the comparison-view UI gates its ＋ Add view / copy-tab Properties controls on. */
+    /** Whether the AS derive-and-apply + ephemeral-picker APIs a comparison-view override needs are present on
+     *  this build (PG6-7 probe; widened in PG6-10 to what `RenderModelResolver.applyOverride` and
+     *  `EphemeralPickerBridge` actually call). Independent of [isAvailable]: a build missing just this capability
+     *  still renders every preview at its config-aware values. Gates both the comparison-view UI's ＋ Add view
+     *  action and a copy tab's Properties action (PG6-8) — one flag for both, since re-rendering a copy with its
+     *  override needs the same capability adding one does. */
     fun isViewOverrideAvailable(): Boolean = allPresent(viewOverrideRequired)
 
     private fun allPresent(required: List<Pair<String, List<String>>>): Boolean = runCatching {
