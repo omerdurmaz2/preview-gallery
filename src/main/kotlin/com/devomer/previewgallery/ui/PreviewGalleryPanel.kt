@@ -260,7 +260,7 @@ class PreviewGalleryPanel(
                 // they have, either the node was found, or the id is simply unreachable (stale, or filtered out
                 // by the active-module filter) and must not keep retrying on every later rebuild.
                 selectEntry(pending)
-                if (selectedEntry()?.id == pending || entries.isNotEmpty()) pendingSelectionId = null
+                if (entries.isNotEmpty()) pendingSelectionId = null
             } else if (previousSelectionId != null) {
                 // No-op if the previously selected entry was filtered out; selection then stays empty.
                 selectEntry(previousSelectionId)
