@@ -1,8 +1,7 @@
 package com.devomer.previewgallery.render
 
 import com.devomer.previewgallery.model.PreviewEntry
-import com.devomer.previewgallery.model.ThemeOption
-import com.devomer.previewgallery.model.ViewConfig
+import com.devomer.previewgallery.model.ViewOverride
 import com.intellij.openapi.application.ReadAction
 import com.intellij.openapi.diagnostic.thisLogger
 import com.intellij.openapi.progress.ProcessCanceledException
@@ -40,11 +39,11 @@ import org.jetbrains.android.facet.AndroidFacet
  * to [RenderModelResult.Failed] (or, for the config-aware element specifically, to the pre-PG4-2 default element)
  * instead of throwing out of the render.
  *
- * PG6-7 (widened from PG6-3's device-only override): also accepts an optional, plugin-owned `viewConfig` for
- * comparison views — device, theme and font scale — applied AFTER the config-aware `@Preview` values onto the
- * same `Configuration`, each axis independently guarded (see [applyAxis]): a thrown failure applying one axis
- * never prevents the others from being attempted. A `null` or default ([ViewConfig.isDefault]) config leaves
- * this class's behaviour byte-for-byte unchanged.
+ * PG6-9: also accepts an optional, plugin-owned [ViewOverride] for comparison views — a name→value property map
+ * from Android Studio's own `@Preview` picker. This resolver does not yet apply it to the `Configuration`; the
+ * parameter is threaded through so the signature is ready for the task that derives a preview element from it. A
+ * `null` or default ([ViewOverride.isDefault]) override leaves this class's behaviour byte-for-byte unchanged,
+ * exactly like before.
  */
 class RenderModelResolver {
 
@@ -75,7 +74,7 @@ class RenderModelResolver {
         class Failed(val message: String, val detail: String?) : RenderModelResult
     }
 
-    fun resolve(entry: PreviewEntry, project: Project, viewConfig: ViewConfig? = null): RenderModelResult =
+    fun resolve(entry: PreviewEntry, project: Project, override: ViewOverride? = null): RenderModelResult =
         try {
             // The config-aware element is fetched FIRST, lock-free (see [findConfigAwareElement]): its finder is a
             // suspend function that acquires its OWN (smart) read access, and calling it while we already hold the
@@ -85,7 +84,7 @@ class RenderModelResolver {
             // applies the already-fetched element's own @Preview configuration.
             val configAware = findConfigAwareElement(entry, project)
             ReadAction.compute<RenderModelResult, RuntimeException> {
-                resolveUnderReadAction(entry, project, configAware, viewConfig)
+                resolveUnderReadAction(entry, project, configAware, override)
             }
         } catch (e: ProcessCanceledException) {
             throw e // Never swallow cancellation — the platform relies on it propagating.
@@ -101,7 +100,7 @@ class RenderModelResolver {
         entry: PreviewEntry,
         project: Project,
         configAware: SingleComposePreviewElementInstance<*>?,
-        viewConfig: ViewConfig?,
+        override: ViewOverride?,
     ): RenderModelResult {
         // U1: module → AndroidFacet → AndroidBuildTargetReference → AndroidFacetRenderModelModule.
         val module = ProjectFileIndex.getInstance(project).getModuleForFile(entry.file)
@@ -112,8 +111,6 @@ class RenderModelResolver {
         val renderModule = AndroidFacetRenderModelModule(buildTarget)
 
         // The Configuration (device, theme, locale, target SDK) derived from the composable's own source file.
-        // The manager itself is kept (not just its Configuration) because the view-override block below needs it
-        // too, to look up a Device by id.
         val configurationManager = ConfigurationManager.getOrCreateInstance(module)
         val configuration = configurationManager.getConfiguration(entry.file)
 
@@ -132,52 +129,12 @@ class RenderModelResolver {
                 buildDefaultPreviewElement(entry)
             }
 
-        // Ephemeral view override for comparison copies (PG6). Applied AFTER the config-aware @Preview values, so a
-        // null/default config leaves today's behaviour untouched. Each axis is applied through its own [applyAxis]
-        // guard: an unresolved device (getDeviceById returning null) or a setter that throws degrades ONLY that
-        // axis to its config-aware value — it never prevents the remaining axes from being attempted.
-        if (viewConfig != null && !viewConfig.isDefault) {
-            viewConfig.device?.let { option ->
-                applyAxis("device ${option.id}") {
-                    configurationManager.getDeviceById(option.id)?.let { configuration.setDevice(it, true) }
-                }
-            }
-            viewConfig.theme?.let { theme ->
-                applyAxis("theme ${theme.name}") {
-                    configuration.setNightMode(
-                        when (theme) {
-                            ThemeOption.DARK -> com.android.resources.NightMode.NIGHT
-                            ThemeOption.LIGHT -> com.android.resources.NightMode.NOTNIGHT
-                        },
-                    )
-                }
-            }
-            viewConfig.fontScale?.let { scale ->
-                applyAxis("font scale $scale") { configuration.setFontScale(scale) }
-            }
-        }
-
         // PG4-2 ext: whether this element's own @Preview asked for system-UI chrome (showSystemUi), so LiveRenderer
         // can render WITH decorations instead of always shrink-to-content. Guarded on its own: a signature change on
         // a newer IDE degrades this one flag to false (today's plain-preview behavior), not the whole resolution.
         val showDecorations = runCatching { element.displaySettings.showDecoration }.getOrDefault(false)
 
         return RenderModelResult.Resolved(Resolved(renderModule, configuration, logger, element, showDecorations))
-    }
-
-    /** Applies one comparison-view axis, guarded independently so a failure in one axis never prevents the others
-     *  from being applied; the axis simply keeps its config-aware value. [axis] names the axis (and, where useful,
-     *  the value being applied) purely for the log message — never swallows [ProcessCanceledException]. */
-    private inline fun applyAxis(axis: String, apply: () -> Unit) {
-        try {
-            apply()
-        } catch (e: ProcessCanceledException) {
-            throw e
-        } catch (e: Exception) {
-            thisLogger().info("Could not apply comparison view $axis; keeping the @Preview configuration", e)
-        } catch (e: LinkageError) {
-            thisLogger().info("Comparison view $axis is unsupported on this IDE build", e)
-        }
     }
 
     /**

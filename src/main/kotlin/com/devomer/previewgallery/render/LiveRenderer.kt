@@ -4,7 +4,7 @@ import com.devomer.previewgallery.model.PreviewEntry
 import com.devomer.previewgallery.model.PreviewSourceLocation
 import com.devomer.previewgallery.model.PreviewViewNode
 import com.devomer.previewgallery.model.RenderOutcome
-import com.devomer.previewgallery.model.ViewConfig
+import com.devomer.previewgallery.model.ViewOverride
 import com.devomer.previewgallery.render.RenderModelResolver.RenderModelResult
 import com.intellij.openapi.diagnostic.thisLogger
 import com.intellij.openapi.progress.ProcessCanceledException
@@ -69,18 +69,17 @@ class LiveRenderer(
      * Render [entry] to a [RenderOutcome]. Never throws (except cancellation). Blocks the calling (background)
      * thread on the render futures, each with a [TIMEOUT_MS] cap.
      *
-     * [viewConfig] (PG6-7, widened from PG6-3's device-only override) is an optional, plugin-owned three-axis
-     * device/theme/font-scale override to apply on top of [entry]'s config-aware `@Preview` values — forwarded to
-     * [RenderModelResolver.resolve] unchanged, which applies each set axis to the `Configuration` (guarded; each
-     * axis independently degrades to the config-aware value on failure). `null`, or a default
-     * ([ViewConfig.isDefault]), config reproduces the exact pre-override config-aware path.
+     * [override] (PG6-9, widened from the three-axis config to a full name→value property map) is an optional,
+     * plugin-owned override for one comparison copy — forwarded to [RenderModelResolver.resolve] unchanged.
+     * `null`, or a default ([ViewOverride.isDefault]), override reproduces the exact config-aware path; applying
+     * a non-default override's values onto the `Configuration` is not wired up yet (a later task).
      */
-    fun render(entry: PreviewEntry, viewConfig: ViewConfig? = null): RenderOutcome {
+    fun render(entry: PreviewEntry, override: ViewOverride? = null): RenderOutcome {
         if (!isAvailable()) {
             return RenderOutcome.Unsupported("Live rendering is unavailable on this IDE build")
         }
         return try {
-            when (val result = resolver.resolve(entry, project, viewConfig)) {
+            when (val result = resolver.resolve(entry, project, override)) {
                 is RenderModelResult.NoFacet ->
                     RenderOutcome.Unsupported("Module '${entry.moduleName}' has no Android facet")
                 is RenderModelResult.Failed ->

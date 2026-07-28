@@ -1,13 +1,13 @@
 package com.devomer.previewgallery.ui
 
-import com.devomer.previewgallery.model.ViewConfig
+import com.devomer.previewgallery.model.ViewOverride
 
 /**
  * One comparison tab. [id] == [ComparisonViewList.ORIGINAL_ID] is the **Original** view — the preview at its own
  * `@Preview` config, which never changes settings. Every other id is an ephemeral copy: the same preview re-rendered
- * with [config]'s overrides (a default [ViewConfig] means "not configured yet", i.e. renders like Original).
+ * with [override]'s values (a default [ViewOverride] means "not configured yet", i.e. renders like Original).
  */
-data class ComparisonView(val id: Int, val config: ViewConfig)
+data class ComparisonView(val id: Int, val override: ViewOverride)
 
 /**
  * The ephemeral tab state for the render pane: always an Original view at index 0, plus up to [maxExtras] copies.
@@ -16,16 +16,16 @@ data class ComparisonView(val id: Int, val config: ViewConfig)
  */
 class ComparisonViewList(private val maxExtras: Int = DEFAULT_MAX_EXTRAS) {
 
-    private val items = mutableListOf(ComparisonView(ORIGINAL_ID, ViewConfig()))
+    private val items = mutableListOf(ComparisonView(ORIGINAL_ID, ViewOverride()))
     private var nextId = ORIGINAL_ID + 1
 
     /** Original first, then the extras in add order. A defensive copy — callers cannot mutate the backing list. */
     val views: List<ComparisonView> get() = items.toList()
 
-    /** Append an override view carrying [config]; null when the extras cap is already reached. */
-    fun add(config: ViewConfig): ComparisonView? {
+    /** Append an override view carrying [override]; null when the extras cap is already reached. */
+    fun add(override: ViewOverride): ComparisonView? {
         if (items.size - 1 >= maxExtras) return null
-        val view = ComparisonView(nextId++, config)
+        val view = ComparisonView(nextId++, override)
         items.add(view)
         return view
     }
@@ -36,11 +36,11 @@ class ComparisonViewList(private val maxExtras: Int = DEFAULT_MAX_EXTRAS) {
         items.removeAll { it.id == id }
     }
 
-    /** Set an extra view's settings. Ignores [ORIGINAL_ID] and unknown ids (Original never changes settings). */
-    fun setConfig(id: Int, config: ViewConfig) {
+    /** Set an extra view's override. Ignores [ORIGINAL_ID] and unknown ids (Original never changes settings). */
+    fun setOverride(id: Int, override: ViewOverride) {
         val index = items.indexOfFirst { it.id == id }
         if (index <= 0) return
-        items[index] = items[index].copy(config = config)
+        items[index] = items[index].copy(override = override)
     }
 
     /** Drop every extra view, returning to Original only (called on a preview selection change). */

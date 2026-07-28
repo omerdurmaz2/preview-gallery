@@ -130,7 +130,7 @@ class PreviewGalleryPanel(
         // non-debounced per-tab render entry point (task-3 report §4 / PG6-4 design), independent of the single
         // debounced Original selection this pipeline otherwise drives.
         renderPanel.deviceOverrideAvailable = RenderApiProbe.isViewOverrideAvailable()
-        renderPanel.onRequestVariant = { entry, config, callback -> pipeline.renderVariant(entry, config, callback) }
+        renderPanel.onRequestVariant = { entry, override, callback -> pipeline.renderVariant(entry, override, callback) }
 
         val actionGroup = DefaultActionGroup(
             RefreshAction(project) { reload() },

@@ -45,11 +45,12 @@ object RenderApiProbe {
         "com.android.tools.idea.compose.preview.SourceLocation" to listOf("getFileName", "getLineNumber"),
     )
 
-    // PG6-7 (widened from PG6-3's device-only probe): the calls RenderModelResolver's view-override block makes
-    // to map a plugin-owned ViewConfig's three axes onto the render Configuration — device (task-3 report, V1 —
-    // confirmed by javap on android.jar), night mode and font scale (task-7 report). Device itself is included as
-    // a bare class-presence check since it is the type getDeviceById/setDevice exchange, even though its own
-    // getId() is not reflected directly (AS's getDeviceById does that internally).
+    // The AS calls a comparison-view override will need to map its values onto the render Configuration — device
+    // (task-3 report, V1 — confirmed by javap on android.jar), night mode and font scale (task-7 report). Not
+    // called by RenderModelResolver yet (PG6-9: applying an override is a later task); this list only gates the
+    // probe below. Device itself is included as a bare class-presence check since it is the type
+    // getDeviceById/setDevice exchange, even though its own getId() is not reflected directly (AS's getDeviceById
+    // does that internally).
     private val viewOverrideRequired = listOf(
         "com.android.tools.idea.configurations.ConfigurationManager" to listOf("getDeviceById"),
         "com.android.tools.configurations.Configuration" to listOf("setDevice", "setNightMode", "setFontScale"),
@@ -73,12 +74,11 @@ object RenderApiProbe {
      *  source-location) overlay for a later hit-testing task degrades to an empty list. */
     fun isViewTreeAvailable(): Boolean = allPresent(viewTreeRequired)
 
-    /** Whether [RenderModelResolver] can map a plugin-owned `ViewConfig` (device, theme, font scale) onto an
-     *  Android Studio `Device`/`Configuration` (PG6-7, widened from PG6-3's device-only probe; comparison views).
-     *  Independent of [isAvailable]: a build missing just this capability still renders every preview at its
-     *  config-aware values; a `viewConfig` passed anyway simply degrades, axis by axis, to those same values
-     *  (guarded in [RenderModelResolver]'s view-override block). This probe is what the comparison-view UI gates
-     *  its view-settings controls on. */
+    /** Whether the AS device/theme/font-scale render APIs a comparison-view override will need are present on
+     *  this build (PG6-7 probe; comparison views). Independent of [isAvailable]: a build missing just this
+     *  capability still renders every preview at its config-aware values. PG6-9: [RenderModelResolver] does not
+     *  call these yet — applying a plugin-owned override onto the `Configuration` is a later task; this probe is
+     *  still what the comparison-view UI gates its ＋ Add view / copy-tab Properties controls on. */
     fun isViewOverrideAvailable(): Boolean = allPresent(viewOverrideRequired)
 
     private fun allPresent(required: List<Pair<String, List<String>>>): Boolean = runCatching {
