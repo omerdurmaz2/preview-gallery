@@ -99,4 +99,51 @@ class PreviewGalleryPanelTest : BasePlatformTestCase() {
 
         assertEquals(null, panel.selectedEntryIdForTest())
     }
+
+    fun `test revealEntry clears a stale query and selects the entry`() {
+        myFixture.addFileToProject(
+            "Foo.kt",
+            """
+            package com.example
+
+            import androidx.compose.ui.tooling.preview.Preview
+
+            @Preview
+            fun BarPreview() {}
+            """.trimIndent(),
+        )
+        val panel = panel()
+        panel.reloadSynchronously()
+        val entry = PreviewIndexService.getInstance(project).findAll().single()
+        panel.applyQueryForTest("zzz")
+        assertEquals(PreviewGalleryPanel.State.NO_MATCH, panel.state)
+
+        panel.revealEntry(entry.id)
+
+        assertEquals(PreviewGalleryPanel.State.LOADED, panel.state)
+        assertEquals(entry.id, panel.selectedEntryIdForTest())
+    }
+
+    fun `test an entry revealed before loading is selected once entries arrive`() {
+        myFixture.addFileToProject(
+            "Foo.kt",
+            """
+            package com.example
+
+            import androidx.compose.ui.tooling.preview.Preview
+
+            @Preview
+            fun BarPreview() {}
+            """.trimIndent(),
+        )
+        // The index service is independent of the panel, so the id is known before the panel has loaded anything.
+        val entryId = PreviewIndexService.getInstance(project).findAll().single().id
+        val panel = panel()
+
+        panel.revealEntry(entryId)
+        assertNull(panel.selectedEntryIdForTest())
+
+        panel.reloadSynchronously()
+        assertEquals(entryId, panel.selectedEntryIdForTest())
+    }
 }

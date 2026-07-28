@@ -65,6 +65,11 @@ class PreviewGalleryPanel(
     private var entries: List<PreviewEntry> = emptyList()
     private var lastSelectedEntry: PreviewEntry? = null
 
+    /** An entry another surface asked to reveal before the tree could show it (the tool window may have been
+     *  created by that very request, so [entries] can still be loading). Applied by [applyFilter] and cleared
+     *  once the selection lands. */
+    private var pendingSelectionId: String? = null
+
     /** Suppresses [pipeline] notifications while [applyFilter] is rebuilding tree nodes and restoring the
      *  previous selection onto the new ones — the rebuild otherwise looks like the selection was cleared and
      *  then reselected, which would restart an in-progress or already-finished render for no reason. */
@@ -205,6 +210,17 @@ class PreviewGalleryPanel(
         tree.scrollPathToVisible(path)
     }
 
+    /**
+     * Brings [entryId] into view and selects it, for entry points outside the tool window (PG8: the editor's
+     * "Show all previews" button). Unlike [selectEntry] this clears a stale search query first, and survives the
+     * entries not being loaded yet.
+     */
+    fun revealEntry(entryId: String) {
+        pendingSelectionId = entryId
+        if (searchField.text.isNotEmpty()) searchField.text = ""
+        applyFilter()
+    }
+
     /** The id of the currently selected entry, or null if none is selected. */
     @TestOnly
     fun selectedEntryIdForTest(): String? = selectedEntry()?.id
@@ -236,8 +252,16 @@ class PreviewGalleryPanel(
             }
             treeModel.reload()
             expandAll()
-            // No-op if the previously selected entry was filtered out; selection then stays empty.
-            if (previousSelectionId != null) selectEntry(previousSelectionId)
+            val pending = pendingSelectionId
+            if (pending != null) {
+                // A reveal request outranks the restore: it is an explicit user action, while the restore only
+                // exists to survive the rebuild. Keep it pending until the node actually exists.
+                selectEntry(pending)
+                if (selectedEntry()?.id == pending) pendingSelectionId = null
+            } else if (previousSelectionId != null) {
+                // No-op if the previously selected entry was filtered out; selection then stays empty.
+                selectEntry(previousSelectionId)
+            }
         } finally {
             restoringSelection = false
         }
