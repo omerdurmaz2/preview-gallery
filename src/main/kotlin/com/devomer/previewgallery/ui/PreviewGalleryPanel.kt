@@ -204,11 +204,44 @@ class PreviewGalleryPanel(
         applyFilter()
     }
 
+    /** Reveals and selects [entryId]: expands its ancestor path, selects the leaf, and scrolls it into view.
+     *  Used by explicit reveal entry points ([revealEntry] and [PreviewSearchEverywhereContributor]) where
+     *  opening the path is exactly the point. For the selection-restore path inside [applyFilter], which must
+     *  NOT re-open a branch the user collapsed, see the private [selectEntry] overload below. */
     fun selectEntry(entryId: String) {
+        selectEntry(entryId, revealPath = true)
+    }
+
+    /**
+     * Selects [entryId], optionally revealing (expanding + scrolling to) its ancestor path.
+     *
+     * [revealPath] = true is the reveal intent: an explicit user/outside action asked to bring this entry into
+     * view, so opening its path is the whole point.
+     *
+     * [revealPath] = false is the restore intent, used only by [applyFilter] when reapplying the previously
+     * selected entry onto a freshly rebuilt tree. That rebuild can be triggered by far more than user intent
+     * (e.g. [ActiveModuleTracker] firing on every editor `selectionChanged`, even when the active module did not
+     * change), so it must not silently re-open a branch the user deliberately collapsed. The selection is still
+     * set — [selectedEntry] and the `currentSelection?.id != previousSelectionId` check in [applyFilter] behave
+     * exactly as if the node were visible — but the tree's expansion state is left untouched. Note that
+     * [Tree.setSelectionPath] auto-expands a hidden path by default ([Tree.getExpandsSelectedPaths]), so that
+     * flag is disabled for the duration of a non-revealing selection.
+     */
+    private fun selectEntry(entryId: String, revealPath: Boolean) {
         val path = findPath(entryId) ?: return
-        path.parentPath?.let { tree.expandPath(it) }
-        tree.selectionPath = path
-        tree.scrollPathToVisible(path)
+        if (revealPath) {
+            path.parentPath?.let { tree.expandPath(it) }
+            tree.selectionPath = path
+            tree.scrollPathToVisible(path)
+        } else {
+            val previousExpandsSelectedPaths = tree.expandsSelectedPaths
+            tree.expandsSelectedPaths = false
+            try {
+                tree.selectionPath = path
+            } finally {
+                tree.expandsSelectedPaths = previousExpandsSelectedPaths
+            }
+        }
     }
 
     /**
@@ -272,8 +305,10 @@ class PreviewGalleryPanel(
                 selectEntry(pending)
                 if (entries.isNotEmpty()) pendingSelectionId = null
             } else if (previousSelectionId != null) {
-                // No-op if the previously selected entry was filtered out; selection then stays empty.
-                selectEntry(previousSelectionId)
+                // No-op if the previously selected entry was filtered out; selection then stays empty. This is
+                // the restore intent (revealPath = false): re-selecting the same entry across a rebuild must not
+                // re-open a branch the user collapsed themselves before this rebuild was triggered.
+                selectEntry(previousSelectionId, revealPath = false)
             }
         } finally {
             restoringSelection = false

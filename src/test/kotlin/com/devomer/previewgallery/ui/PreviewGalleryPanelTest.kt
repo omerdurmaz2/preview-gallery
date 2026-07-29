@@ -246,4 +246,24 @@ class PreviewGalleryPanelTest : BasePlatformTestCase() {
         assertEquals(entry.id, panel.selectedEntryIdForTest())
         assertTrue(panel.visibleRowLabelsForTest().contains("CheckoutPreview"))
     }
+
+    fun `test a rebuild does not re-open branches the user collapsed`() {
+        twoDomainProject()
+        val panel = panel()
+        panel.reloadSynchronously()
+        val entry = PreviewIndexService.getInstance(project).findAll()
+            .single { it.indexed.displayName == "CheckoutPreview" }
+
+        // selectEntry is the reveal path: it expands the checkout branch and selects the leaf.
+        panel.selectEntry(entry.id)
+        assertTrue(panel.visibleRowLabelsForTest().contains("CheckoutPreview"))
+
+        // A plain rebuild with no query (e.g. triggered by ActiveModuleTracker on an unrelated editor
+        // selectionChanged) must restore the selection without re-opening the branch the user could have
+        // collapsed in the meantime; the tree goes back to showing only the module level.
+        panel.applyQueryForTest("")
+
+        assertEquals(entry.id, panel.selectedEntryIdForTest())
+        assertFalse(panel.visibleRowLabelsForTest().toString(), panel.visibleRowLabelsForTest().contains("CheckoutPreview"))
+    }
 }
