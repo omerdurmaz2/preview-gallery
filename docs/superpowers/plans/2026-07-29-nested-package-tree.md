@@ -780,11 +780,13 @@ git commit -m "[PG9-4] - Add Expand All and Collapse All to the gallery toolbar"
 
 1. Open the Compose Gallery. Confirm each module row is open and its sub-branches are closed.
 2. Confirm the package rows branch at the forking segment, with the shared prefix compacted into one row (`com.example.buy` → `basket`, `checkout`).
-3. Confirm every branch row shows a preview count, and that the counts add up to the module's count.
-4. Type a query; confirm the matching branches open by themselves and the preview is visible without clicking. Clear it; confirm the tree returns to the module level.
+3. Confirm every branch row shows a preview count, and that a module's branch counts add up to its own count (a module whose previews sit in the default package legitimately counts more than its branches do).
+4. Type a query; confirm the matching branches open by themselves and the preview is visible without clicking. Clear it; confirm the tree returns to what you had open before typing (the module level on a freshly opened gallery).
 5. Click Expand All, then Collapse All in the gallery toolbar; confirm they behave like the Project view's.
-6. Use the editor's "Show all previews" button on a deep package; confirm the gallery opens that preview's path and selects it.
-7. Close the sandbox before running any further Gradle task.
+6. Select a preview so it renders, add a comparison view tab, then click Collapse All: confirm the preview stays selected, the render stays on screen and the comparison tabs survive.
+7. Expand a branch by hand, then switch editor tabs a few times: confirm it stays open. Collapse All, switch tabs again: confirm it stays closed.
+8. Use the editor's "Show all previews" button on a deep package; confirm the gallery opens that preview's path and selects it.
+9. Close the sandbox before running any further Gradle task.
 
 ## Verification checklist
 
