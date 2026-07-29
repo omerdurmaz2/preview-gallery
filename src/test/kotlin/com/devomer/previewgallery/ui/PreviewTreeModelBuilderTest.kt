@@ -17,7 +17,7 @@ class PreviewTreeModelBuilderTest {
 
         val modules = PreviewTreeModelBuilder.build(rows, "")
 
-        assertEquals(listOf("app", "design"), modules.map { it.moduleName })
+        assertEquals(listOf("app", "design"), modules.map { it.segment })
         // com forks into a and b, so the shared prefix becomes one row with two children.
         val app = modules.first().branches.single()
         assertEquals("com", app.segment)
@@ -47,7 +47,7 @@ class PreviewTreeModelBuilderTest {
 
         val modules = PreviewTreeModelBuilder.build(rows, "")
 
-        assertEquals(listOf("alpha", "zeta"), modules.map { it.moduleName })
+        assertEquals(listOf("alpha", "zeta"), modules.map { it.segment })
         assertEquals(
             listOf("Apple", "Banana"),
             modules.first().branches.single().previews.map { it.row.indexed.displayName },
@@ -74,7 +74,7 @@ class PreviewTreeModelBuilderTest {
         val modules = PreviewTreeModelBuilder.build(rows, "tabs")
 
         assertEquals(1, modules.size)
-        assertEquals("app", modules.single().moduleName)
+        assertEquals("app", modules.single().segment)
         assertEquals(1, modules.single().count)
     }
 

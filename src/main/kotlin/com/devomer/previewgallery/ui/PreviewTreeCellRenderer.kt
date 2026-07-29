@@ -34,7 +34,7 @@ class PreviewTreeCellRenderer : ColoredTreeCellRenderer() {
         when (node) {
             is PreviewNode.ModuleNode -> {
                 icon = AllIcons.Nodes.Module
-                append(node.moduleName, SimpleTextAttributes.GRAYED_ATTRIBUTES)
+                append(node.segment, SimpleTextAttributes.GRAYED_ATTRIBUTES)
                 append("  (${node.count})", SimpleTextAttributes.GRAYED_SMALL_ATTRIBUTES)
             }
 

@@ -336,14 +336,7 @@ class PreviewGalleryPanel(
         restoringSelection = true
         try {
             treeRoot.removeAllChildren()
-            modules.forEach { module ->
-                val moduleNode = DefaultMutableTreeNode(module)
-                // Branches before leaves at every level: the leaves of a row are its own previews, and burying
-                // them above the sub-packages would make a deep tree read as if the packages belonged to them.
-                module.branches.forEach { addBranch(moduleNode, it) }
-                module.previews.forEach { moduleNode.add(DefaultMutableTreeNode(it)) }
-                treeRoot.add(moduleNode)
-            }
+            modules.forEach { addModule(treeRoot, it) }
             treeModel.reload()
             applyExpansionPolicy()
             // Recorded right here, immediately after the call that builds the tree now on screen — this must
@@ -454,7 +447,7 @@ class PreviewGalleryPanel(
 
     /** The label [visibleRowLabelsForTest] would show for [userObject], or null for an unrecognised node. */
     private fun labelOf(userObject: Any?): String? = when (userObject) {
-        is PreviewNode.ModuleNode -> userObject.moduleName
+        is PreviewNode.ModuleNode -> userObject.segment
         is PreviewNode.PackageBranch -> userObject.segment
         is PreviewNode.PreviewLeaf -> userObject.row.indexed.displayName
         else -> null
@@ -545,6 +538,18 @@ class PreviewGalleryPanel(
         // PsiClassOwner's package name as Math.abs(name.hashCode()), not a bare hashCode() — confirmed by
         // decompiling the private packageNameHash(String)/matchesPackage(PsiClassOwner, Int) helpers.
         return kotlin.math.abs(packageFqn.hashCode())
+    }
+
+    /** Builds one module row and everything nested under it: child modules first, then this module's own
+     *  package branches, then its own default-package leaves — the same branches-before-leaves ordering
+     *  [addBranch] uses one level down, extended one level up so a nested module never reads as if it belonged
+     *  to a sibling package branch. */
+    private fun addModule(parent: DefaultMutableTreeNode, module: PreviewNode.ModuleNode) {
+        val node = DefaultMutableTreeNode(module)
+        module.modules.forEach { addModule(node, it) }
+        module.branches.forEach { addBranch(node, it) }
+        module.previews.forEach { node.add(DefaultMutableTreeNode(it)) }
+        parent.add(node)
     }
 
     private fun addBranch(parent: DefaultMutableTreeNode, branch: PreviewNode.PackageBranch) {
