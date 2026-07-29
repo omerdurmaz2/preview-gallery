@@ -41,6 +41,7 @@ import java.awt.BorderLayout
 import java.awt.event.KeyAdapter
 import java.awt.event.KeyEvent
 import java.awt.event.MouseEvent
+import javax.swing.JTree
 import javax.swing.event.DocumentEvent
 import javax.swing.tree.DefaultMutableTreeNode
 import javax.swing.tree.DefaultTreeModel
@@ -61,7 +62,7 @@ class PreviewGalleryPanel(
     private val treeRoot = DefaultMutableTreeNode()
     private val treeModel = DefaultTreeModel(treeRoot)
     private val tree = Tree(treeModel)
-    private val treeExpander = DefaultTreeExpander(tree)
+    private val treeExpander = SelectionPreservingTreeExpander(tree, treeRoot)
     private val statusLabel = com.intellij.ui.components.JBLabel()
     private val alarm = Alarm(Alarm.ThreadToUse.SWING_THREAD, parentDisposable)
 
@@ -71,12 +72,14 @@ class PreviewGalleryPanel(
     /** The label path (see [labelPathFor]) of every row expanded in the tree, captured just before a rebuild
      *  discards its node instances. Null means "nothing captured yet" — only true for the very first build —
      *  which is what makes [applyExpansionPolicy]'s module-level default apply exactly once instead of on every
-     *  rebuild. Populated (possibly to an empty list, e.g. right after a Collapse All) by [applyFilter]. */
+     *  rebuild. Populated by [applyFilter]; empty (not null) right after a Collapse All, since [capturedExpansion]
+     *  excludes the invisible root's own (label-less) path from the result. */
     private var rememberedExpansion: List<List<String>>? = null
 
     /** Whether the tree currently on screen (the one about to be replaced by the NEXT [applyFilter] call) was
-     *  built from a non-empty query. Set at the end of [applyFilter] from that call's own query, so by the time
-     *  the following call reads it, it describes the OUTGOING tree — which is what the capture guard must test.
+     *  built from a non-empty query. Set inside [applyFilter], right after that call's own [applyExpansionPolicy]
+     *  has built the tree now on screen, so by the time the following call reads it, it describes the OUTGOING
+     *  tree — which is what the capture guard must test.
      *  Testing the incoming/new query instead (as [searchField]'s text would) gets the rebuild that clears a
      *  query backwards: at that point the old, still-current tree is the query's machine-fully-expanded one, so
      *  its forced-open state would be captured and replayed onto the unfiltered tree instead of being discarded. */
@@ -335,6 +338,11 @@ class PreviewGalleryPanel(
             }
             treeModel.reload()
             applyExpansionPolicy()
+            // Recorded right here, immediately after the call that builds the tree now on screen — this must
+            // describe THAT tree, not whatever selection/notification bookkeeping happens later in this method,
+            // and searchField.text has not changed since (see lastBuildWasQueryDriven's own KDoc for why the
+            // NEXT applyFilter call, not this one, is the one that reads it).
+            lastBuildWasQueryDriven = searchField.text.isNotEmpty()
             val pending = pendingSelectionId
             if (pending != null) {
                 // A reveal request outranks the restore: it is an explicit user action, while the restore only
@@ -360,10 +368,6 @@ class PreviewGalleryPanel(
             lastSelectedEntry = currentSelection
             pipeline.select(currentSelection)
         }
-
-        // Describes the tree this call just built, for the capture guard at the top of the NEXT applyFilter call
-        // (see lastBuildWasQueryDriven's own KDoc for why that call, not this one, needs it).
-        lastBuildWasQueryDriven = searchField.text.isNotEmpty()
 
         setState(
             when {
@@ -416,6 +420,12 @@ class PreviewGalleryPanel(
         val result = mutableListOf<List<String>>()
         while (expandedPaths.hasMoreElements()) {
             val labels = labelPathFor(expandedPaths.nextElement()) ?: continue
+            // getExpandedDescendants(TreePath(treeRoot)) always includes the invisible root itself — the JDK
+            // compares the argument TreePath by reference, so this freshly constructed one is never recognised
+            // as "the same" path and excluded. labelPathFor maps that root-only path to an empty list (treeRoot
+            // itself carries no label), which is not a real expanded row; skip it so an all-collapsed tree is
+            // actually captured as an empty list, not one containing a single vacuous entry.
+            if (labels.isEmpty()) continue
             result.add(labels)
         }
         return result
@@ -553,5 +563,45 @@ class PreviewGalleryPanel(
 
     private companion object {
         const val SEARCH_DEBOUNCE_MS = 150
+    }
+}
+
+/**
+ * A [DefaultTreeExpander] whose Collapse All also keeps the selected preview selected.
+ *
+ * The platform's own implementation (`collapseAll(JTree, Boolean, Int)`, called by the public no-arg
+ * `collapseAll()` with `keepSelectionLevel = 1`) delegates to `TreeUtil.collapseAll(tree, strict = true,
+ * keepSelectionLevel = 1)`, which finishes by re-anchoring the tree's lead selection to the nearest surviving
+ * ancestor once the selected leaf's own path is hidden. With [PreviewGalleryPanel]'s tree having
+ * `isRootVisible = false`, that ancestor is the module node, so a collapse that hides the selected preview
+ * replaces the leaf selection with its module. [PreviewGalleryPanel] binds its render pane directly to the tree
+ * selection ([Tree.addTreeSelectionListener] calling `pipeline.select`), so that re-anchoring would silently
+ * clear whatever preview the user was looking at — merely for tidying up the tree.
+ *
+ * This override captures the selected path before delegating to the platform behaviour and, if that same leaf
+ * node is still part of the tree afterwards, reselects it without expanding its now-collapsed ancestors (the
+ * same `expandsSelectedPaths = false` idiom [PreviewGalleryPanel.selectEntry] uses for its own restore path). The
+ * previewed leaf therefore stays selected — and the render pane stays on screen — while its ancestors stay
+ * collapsed exactly as Collapse All intends.
+ */
+private class SelectionPreservingTreeExpander(
+    tree: Tree,
+    private val treeRoot: DefaultMutableTreeNode,
+) : DefaultTreeExpander(tree) {
+
+    override fun collapseAll(tree: JTree, strict: Boolean, keepSelectionLevel: Int) {
+        val selectedPath = tree.selectionPath
+        super.collapseAll(tree, strict, keepSelectionLevel)
+        // DefaultMutableTreeNode.getRoot() returns the node itself when it has no parent, so this also rejects
+        // a detached leaf rather than only checking for a null path.
+        val leaf = selectedPath?.lastPathComponent as? DefaultMutableTreeNode ?: return
+        if (leaf.root !== treeRoot) return
+        val previousExpandsSelectedPaths = tree.expandsSelectedPaths
+        tree.expandsSelectedPaths = false
+        try {
+            tree.selectionPath = selectedPath
+        } finally {
+            tree.expandsSelectedPaths = previousExpandsSelectedPaths
+        }
     }
 }

@@ -255,18 +255,34 @@ class PreviewGalleryPanelTest : BasePlatformTestCase() {
             .single { it.indexed.displayName == "CheckoutPreview" }
 
         // selectEntry reveals the entry (expanding its branch); the user then closes everything by hand. The
-        // platform's own Collapse All (DefaultTreeExpander/TreeUtil.collapseAll) re-anchors the selection to the
-        // nearest surviving ancestor once the selected leaf is hidden, so the selection is already gone (no
-        // PreviewEntry selected) before the rebuild below ever runs — independent of this panel's own code.
+        // panel's own DefaultTreeExpander subclass restores the selected leaf after the platform's Collapse All
+        // re-anchors it, so the selection survives even though its ancestors end up collapsed.
         panel.selectEntry(entry.id)
         panel.treeExpanderForTest().collapseAll()
-        assertNull(panel.selectedEntryIdForTest())
+        assertEquals(entry.id, panel.selectedEntryIdForTest())
 
         // A plain rebuild with no query (e.g. triggered by ActiveModuleTracker on an unrelated editor
         // selectionChanged) must not re-open what the user just closed, nor spuriously select anything.
         panel.applyQueryForTest("")
 
-        assertNull(panel.selectedEntryIdForTest())
+        assertEquals(entry.id, panel.selectedEntryIdForTest())
+        assertFalse(panel.visibleRowLabelsForTest().toString(), panel.visibleRowLabelsForTest().contains("com.example.buy"))
+    }
+
+    fun `test Collapse All keeps the selected preview selected`() {
+        twoDomainProject()
+        val panel = panel()
+        panel.reloadSynchronously()
+        val entry = PreviewIndexService.getInstance(project).findAll()
+            .single { it.indexed.displayName == "CheckoutPreview" }
+
+        panel.selectEntry(entry.id)
+        panel.treeExpanderForTest().collapseAll()
+
+        // The platform's Collapse All would otherwise re-anchor the selection to the module node once the
+        // selected leaf's ancestors are hidden, clearing the render pane; this panel restores the leaf selection.
+        assertEquals(entry.id, panel.selectedEntryIdForTest())
+        // The collapse must have actually happened — this is not just the selection never having moved.
         assertFalse(panel.visibleRowLabelsForTest().toString(), panel.visibleRowLabelsForTest().contains("com.example.buy"))
     }
 
