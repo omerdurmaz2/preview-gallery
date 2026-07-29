@@ -342,7 +342,7 @@ class PreviewRenderPanel(private val project: Project) : JBPanel<PreviewRenderPa
         if (image == null) { center(JBLabel(PreviewGalleryBundle.message("render.failed"))); return }
         // Feed the hover/click overlay the plugin-owned view tree (empty when Feature B is unavailable — the
         // listeners then stay inert) and reset zoom to fit the current viewport.
-        renderView.setContent(image, success.viewTree)
+        renderView.setContent(image, success.viewTree, success.dpi)
         // PG6-4: renderScroll directly (today's look) with no extras, or as viewTabs' Original tab once one exists.
         refreshLiveContainer()
         // The scroll pane is only now placed in the visible hierarchy, and add() does not lay it out synchronously,
@@ -522,7 +522,9 @@ class PreviewRenderPanel(private val project: Project) : JBPanel<PreviewRenderPa
             when (outcome) {
                 is RenderOutcome.Success -> {
                     scroll.setViewportView(extraView)
-                    extraView.setContent(outcome.image, outcome.viewTree)
+                    // PG12-3: per view, not once for the panel — a comparison tab may render a different device,
+                    // and therefore a different density, than Original.
+                    extraView.setContent(outcome.image, outcome.viewTree, outcome.dpi)
                 }
                 else -> showExtraFailed(view, scroll)
             }

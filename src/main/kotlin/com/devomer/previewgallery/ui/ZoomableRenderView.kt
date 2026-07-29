@@ -20,6 +20,7 @@ import java.awt.image.BufferedImage
 import javax.swing.JComponent
 import javax.swing.JViewport
 import javax.swing.SwingUtilities
+import kotlin.math.roundToInt
 
 /**
  * A zoomable, pannable view of a render image with the Phase 4 hover-outline / click-to-source overlay. Swing
@@ -29,9 +30,10 @@ import javax.swing.SwingUtilities
  * horizontal scroll) and macOS trackpad pinch-zoom are handled directly by this component, not left to the
  * scroll pane's own wheel handling — see [onWheel]/[panByWheel] and [installPinchZoom] for why.
  *
- * Coordinates: a mouse point in this component is in zoomed-image space, so `renderPoint = point / zoomFactor`
- * (no letterbox — the component's bounds ARE the zoomed image). When [handToolActive], drag pans the enclosing
- * viewport and the overlay is inert; otherwise hover outlines and click navigates (Phase 4).
+ * Coordinates: a mouse point in this component is in zoomed-image space, so `renderPoint = point / displayScale`
+ * (no letterbox — the component's bounds ARE the zoomed image; [displayScale] folds in both the user's zoom
+ * percentage and the render's device-pixel-to-dp conversion, PG12-3). When [handToolActive], drag pans the
+ * enclosing viewport and the overlay is inert; otherwise hover outlines and click navigates (Phase 4).
  */
 class ZoomableRenderView : JComponent() {
 
@@ -42,12 +44,31 @@ class ZoomableRenderView : JComponent() {
 
     var onNavigateToSource: (List<PreviewSourceLocation>) -> Unit = {}
 
+    /**
+     * The zoom percentage the user sees — and the same percentage Android Studio's own preview means by it: at
+     * 1.0 the composable is drawn at dp size, not at the device's pixel size (PG12-3). Bounded by
+     * [ZoomMath.MIN]/[ZoomMath.MAX], NOT by [ZoomMath.LADDER] — the ladder is only where the step buttons stop,
+     * and clamping fit to its 25% floor is what used to make a tall render overflow a short pane.
+     */
     var zoomFactor: Double = 1.0
         set(value) {
-            field = value.coerceIn(ZoomMath.LADDER.first(), ZoomMath.LADDER.last())
+            field = value.coerceIn(ZoomMath.MIN, ZoomMath.MAX)
             revalidate() // preferredSize changed -> scroll pane updates scrollbars
             repaint()
         }
+
+    /** dp per render pixel for the current image (see [ZoomMath.contentScale]); 1.0 until content arrives. */
+    private var contentScale: Double = 1.0
+
+    /** The current image's size in dp — what [fitToViewport] fits, so its result is a zoom percentage. */
+    private var contentDp: Dimension = Dimension(0, 0)
+
+    /**
+     * The factor every on-screen dimension is expressed in: the user's zoom percentage times the render's own
+     * pixel-to-dp conversion. Deriving it once is what keeps [getPreferredSize], the drawn image, the hover
+     * outline and [renderPointOf] from disagreeing.
+     */
+    private val displayScale: Double get() = zoomFactor * contentScale
 
     var handToolActive: Boolean = false
         set(value) {
@@ -77,11 +98,16 @@ class ZoomableRenderView : JComponent() {
         installPinchZoom()
     }
 
-    /** A new render's image + view tree; resets zoom to [fitToViewport] and clears any prior hover. */
-    fun setContent(image: BufferedImage, viewTree: List<PreviewViewNode>) {
+    /**
+     * A new render's image + view tree, plus the density it was rendered at ([RenderOutcome.Success.dpi]); resets
+     * zoom to [fitToViewport] and clears any prior hover.
+     */
+    fun setContent(image: BufferedImage, viewTree: List<PreviewViewNode>, dpi: Int) {
         this.image = image
         this.viewTree = viewTree
         this.hovered = null
+        this.contentScale = ZoomMath.contentScale(dpi)
+        this.contentDp = ZoomMath.dpSize(Dimension(image.width, image.height), dpi)
         fitToViewport()
     }
 
@@ -89,20 +115,26 @@ class ZoomableRenderView : JComponent() {
         image = null
         viewTree = emptyList()
         hovered = null
+        contentScale = 1.0
+        contentDp = Dimension(0, 0)
         revalidate(); repaint()
     }
 
     fun rawImage(): BufferedImage? = image
 
     fun fitToViewport() {
-        val img = image ?: return
+        if (image == null) return
         val vp = enclosingViewport()?.extentSize ?: size
-        zoomFactor = ZoomMath.fitFactor(vp, Dimension(img.width, img.height))
+        zoomFactor = ZoomMath.fitFactor(vp, contentDp)
     }
 
     override fun getPreferredSize(): Dimension {
         val img = image ?: return Dimension(0, 0)
-        return Dimension((img.width * zoomFactor).toInt().coerceAtLeast(1), (img.height * zoomFactor).toInt().coerceAtLeast(1))
+        val scale = displayScale
+        return Dimension(
+            (img.width * scale).roundToInt().coerceAtLeast(1),
+            (img.height * scale).roundToInt().coerceAtLeast(1),
+        )
     }
 
     override fun paintComponent(g: Graphics) {
@@ -111,15 +143,20 @@ class ZoomableRenderView : JComponent() {
         try {
             g2.color = background
             g2.fillRect(0, 0, width, height)
+            // The layoutlib image is at device pixel density and is usually drawn well under 1:1 (a 1080 px wide
+            // render inside a ~400 px pane), so ask for the quality path on top of bilinear filtering.
             g2.setRenderingHint(RenderingHints.KEY_INTERPOLATION, RenderingHints.VALUE_INTERPOLATION_BILINEAR)
-            g2.drawImage(img, 0, 0, (img.width * zoomFactor).toInt(), (img.height * zoomFactor).toInt(), null)
+            g2.setRenderingHint(RenderingHints.KEY_RENDERING, RenderingHints.VALUE_RENDER_QUALITY)
+            val scale = displayScale
+            g2.drawImage(img, 0, 0, (img.width * scale).roundToInt(), (img.height * scale).roundToInt(), null)
             val node = hovered
             if (!handToolActive && node != null) {
                 val b = node.bounds
                 g2.color = HOVER_OUTLINE
                 g2.drawRect(
-                    (b.x * zoomFactor).toInt(), (b.y * zoomFactor).toInt(),
-                    (b.width * zoomFactor).toInt().coerceAtLeast(0), (b.height * zoomFactor).toInt().coerceAtLeast(0),
+                    (b.x * scale).roundToInt(), (b.y * scale).roundToInt(),
+                    (b.width * scale).roundToInt().coerceAtLeast(0),
+                    (b.height * scale).roundToInt().coerceAtLeast(0),
                 )
             }
         } finally {
@@ -128,8 +165,9 @@ class ZoomableRenderView : JComponent() {
     }
 
     private fun renderPointOf(p: Point): Point? {
-        if (image == null || zoomFactor <= 0.0) return null
-        return Point((p.x / zoomFactor).toInt(), (p.y / zoomFactor).toInt())
+        val scale = displayScale
+        if (image == null || scale <= 0.0) return null
+        return Point((p.x / scale).toInt(), (p.y / scale).toInt())
     }
 
     private fun updateHover(p: Point) {
