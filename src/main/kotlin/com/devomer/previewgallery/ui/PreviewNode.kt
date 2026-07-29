@@ -9,7 +9,7 @@ sealed interface PreviewNode {
         val moduleName: String,
         val count: Int,
         val branches: List<PackageBranch>,
-        val previews: List<PreviewLeaf> = emptyList(),
+        val previews: List<PreviewLeaf>,
     ) : PreviewNode
 
     /**

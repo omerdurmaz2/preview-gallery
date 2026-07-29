@@ -38,7 +38,7 @@ class PreviewTreeCellRendererTest {
 
     @Test
     fun `a module row uses the module icon, grey name, and a small grey count`() {
-        val renderer = render(PreviewNode.ModuleNode("app", 3, emptyList()))
+        val renderer = render(PreviewNode.ModuleNode("app", 3, emptyList(), emptyList()))
 
         assertEquals(AllIcons.Nodes.Module, renderer.icon)
         assertEquals(

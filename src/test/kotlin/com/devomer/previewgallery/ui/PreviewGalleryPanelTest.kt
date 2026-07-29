@@ -2,6 +2,7 @@ package com.devomer.previewgallery.ui
 
 import com.devomer.previewgallery.service.PreviewIndexService
 import com.intellij.openapi.util.Disposer
+import com.intellij.testFramework.LightProjectDescriptor
 import com.intellij.testFramework.fixtures.BasePlatformTestCase
 
 class PreviewGalleryPanelTest : BasePlatformTestCase() {
@@ -231,7 +232,10 @@ class PreviewGalleryPanelTest : BasePlatformTestCase() {
 
         panel.applyQueryForTest("")
 
-        assertFalse(panel.visibleRowLabelsForTest().contains("BasketPreview"))
+        val labels = panel.visibleRowLabelsForTest()
+        assertFalse(labels.toString(), labels.contains("BasketPreview"))
+        // The collapse must have actually happened — this is not just an empty tree passing the assertion above.
+        assertTrue(labels.toString(), labels.contains(LightProjectDescriptor.TEST_MODULE_NAME))
     }
 
     fun `test revealing a deep entry expands its path and selects it`() {
@@ -282,8 +286,11 @@ class PreviewGalleryPanelTest : BasePlatformTestCase() {
         // The platform's Collapse All would otherwise re-anchor the selection to the module node once the
         // selected leaf's ancestors are hidden, clearing the render pane; this panel restores the leaf selection.
         assertEquals(entry.id, panel.selectedEntryIdForTest())
+        val labels = panel.visibleRowLabelsForTest()
         // The collapse must have actually happened — this is not just the selection never having moved.
-        assertFalse(panel.visibleRowLabelsForTest().toString(), panel.visibleRowLabelsForTest().contains("com.example.buy"))
+        assertFalse(labels.toString(), labels.contains("com.example.buy"))
+        // ...nor is this an empty tree: the module row itself is still visible, just collapsed to that level.
+        assertTrue(labels.toString(), labels.contains(LightProjectDescriptor.TEST_MODULE_NAME))
     }
 
     fun `test a revealed entry stays visible across a rebuild`() {
@@ -351,7 +358,10 @@ class PreviewGalleryPanelTest : BasePlatformTestCase() {
         // Force a plain rebuild, e.g. as Refresh or an unrelated editor selectionChanged would.
         panel.applyQueryForTest("")
 
-        assertFalse(panel.visibleRowLabelsForTest().toString(), panel.visibleRowLabelsForTest().contains("com.example.buy"))
+        val labels = panel.visibleRowLabelsForTest()
+        assertFalse(labels.toString(), labels.contains("com.example.buy"))
+        // ...nor is this an empty tree: the module row itself is still visible, just collapsed to that level.
+        assertTrue(labels.toString(), labels.contains(LightProjectDescriptor.TEST_MODULE_NAME))
     }
 
     fun `test a rebuild keeps branches the user expanded`() {

@@ -22,11 +22,22 @@ class ActiveModuleTracker(
             return ModuleUtilCore.findModuleForPsiElement(psiFile)?.name
         }
 
+    /** The module name [onChange] was last invoked for (or, before any editor selection has changed, the one
+     *  computed at construction time). `selectionChanged` fires on every editor tab switch, including ones that
+     *  leave the active module untouched, so this is what lets [onChange] — which rebuilds the whole gallery
+     *  tree — be skipped when the freshly computed [activeModuleName] is unchanged. */
+    private var lastReportedModuleName: String? = activeModuleName
+
     init {
         project.messageBus.connect(parentDisposable).subscribe(
             FileEditorManagerListener.FILE_EDITOR_MANAGER,
             object : FileEditorManagerListener {
-                override fun selectionChanged(event: FileEditorManagerEvent) = onChange()
+                override fun selectionChanged(event: FileEditorManagerEvent) {
+                    val newModuleName = activeModuleName
+                    if (newModuleName == lastReportedModuleName) return
+                    lastReportedModuleName = newModuleName
+                    onChange()
+                }
             },
         )
     }
