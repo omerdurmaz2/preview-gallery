@@ -173,4 +173,77 @@ class PreviewGalleryPanelTest : BasePlatformTestCase() {
 
         assertEquals(entry.id, panel.selectedEntryIdForTest())
     }
+
+    private fun twoDomainProject() {
+        myFixture.addFileToProject(
+            "Basket.kt",
+            """
+            package com.example.buy.basket
+
+            import androidx.compose.ui.tooling.preview.Preview
+
+            @Preview
+            fun BasketPreview() {}
+            """.trimIndent(),
+        )
+        myFixture.addFileToProject(
+            "Checkout.kt",
+            """
+            package com.example.buy.checkout
+
+            import androidx.compose.ui.tooling.preview.Preview
+
+            @Preview
+            fun CheckoutPreview() {}
+            """.trimIndent(),
+        )
+    }
+
+    fun `test only the module level is expanded on load`() {
+        twoDomainProject()
+        val panel = panel()
+        panel.reloadSynchronously()
+
+        // The module row and its single top branch are visible; basket and checkout are still collapsed.
+        val labels = panel.visibleRowLabelsForTest()
+        assertTrue(labels.toString(), labels.contains("com.example.buy"))
+        assertFalse(labels.toString(), labels.contains("basket"))
+        assertFalse(labels.toString(), labels.contains("BasketPreview"))
+    }
+
+    fun `test a query expands the branches that survived filtering`() {
+        twoDomainProject()
+        val panel = panel()
+        panel.reloadSynchronously()
+
+        panel.applyQueryForTest("basket")
+
+        val labels = panel.visibleRowLabelsForTest()
+        assertTrue(labels.toString(), labels.contains("BasketPreview"))
+        assertFalse(labels.toString(), labels.contains("CheckoutPreview"))
+    }
+
+    fun `test clearing the query collapses back to the module level`() {
+        twoDomainProject()
+        val panel = panel()
+        panel.reloadSynchronously()
+        panel.applyQueryForTest("basket")
+
+        panel.applyQueryForTest("")
+
+        assertFalse(panel.visibleRowLabelsForTest().contains("BasketPreview"))
+    }
+
+    fun `test revealing a deep entry expands its path and selects it`() {
+        twoDomainProject()
+        val panel = panel()
+        panel.reloadSynchronously()
+        val entry = PreviewIndexService.getInstance(project).findAll()
+            .single { it.indexed.displayName == "CheckoutPreview" }
+
+        panel.revealEntry(entry.id)
+
+        assertEquals(entry.id, panel.selectedEntryIdForTest())
+        assertTrue(panel.visibleRowLabelsForTest().contains("CheckoutPreview"))
+    }
 }

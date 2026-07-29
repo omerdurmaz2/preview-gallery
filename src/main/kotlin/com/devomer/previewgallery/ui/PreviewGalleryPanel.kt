@@ -206,6 +206,7 @@ class PreviewGalleryPanel(
 
     fun selectEntry(entryId: String) {
         val path = findPath(entryId) ?: return
+        path.parentPath?.let { tree.expandPath(it) }
         tree.selectionPath = path
         tree.scrollPathToVisible(path)
     }
@@ -224,6 +225,17 @@ class PreviewGalleryPanel(
     /** The id of the currently selected entry, or null if none is selected. */
     @TestOnly
     fun selectedEntryIdForTest(): String? = selectedEntry()?.id
+
+    /** The label of every visible row, top to bottom — expansion state made assertable without a renderer. */
+    @TestOnly
+    fun visibleRowLabelsForTest(): List<String> = (0 until tree.rowCount).mapNotNull { row ->
+        when (val node = (tree.getPathForRow(row)?.lastPathComponent as? DefaultMutableTreeNode)?.userObject) {
+            is PreviewNode.ModuleNode -> node.moduleName
+            is PreviewNode.PackageBranch -> node.segment
+            is PreviewNode.PreviewLeaf -> node.row.indexed.displayName
+            else -> null
+        }
+    }
 
     private fun applyFilter() {
         // The tree is rebuilt from scratch below (new node instances), which otherwise drops the current
@@ -250,7 +262,7 @@ class PreviewGalleryPanel(
                 treeRoot.add(moduleNode)
             }
             treeModel.reload()
-            expandAll()
+            applyExpansionPolicy()
             val pending = pendingSelectionId
             if (pending != null) {
                 // A reveal request outranks the restore: it is an explicit user action, while the restore only
@@ -285,11 +297,23 @@ class PreviewGalleryPanel(
         )
     }
 
-    private fun expandAll() {
-        var row = 0
-        while (row < tree.rowCount) {
-            tree.expandRow(row)
-            row++
+    /**
+     * A query has already pruned the tree to the matching rows, so opening everything shows exactly the
+     * results; with no query the tree is the whole project and only the module level opens — a deep tree
+     * expanded on every keystroke is unreadable.
+     */
+    private fun applyExpansionPolicy() {
+        if (searchField.text.isNotEmpty()) {
+            var row = 0
+            while (row < tree.rowCount) {
+                tree.expandRow(row)
+                row++
+            }
+            return
+        }
+        for (index in 0 until treeRoot.childCount) {
+            val moduleNode = treeRoot.getChildAt(index) as? DefaultMutableTreeNode ?: continue
+            tree.expandPath(TreePath(moduleNode.path))
         }
     }
 
