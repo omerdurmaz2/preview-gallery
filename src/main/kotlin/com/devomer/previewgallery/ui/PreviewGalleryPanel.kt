@@ -99,6 +99,15 @@ class PreviewGalleryPanel(
 
     private val moduleTracker = ActiveModuleTracker(project, parentDisposable) { applyFilter() }
 
+    /** PG11-2: indexing a large project takes several dumb→smart transitions, and [reload]'s own
+     *  `runWhenSmart` only rides the first one — so the tree used to cache whatever fraction of the index
+     *  existed at that moment and stay that way until the user pressed Refresh. This reloads again, exactly
+     *  like that button does, on every later pass that actually moved the index. See the tracker's own doc. */
+    private val indexingTracker = IndexingCompletionTracker(project, parentDisposable) {
+        PreviewIndexService.getInstance(project).refresh()
+        reload()
+    }
+
     private val renderPanel = PreviewRenderPanel(project)
     private val pipeline = RenderPipeline(
         project,

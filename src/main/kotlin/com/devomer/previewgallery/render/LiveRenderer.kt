@@ -177,7 +177,7 @@ class LiveRenderer(
             val copied = image
                 ?: return failure("Render produced no image", result)
 
-            return verifySomethingWasDrawn(copied, result)
+            return verifySomethingWasDrawn(copied, result, renderDpi(task, model))
         } finally {
             // MANDATORY (design §5.1): release layoutlib render contexts / class loaders. Guarded so a dispose
             // failure never masks the real outcome.
@@ -227,7 +227,7 @@ class LiveRenderer(
      * signals: `LayoutlibSceneRenderer.containsValidImage` requires width > 1 && height > 1, and a render with no
      * root views has nothing on screen.
      */
-    private fun verifySomethingWasDrawn(image: BufferedImage, result: RenderResult): RenderOutcome {
+    private fun verifySomethingWasDrawn(image: BufferedImage, result: RenderResult, dpi: Int): RenderOutcome {
         if (image.width <= 1 || image.height <= 1) {
             return failure("Render produced an empty ${image.width}x${image.height} image", result)
         }
@@ -244,7 +244,35 @@ class LiveRenderer(
         }
 
         val viewTree = buildViewTree(result)
-        return RenderOutcome.Success(image, viewTree)
+        return RenderOutcome.Success(image, viewTree, dpi)
+    }
+
+    /**
+     * The density layoutlib actually rendered at, so the UI can draw the preview at dp size the way Android
+     * Studio's own design surface does (PG12-2).
+     *
+     * The primary source is the task's own `HardwareConfig`: `RenderTask`'s constructor builds it as
+     * `new HardwareConfigHelper(device)` (verified on `RenderTask` bytecode in
+     * `plugins/android/lib/android.jar`), so this is the value the render used, not a re-derivation from the
+     * device. `getHardwareConfigHelper()`, `HardwareConfigHelper.getConfig()` and `HardwareConfig.getDensity()`
+     * are all public API on that build.
+     *
+     * The first fallback is the `Configuration`'s own density qualifier, which `Configuration.getDensity()`
+     * reads off the same device state through `FolderConfiguration` (and which itself falls back to
+     * `Density.MEDIUM`). The last resort is [RenderOutcome.DEFAULT_DPI], at which the dp conversion is the
+     * identity — a guard failure therefore degrades to the pre-PG12 raw-pixel display, never to a wrong size.
+     *
+     * Guarded with `runCatching` like the other optional AS reads in this file (see the `showDecoration` read in
+     * [RenderModelResolver]): both calls are plain in-memory field getters that cannot raise
+     * [ProcessCanceledException], so there is nothing here that must be allowed to propagate.
+     */
+    private fun renderDpi(task: RenderTask, model: RenderModelResolver.Resolved): Int {
+        val fromTask = runCatching { task.hardwareConfigHelper.config.density.dpiValue }.getOrNull()
+        if (fromTask != null && fromTask > 0) return fromTask
+        val fromConfiguration = runCatching { model.configuration.density.dpiValue }.getOrNull()
+        if (fromConfiguration != null && fromConfiguration > 0) return fromConfiguration
+        thisLogger().info("Render density unavailable; the preview will display at raw render pixels")
+        return RenderOutcome.DEFAULT_DPI
     }
 
     /**

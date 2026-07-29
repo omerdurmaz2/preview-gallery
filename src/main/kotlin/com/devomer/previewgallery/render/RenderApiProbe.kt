@@ -67,6 +67,15 @@ object RenderApiProbe {
         "com.android.tools.adtui.model.stdui.EditingErrorCategory" to emptyList(),
     )
 
+    // PG11-1: the Kotlin-Multiplatform-aware `Module -> Android module` walk [AndroidModuleResolver] delegates
+    // to. Android Studio's own editor preview calls exactly this before it asks for an AndroidFacet, which is
+    // why a @Preview in a KMP `commonMain` source set renders there and used to fail here. Its own class, not
+    // folded into [required]: a build without it must still render classic Android modules (the fallback is the
+    // pre-PG11-1 `AndroidFacet.getInstance(module)`), so this can never gate rendering as a whole.
+    private val androidModuleWalkRequired = listOf(
+        "com.android.tools.idea.util.ModuleExtensionsKt" to listOf("findAndroidModule"),
+    )
+
     fun isAvailable(): Boolean = allPresent(required)
 
     /** Whether Android Studio's own @Preview property picker can be driven on this build (spec §5). */
@@ -91,6 +100,12 @@ object RenderApiProbe {
      *  action and a copy tab's Properties action (PG6-8) — one flag for both, since re-rendering a copy with its
      *  override needs the same capability adding one does. */
     fun isViewOverrideAvailable(): Boolean = allPresent(viewOverrideRequired)
+
+    /** Whether Android Studio's own `Module.findAndroidModule()` — the hop from a Kotlin Multiplatform common
+     *  source set to the Android source set that implements it — is present on this build (PG11-1). Independent
+     *  of [isAvailable]: a build missing it still renders every classic Android module through
+     *  [AndroidModuleResolver]'s fallback; only KMP common source sets degrade to `Unsupported`. */
+    fun isAndroidModuleWalkAvailable(): Boolean = allPresent(androidModuleWalkRequired)
 
     private fun allPresent(required: List<Pair<String, List<String>>>): Boolean = runCatching {
         required.all { (className, methods) ->

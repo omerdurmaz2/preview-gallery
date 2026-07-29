@@ -25,7 +25,6 @@ import com.android.tools.preview.XmlSerializable
 import com.android.tools.preview.applyTo
 import com.android.tools.rendering.RenderLogger
 import com.android.tools.rendering.api.RenderModelModule
-import org.jetbrains.android.facet.AndroidFacet
 
 /**
  * Turns a [PreviewEntry] (its module + file) into everything [LiveRenderer] needs to build a layoutlib
@@ -105,15 +104,22 @@ class RenderModelResolver {
         override: ViewOverride?,
     ): RenderModelResult {
         // U1: module → AndroidFacet → AndroidBuildTargetReference → AndroidFacetRenderModelModule.
+        // PG11-1: the facet is resolved through [AndroidModuleResolver], not `AndroidFacet.getInstance(module)`
+        // directly — a `@Preview` in a Kotlin Multiplatform *common* source set belongs to a module that has no
+        // facet at all; the Android target's own module does. See that object's doc for the Android Studio path
+        // this mirrors.
         val module = ProjectFileIndex.getInstance(project).getModuleForFile(entry.file)
             ?: return RenderModelResult.Failed("File is not part of any module", entry.file.path)
-        val facet = AndroidFacet.getInstance(module)
+        val facet = AndroidModuleResolver.androidFacet(module)
             ?: return RenderModelResult.NoFacet
         val buildTarget = AndroidBuildTargetReference.from(facet, entry.file)
         val renderModule = AndroidFacetRenderModelModule(buildTarget)
 
         // The Configuration (device, theme, locale, target SDK) derived from the composable's own source file.
-        val configurationManager = ConfigurationManager.getOrCreateInstance(module)
+        // Keyed on the *facet's* module, which is what AS's own updatePreviewsAndRefresh does
+        // (`ConfigurationManager.getOrCreateInstance(facet.module)`) — and must be, since a KMP common source
+        // set has no Android SDK/resources of its own to configure against.
+        val configurationManager = ConfigurationManager.getOrCreateInstance(facet.module)
         val configuration = configurationManager.getConfiguration(entry.file)
 
         // A logger scoped to this project; layoutlib records missing/broken classes and render problems on it.

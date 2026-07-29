@@ -176,6 +176,8 @@ Implemented as a `FileBasedIndex` over Kotlin files. Persistent across IDE resta
 
 **Why an index rather than on-demand PSI scanning:** with ~900 previews across ~75 modules, a full PSI sweep on every tool-window open is too slow. `FileBasedIndex` gives instant startup and only reprocesses changed files.
 
+**Indexing is not one dumb→smart transition (PG11-2).** On a project this size the IDE enters and leaves dumb mode several times while the index fills — one observed cold rebuild wrote 3,918 files, then 115,805, then 1,581, then 4, across four passes. The panel's `runWhenSmart` deferral only rides the *first* exit, and `PreviewIndexService` caches its result against `PsiModificationTracker.MODIFICATION_COUNT`, which later passes do not move; the tree therefore froze on a partial list until the user pressed Refresh by hand. `IndexingCompletionTracker` keeps listening on `DumbService.DUMB_MODE` and reloads on every later exit, filtered by `FileBasedIndex.getIndexModificationStamp` so only exits that actually moved the index cost a scan, and debounced so a burst of transitions collapses into one reload.
+
 **Detected annotations — both must be indexed:**
 
 | Annotation | Typical location |
@@ -236,8 +238,14 @@ Renders through the same layoutlib pipeline Android Studio uses for its own Comp
 
 ```kotlin
 val module        = ModuleUtilCore.findModuleForFile(virtualFile, project)
-val facet         = AndroidFacet.getInstance(module)
-val configuration = ConfigurationManager.getOrCreateInstance(module)
+// PG11-1: NOT AndroidFacet.getInstance(module). A @Preview in a Kotlin Multiplatform *common* source set
+// belongs to a module with no facet of its own — the Android target's module carries it. findAndroidModule()
+// returns the module itself when it is already an Android module, so classic AGP modules are unaffected.
+// This is the same hop Android Studio's own editor preview makes (SurfacePreviewsUpdateKt).
+val androidModule = module.findAndroidModule()
+val facet         = AndroidFacet.getInstance(androidModule)
+// Keyed on the facet's module, not the file's — a common source set has no Android SDK to configure against.
+val configuration = ConfigurationManager.getOrCreateInstance(facet.module)
                         .getConfiguration(virtualFile)
 
 val task = RenderService.getInstance(project)
@@ -511,6 +519,7 @@ Record the actual package, class and signature for each on Android Studio Panda 
 | `RenderResult.renderedImage` | The produced image |
 | `ConfigurationManager.getOrCreateInstance(module)` | Device / theme / API configuration |
 | `AndroidFacet.getInstance(module)` | Android module facet |
+| `com.android.tools.idea.util.ModuleExtensionsKt.findAndroidModule` | Kotlin Multiplatform hop: common source set → the Android source set that implements it |
 | `androidx.compose.ui.tooling.ComposeViewAdapter` | Bridge view; `tools:composableName` attribute |
 | `ExternalSystemUtil.runTask(...)` | Gradle task execution through the IDE (public-ish) |
 
