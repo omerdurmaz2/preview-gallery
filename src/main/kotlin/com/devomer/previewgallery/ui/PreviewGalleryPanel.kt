@@ -68,6 +68,12 @@ class PreviewGalleryPanel(
     private var entries: List<PreviewEntry> = emptyList()
     private var lastSelectedEntry: PreviewEntry? = null
 
+    /** The label path (see [labelPathFor]) of every row expanded in the tree, captured just before a rebuild
+     *  discards its node instances. Null means "nothing captured yet" — only true for the very first build —
+     *  which is what makes [applyExpansionPolicy]'s module-level default apply exactly once instead of on every
+     *  rebuild. Populated (possibly to an empty list, e.g. right after a Collapse All) by [applyFilter]. */
+    private var rememberedExpansion: List<List<String>>? = null
+
     /** An entry another surface asked to reveal before the tree could show it (the tool window may have been
      *  created by that very request, so [entries] can still be loading). Applied by [applyFilter], and dropped
      *  as soon as [entries] is loaded — whether or not the node was actually found — so a stale or filtered-out
@@ -271,12 +277,8 @@ class PreviewGalleryPanel(
     /** The label of every visible row, top to bottom — expansion state made assertable without a renderer. */
     @TestOnly
     fun visibleRowLabelsForTest(): List<String> = (0 until tree.rowCount).mapNotNull { row ->
-        when (val node = (tree.getPathForRow(row)?.lastPathComponent as? DefaultMutableTreeNode)?.userObject) {
-            is PreviewNode.ModuleNode -> node.moduleName
-            is PreviewNode.PackageBranch -> node.segment
-            is PreviewNode.PreviewLeaf -> node.row.indexed.displayName
-            else -> null
-        }
+        val node = tree.getPathForRow(row)?.lastPathComponent as? DefaultMutableTreeNode
+        node?.let { labelOf(it.userObject) }
     }
 
     /** The expander the toolbar's expand/collapse actions drive. */
@@ -296,6 +298,18 @@ class PreviewGalleryPanel(
             moduleFilterOn,
         )
         val modules = PreviewTreeModelBuilder.build(visible, searchField.text)
+        // Capture the user's expansion before the rebuild discards every node instance, so it can be restored
+        // in applyExpansionPolicy below. Only when there is no query: a query's expansion is machine-made (every
+        // surviving row is opened to show the matches), so remembering it would leak that forced-open state into
+        // the next no-query rebuild. Only when the tree already has rows: on the very first build there is
+        // nothing to remember, and rememberedExpansion must stay null so the module-level default below applies.
+        // Excludes the branch holding the current selection: that branch can be open purely because selectEntry's
+        // reveal path (revealPath = true) opened it to bring the selection into view, which is a one-off, not a
+        // standing preference (see selectEntry's own KDoc) — without this, a reveal would be indistinguishable
+        // from the user expanding the same branch by hand, and would then wrongly survive the next rebuild.
+        if (searchField.text.isEmpty() && tree.rowCount > 0) {
+            rememberedExpansion = capturedExpansion(excluding = selectionAncestorLabels())
+        }
         restoringSelection = true
         try {
             treeRoot.removeAllChildren()
@@ -347,8 +361,11 @@ class PreviewGalleryPanel(
 
     /**
      * A query has already pruned the tree to the matching rows, so opening everything shows exactly the
-     * results; with no query the tree is the whole project and only the module level opens — a deep tree
-     * expanded on every keystroke is unreadable.
+     * results. With no query, the tree keeps whatever the user had open across the rebuild — a rebuild fires far
+     * more often than the user acts on it ([ActiveModuleTracker] on every editor `selectionChanged`, Refresh,
+     * every keystroke), so it must not silently undo a Collapse All from the toolbar or a branch the user closed
+     * by hand. Only the very first build, when [rememberedExpansion] is still null, falls back to expanding the
+     * module level.
      */
     private fun applyExpansionPolicy() {
         if (searchField.text.isNotEmpty()) {
@@ -359,10 +376,81 @@ class PreviewGalleryPanel(
             }
             return
         }
-        for (index in 0 until treeRoot.childCount) {
-            val moduleNode = treeRoot.getChildAt(index) as? DefaultMutableTreeNode ?: continue
-            tree.expandPath(TreePath(moduleNode.path))
+        val remembered = rememberedExpansion
+        if (remembered == null) {
+            for (index in 0 until treeRoot.childCount) {
+                val moduleNode = treeRoot.getChildAt(index) as? DefaultMutableTreeNode ?: continue
+                tree.expandPath(TreePath(moduleNode.path))
+            }
+            return
         }
+        for (labels in remembered) {
+            // A label path that no longer resolves simply named rows that filtering/rebuilding removed; skip it
+            // rather than expanding a partial or wrong node.
+            val node = findNodeByLabelPath(labels) ?: continue
+            tree.expandPath(TreePath(node.path))
+        }
+    }
+
+    /** The label path of every currently expanded row, from the first level below the invisible root down to
+     *  that row — the same label mapping [visibleRowLabelsForTest] uses, so a path survives the rebuild even
+     *  though every node instance is replaced. Drops any path that is [excluding] itself or one of its prefixes
+     *  (see the call site in [applyFilter] for why). */
+    private fun capturedExpansion(excluding: List<String>?): List<List<String>> {
+        val expandedPaths = tree.getExpandedDescendants(TreePath(treeRoot)) ?: return emptyList()
+        val result = mutableListOf<List<String>>()
+        while (expandedPaths.hasMoreElements()) {
+            val labels = labelPathFor(expandedPaths.nextElement()) ?: continue
+            val isRevealOnly = excluding != null && labels.size <= excluding.size && excluding.subList(0, labels.size) == labels
+            if (!isRevealOnly) result.add(labels)
+        }
+        return result
+    }
+
+    /** The label path of the branch holding the current selection, not including the leaf's own label (a leaf
+     *  is never itself "expanded"), or null if nothing is selected. See the call site in [applyFilter]. */
+    private fun selectionAncestorLabels(): List<String>? {
+        val path = tree.selectionPath ?: return null
+        return labelPathFor(path)?.dropLast(1)
+    }
+
+    /** Converts [path] (rooted at the invisible [treeRoot]) into the labels of every node below the root, or
+     *  null if any node along the way carries no label (defensive; every real node has one). */
+    private fun labelPathFor(path: TreePath): List<String>? {
+        val labels = mutableListOf<String>()
+        for (component in path.path) {
+            val node = component as? DefaultMutableTreeNode ?: return null
+            if (node === treeRoot) continue
+            labels.add(labelOf(node.userObject) ?: return null)
+        }
+        return labels
+    }
+
+    /** The label [visibleRowLabelsForTest] would show for [userObject], or null for an unrecognised node. */
+    private fun labelOf(userObject: Any?): String? = when (userObject) {
+        is PreviewNode.ModuleNode -> userObject.moduleName
+        is PreviewNode.PackageBranch -> userObject.segment
+        is PreviewNode.PreviewLeaf -> userObject.row.indexed.displayName
+        else -> null
+    }
+
+    /** Walks the current tree from [treeRoot] following [labels] one level at a time, returning the node at the
+     *  end of the path, or null as soon as a label no longer matches any child (the row it named was filtered
+     *  out of the rebuilt tree). */
+    private fun findNodeByLabelPath(labels: List<String>): DefaultMutableTreeNode? {
+        var current = treeRoot
+        for (label in labels) {
+            var next: DefaultMutableTreeNode? = null
+            for (index in 0 until current.childCount) {
+                val child = current.getChildAt(index) as? DefaultMutableTreeNode ?: continue
+                if (labelOf(child.userObject) == label) {
+                    next = child
+                    break
+                }
+            }
+            current = next ?: return null
+        }
+        return current
     }
 
     private fun setState(newState: State) {

@@ -289,4 +289,28 @@ class PreviewGalleryPanelTest : BasePlatformTestCase() {
 
         assertFalse(panel.visibleRowLabelsForTest().contains("BasketPreview"))
     }
+
+    fun `test a rebuild keeps the tree collapsed after Collapse All`() {
+        twoDomainProject()
+        val panel = panel()
+        panel.reloadSynchronously()
+        panel.treeExpanderForTest().collapseAll()
+
+        // Force a plain rebuild, e.g. as Refresh or an unrelated editor selectionChanged would.
+        panel.applyQueryForTest("")
+
+        assertFalse(panel.visibleRowLabelsForTest().toString(), panel.visibleRowLabelsForTest().contains("com.example.buy"))
+    }
+
+    fun `test a rebuild keeps branches the user expanded`() {
+        twoDomainProject()
+        val panel = panel()
+        panel.reloadSynchronously()
+        panel.treeExpanderForTest().expandAll()
+
+        // Force a plain rebuild, e.g. as Refresh or an unrelated editor selectionChanged would.
+        panel.applyQueryForTest("")
+
+        assertTrue(panel.visibleRowLabelsForTest().toString(), panel.visibleRowLabelsForTest().contains("BasketPreview"))
+    }
 }
