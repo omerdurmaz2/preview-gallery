@@ -8,7 +8,7 @@ import org.junit.Test
 class PreviewTreeModelBuilderTest {
 
     @Test
-    fun `groups by module then package`() {
+    fun `groups by module then package branch`() {
         val rows = listOf(
             testRow(displayName = "A", packageName = "com.a", moduleName = "app"),
             testRow(displayName = "B", packageName = "com.b", moduleName = "app"),
@@ -18,8 +18,12 @@ class PreviewTreeModelBuilderTest {
         val modules = PreviewTreeModelBuilder.build(rows, "")
 
         assertEquals(listOf("app", "design"), modules.map { it.moduleName })
-        assertEquals(listOf("com.a", "com.b"), modules.first().packages.map { it.packageName })
-        assertEquals(listOf("com.c"), modules.last().packages.map { it.packageName })
+        // com forks into a and b, so the shared prefix becomes one row with two children.
+        val app = modules.first().branches.single()
+        assertEquals("com", app.segment)
+        assertEquals(listOf("a", "b"), app.branches.map { it.segment })
+        // design has a single chain, so it compacts to one row.
+        assertEquals(listOf("com.c"), modules.last().branches.map { it.segment })
     }
 
     @Test
@@ -46,8 +50,18 @@ class PreviewTreeModelBuilderTest {
         assertEquals(listOf("alpha", "zeta"), modules.map { it.moduleName })
         assertEquals(
             listOf("Apple", "Banana"),
-            modules.first().packages.single().previews.map { it.row.indexed.displayName },
+            modules.first().branches.single().previews.map { it.row.indexed.displayName },
         )
+    }
+
+    @Test
+    fun `previews in the default package hang off the module row`() {
+        val rows = listOf(testRow(displayName = "A", packageName = "", moduleName = "app"))
+
+        val module = PreviewTreeModelBuilder.build(rows, "").single()
+
+        assertTrue(module.branches.isEmpty())
+        assertEquals(listOf("A"), module.previews.map { it.row.indexed.displayName })
     }
 
     @Test

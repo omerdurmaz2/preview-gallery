@@ -4,15 +4,16 @@ import com.devomer.previewgallery.model.PreviewRow
 import com.devomer.previewgallery.search.PreviewSearchFilter
 
 /**
- * Builds the module -> package -> preview tree. Module counts reflect the filtered result, not the
+ * Builds the module -> package branch -> preview tree. Module counts reflect the filtered result, not the
  * whole project.
  *
- * Sorting is case-insensitive at every level, matching the search filter, so a freeform
- * `@Preview(name = ...)` does not sort away from the PascalCase names around it.
+ * Only the filtering and the module level live here; [PackageTreeBuilder] owns the nesting and compaction of
+ * package segments below each module.
  *
- * Every level sorts a list rather than building a comparator-keyed map: a `TreeMap` ordered by
- * `CASE_INSENSITIVE_ORDER` treats names differing only in case as one key, which would silently drop a
- * whole module or package.
+ * Modules sort case-insensitively, matching the search filter, so a freeform `@Preview(name = ...)` does not
+ * sort away from the PascalCase names around it. The level sorts a list rather than building a comparator-keyed
+ * map: a `TreeMap` ordered by `CASE_INSENSITIVE_ORDER` treats names differing only in case as one key, which
+ * would silently drop a whole module.
  */
 object PreviewTreeModelBuilder {
 
@@ -22,18 +23,12 @@ object PreviewTreeModelBuilder {
             .entries
             .sortedWith(compareBy(String.CASE_INSENSITIVE_ORDER) { it.key })
             .map { (moduleName, moduleRows) ->
-                val packages = moduleRows
-                    .groupBy { it.indexed.packageName }
-                    .entries
-                    .sortedWith(compareBy(String.CASE_INSENSITIVE_ORDER) { it.key })
-                    .map { (packageName, packageRows) ->
-                        PreviewNode.PackageNode(
-                            packageName = packageName,
-                            previews = packageRows
-                                .sortedWith(compareBy(String.CASE_INSENSITIVE_ORDER) { it.indexed.displayName })
-                                .map { PreviewNode.PreviewLeaf(it) },
-                        )
-                    }
-                PreviewNode.ModuleNode(moduleName, moduleRows.size, packages)
+                val tree = PackageTreeBuilder.build(moduleRows)
+                PreviewNode.ModuleNode(
+                    moduleName = moduleName,
+                    count = moduleRows.size,
+                    branches = tree.branches,
+                    previews = tree.previews,
+                )
             }
 }

@@ -8,7 +8,8 @@ sealed interface PreviewNode {
     data class ModuleNode(
         val moduleName: String,
         val count: Int,
-        val packages: List<PackageNode>,
+        val branches: List<PackageBranch>,
+        val previews: List<PreviewLeaf> = emptyList(),
     ) : PreviewNode
 
     /**
@@ -21,11 +22,6 @@ sealed interface PreviewNode {
         val branches: List<PackageBranch>,
         val previews: List<PreviewLeaf>,
         val count: Int,
-    ) : PreviewNode
-
-    data class PackageNode(
-        val packageName: String,
-        val previews: List<PreviewLeaf>,
     ) : PreviewNode
 
     data class PreviewLeaf(val row: PreviewRow) : PreviewNode

@@ -52,11 +52,17 @@ class PreviewTreeCellRendererTest {
     }
 
     @Test
-    fun `a package row uses the package icon and grey text`() {
-        val renderer = render(PreviewNode.PackageNode("com.example", emptyList()))
+    fun `a branch row uses the package icon, grey label, and a small grey count`() {
+        val renderer = render(PreviewNode.PackageBranch("com.example", emptyList(), emptyList(), 2))
 
         assertEquals(AllIcons.Nodes.Package, renderer.icon)
-        assertEquals(listOf("com.example" to SimpleTextAttributes.GRAYED_ATTRIBUTES), fragments(renderer))
+        assertEquals(
+            listOf(
+                "com.example" to SimpleTextAttributes.GRAYED_ATTRIBUTES,
+                "  (2)" to SimpleTextAttributes.GRAYED_SMALL_ATTRIBUTES,
+            ),
+            fragments(renderer),
+        )
         assertNull(renderer.toolTipText)
     }
 

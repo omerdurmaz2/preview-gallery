@@ -38,7 +38,6 @@ import java.awt.BorderLayout
 import java.awt.event.KeyAdapter
 import java.awt.event.KeyEvent
 import java.awt.event.MouseEvent
-import java.util.Collections
 import javax.swing.event.DocumentEvent
 import javax.swing.tree.DefaultMutableTreeNode
 import javax.swing.tree.DefaultTreeModel
@@ -244,11 +243,10 @@ class PreviewGalleryPanel(
             treeRoot.removeAllChildren()
             modules.forEach { module ->
                 val moduleNode = DefaultMutableTreeNode(module)
-                module.packages.forEach { pkg ->
-                    val packageNode = DefaultMutableTreeNode(pkg)
-                    pkg.previews.forEach { packageNode.add(DefaultMutableTreeNode(it)) }
-                    moduleNode.add(packageNode)
-                }
+                // Branches before leaves at every level: the leaves of a row are its own previews, and burying
+                // them above the sub-packages would make a deep tree read as if the packages belonged to them.
+                module.branches.forEach { addBranch(moduleNode, it) }
+                module.previews.forEach { moduleNode.add(DefaultMutableTreeNode(it)) }
                 treeRoot.add(moduleNode)
             }
             treeModel.reload()
@@ -363,15 +361,25 @@ class PreviewGalleryPanel(
         return kotlin.math.abs(packageFqn.hashCode())
     }
 
-    private fun findPath(entryId: String): TreePath? {
-        val moduleNodes = Collections.list(treeRoot.children()).filterIsInstance<DefaultMutableTreeNode>()
-        for (moduleNode in moduleNodes) {
-            for (packageNode in Collections.list(moduleNode.children()).filterIsInstance<DefaultMutableTreeNode>()) {
-                for (leafNode in Collections.list(packageNode.children()).filterIsInstance<DefaultMutableTreeNode>()) {
-                    val entry = (leafNode.userObject as? PreviewNode.PreviewLeaf)?.row as? PreviewEntry
-                    if (entry?.id == entryId) return TreePath(leafNode.path)
-                }
-            }
+    private fun addBranch(parent: DefaultMutableTreeNode, branch: PreviewNode.PackageBranch) {
+        val node = DefaultMutableTreeNode(branch)
+        branch.branches.forEach { addBranch(node, it) }
+        branch.previews.forEach { node.add(DefaultMutableTreeNode(it)) }
+        parent.add(node)
+    }
+
+    /**
+     * Depth-first search for the leaf carrying [entryId]. Runs on every rebuild (selection restore), so it walks
+     * children by index rather than materialising a list per level.
+     */
+    private fun findPath(entryId: String): TreePath? = findPath(treeRoot, entryId)
+
+    private fun findPath(node: DefaultMutableTreeNode, entryId: String): TreePath? {
+        val entry = (node.userObject as? PreviewNode.PreviewLeaf)?.row as? PreviewEntry
+        if (entry?.id == entryId) return TreePath(node.path)
+        for (index in 0 until node.childCount) {
+            val child = node.getChildAt(index) as? DefaultMutableTreeNode ?: continue
+            findPath(child, entryId)?.let { return it }
         }
         return null
     }
