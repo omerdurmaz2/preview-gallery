@@ -11,6 +11,9 @@ import com.devomer.previewgallery.render.RenderApiProbe
 import com.devomer.previewgallery.render.RenderPipeline
 import com.devomer.previewgallery.search.PreviewModuleFilter
 import com.devomer.previewgallery.service.PreviewIndexService
+import com.intellij.ide.CommonActionsManager
+import com.intellij.ide.DefaultTreeExpander
+import com.intellij.ide.TreeExpander
 import com.intellij.openapi.Disposable
 import com.intellij.openapi.actionSystem.ActionManager
 import com.intellij.openapi.actionSystem.DefaultActionGroup
@@ -58,6 +61,7 @@ class PreviewGalleryPanel(
     private val treeRoot = DefaultMutableTreeNode()
     private val treeModel = DefaultTreeModel(treeRoot)
     private val tree = Tree(treeModel)
+    private val treeExpander = DefaultTreeExpander(tree)
     private val statusLabel = com.intellij.ui.components.JBLabel()
     private val alarm = Alarm(Alarm.ThreadToUse.SWING_THREAD, parentDisposable)
 
@@ -145,9 +149,14 @@ class PreviewGalleryPanel(
             ephemeralPickerBridge.showEphemeralPicker(entry, override, point, onEdit)
         }
 
+        // The platform's own expand/collapse actions: same icons, tooltips and shortcuts as the Project view,
+        // which is the behaviour a user coming from that tree expects.
+        val commonActions = CommonActionsManager.getInstance()
         val actionGroup = DefaultActionGroup(
             RefreshAction(project) { reload() },
             ModuleFilterToggleAction(project) { applyFilter() },
+            commonActions.createExpandAllAction(treeExpander, this),
+            commonActions.createCollapseAllAction(treeExpander, this),
         )
         val toolbar = ActionManager.getInstance().createActionToolbar("PreviewGallery", actionGroup, true)
         toolbar.targetComponent = this
@@ -269,6 +278,10 @@ class PreviewGalleryPanel(
             else -> null
         }
     }
+
+    /** The expander the toolbar's expand/collapse actions drive. */
+    @TestOnly
+    fun treeExpanderForTest(): TreeExpander = treeExpander
 
     private fun applyFilter() {
         // The tree is rebuilt from scratch below (new node instances), which otherwise drops the current

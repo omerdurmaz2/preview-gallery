@@ -266,4 +266,27 @@ class PreviewGalleryPanelTest : BasePlatformTestCase() {
         assertEquals(entry.id, panel.selectedEntryIdForTest())
         assertFalse(panel.visibleRowLabelsForTest().toString(), panel.visibleRowLabelsForTest().contains("CheckoutPreview"))
     }
+
+    fun `test the tree expander opens every row`() {
+        twoDomainProject()
+        val panel = panel()
+        panel.reloadSynchronously()
+
+        panel.treeExpanderForTest().expandAll()
+
+        val labels = panel.visibleRowLabelsForTest()
+        assertTrue(labels.toString(), labels.contains("BasketPreview"))
+        assertTrue(labels.toString(), labels.contains("CheckoutPreview"))
+    }
+
+    fun `test the tree expander collapses back to the modules`() {
+        twoDomainProject()
+        val panel = panel()
+        panel.reloadSynchronously()
+        panel.treeExpanderForTest().expandAll()
+
+        panel.treeExpanderForTest().collapseAll()
+
+        assertFalse(panel.visibleRowLabelsForTest().contains("BasketPreview"))
+    }
 }
