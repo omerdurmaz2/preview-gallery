@@ -63,8 +63,10 @@ class PackageTreeBuilderTest {
             ),
         )
 
-        assertEquals(listOf("com.Buy", "com.buy"), tree.branches.map { it.segment }.sorted())
-        assertEquals(2, tree.branches.size)
+        val root = tree.branches.single()
+        assertEquals("com", root.segment)
+        assertEquals(listOf("Buy", "buy"), root.branches.map { it.segment })
+        assertEquals(2, root.count)
     }
 
     @Test fun `branches and previews are sorted case-insensitively`() {

@@ -8,9 +8,7 @@ import com.devomer.previewgallery.model.PreviewRow
  * Chains that neither fork nor hold previews of their own are compacted into a single row
  * (`com.trendyol.buy` rather than `com` > `trendyol` > `buy`), matching the IDE's own "compact middle packages"
  * behaviour: branching should start where the packages actually diverge. A branch that holds previews is never
- * compacted away — its leaves need a row to hang from. A branch whose children are only distinguishable by
- * case (`Buy` next to `buy`) is compacted through the same way a single child would be, so the tree never
- * shows two sibling rows that read the same.
+ * compacted away — its leaves need a row to hang from.
  *
  * Segments are collected in exact-match maps and only the *output* is sorted case-insensitively: a map ordered
  * by `CASE_INSENSITIVE_ORDER` would treat `Buy` and `buy` as one key and silently drop a subtree.
@@ -49,37 +47,23 @@ object PackageTreeBuilder {
 
     private fun freezeAll(level: Map<String, MutableBranch>): List<PreviewNode.PackageBranch> =
         level.values
-            .flatMap { freeze(it, "") }
+            .map { freeze(it, "") }
             .sortedWith(compareBy(String.CASE_INSENSITIVE_ORDER) { it.segment })
 
-    /**
-     * [prefix] carries the segments already compacted into this row, empty at a fresh branching point.
-     *
-     * Returns a list rather than a single row because a node whose children collide case-insensitively
-     * (`Buy` and `buy`) is not a safe place to stop: showing both as sibling rows under the same parent would
-     * put two identical-looking labels side by side. Such a node is pushed through like a single child, but
-     * since there is more than one of them, each one keeps compacting on its own and the results come back up
-     * as separate rows at the level above instead of one.
-     */
-    private fun freeze(branch: MutableBranch, prefix: String): List<PreviewNode.PackageBranch> {
+    /** [prefix] carries the segments already compacted into this row, empty at a fresh branching point. */
+    private fun freeze(branch: MutableBranch, prefix: String): PreviewNode.PackageBranch {
         val label = if (prefix.isEmpty()) branch.segment else "$prefix.${branch.segment}"
-        // A single distinct label covers both the plain "one child" case and several children that only look
-        // like a fork once case is ignored; either way there is nothing here worth stopping compaction for.
-        val distinctChildLabels = sortedSetOf(String.CASE_INSENSITIVE_ORDER, *branch.children.keys.toTypedArray()).size
-        val allChildrenLookTheSame = branch.children.isNotEmpty() && distinctChildLabels == 1
-        if (branch.previews.isEmpty() && allChildrenLookTheSame) {
-            return branch.children.values.flatMap { freeze(it, label) }
+        if (branch.previews.isEmpty() && branch.children.size == 1) {
+            return freeze(branch.children.values.single(), label)
         }
 
         val branches = freezeAll(branch.children)
         val previews = sortLeaves(branch.previews)
-        return listOf(
-            PreviewNode.PackageBranch(
-                segment = label,
-                branches = branches,
-                previews = previews,
-                count = previews.size + branches.sumOf { it.count },
-            ),
+        return PreviewNode.PackageBranch(
+            segment = label,
+            branches = branches,
+            previews = previews,
+            count = previews.size + branches.sumOf { it.count },
         )
     }
 
