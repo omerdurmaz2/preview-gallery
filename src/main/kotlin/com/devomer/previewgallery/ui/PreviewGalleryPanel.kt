@@ -74,6 +74,14 @@ class PreviewGalleryPanel(
      *  rebuild. Populated (possibly to an empty list, e.g. right after a Collapse All) by [applyFilter]. */
     private var rememberedExpansion: List<List<String>>? = null
 
+    /** Whether the tree currently on screen (the one about to be replaced by the NEXT [applyFilter] call) was
+     *  built from a non-empty query. Set at the end of [applyFilter] from that call's own query, so by the time
+     *  the following call reads it, it describes the OUTGOING tree — which is what the capture guard must test.
+     *  Testing the incoming/new query instead (as [searchField]'s text would) gets the rebuild that clears a
+     *  query backwards: at that point the old, still-current tree is the query's machine-fully-expanded one, so
+     *  its forced-open state would be captured and replayed onto the unfiltered tree instead of being discarded. */
+    private var lastBuildWasQueryDriven = false
+
     /** An entry another surface asked to reveal before the tree could show it (the tool window may have been
      *  created by that very request, so [entries] can still be loading). Applied by [applyFilter], and dropped
      *  as soon as [entries] is loaded — whether or not the node was actually found — so a stale or filtered-out
@@ -299,16 +307,20 @@ class PreviewGalleryPanel(
         )
         val modules = PreviewTreeModelBuilder.build(visible, searchField.text)
         // Capture the user's expansion before the rebuild discards every node instance, so it can be restored
-        // in applyExpansionPolicy below. Only when there is no query: a query's expansion is machine-made (every
+        // in applyExpansionPolicy below. Only when the OUTGOING tree (the one still on screen, tested via
+        // lastBuildWasQueryDriven) was not itself built from a query: a query's expansion is machine-made (every
         // surviving row is opened to show the matches), so remembering it would leak that forced-open state into
-        // the next no-query rebuild. Only when the tree already has rows: on the very first build there is
-        // nothing to remember, and rememberedExpansion must stay null so the module-level default below applies.
-        // Excludes the branch holding the current selection: that branch can be open purely because selectEntry's
-        // reveal path (revealPath = true) opened it to bring the selection into view, which is a one-off, not a
-        // standing preference (see selectEntry's own KDoc) — without this, a reveal would be indistinguishable
-        // from the user expanding the same branch by hand, and would then wrongly survive the next rebuild.
-        if (searchField.text.isEmpty() && tree.rowCount > 0) {
-            rememberedExpansion = capturedExpansion(excluding = selectionAncestorLabels())
+        // the next no-query rebuild. This is deliberately not a test of the incoming searchField.text — that
+        // reads the NEW query, but capturedExpansion() below reads the OLD, not-yet-rebuilt tree; on the rebuild
+        // that clears a query, the old tree is the query's fully-expanded one, so testing the new (empty) text
+        // would capture and replay that forced expansion instead of discarding it. Only when the tree already
+        // has rows: on the very first build there is nothing to remember, and rememberedExpansion must stay null
+        // so the module-level default below applies. A revealed branch (selectEntry's revealPath = true) is
+        // captured like any other open branch: at the JTree level a reveal cannot be told apart from the user
+        // expanding the same branch by hand and then clicking a preview inside it, so it is simply treated as
+        // opened state — if the user does not want it open, they collapse it, which this capture then remembers.
+        if (!lastBuildWasQueryDriven && tree.rowCount > 0) {
+            rememberedExpansion = capturedExpansion()
         }
         restoringSelection = true
         try {
@@ -348,6 +360,10 @@ class PreviewGalleryPanel(
             lastSelectedEntry = currentSelection
             pipeline.select(currentSelection)
         }
+
+        // Describes the tree this call just built, for the capture guard at the top of the NEXT applyFilter call
+        // (see lastBuildWasQueryDriven's own KDoc for why that call, not this one, needs it).
+        lastBuildWasQueryDriven = searchField.text.isNotEmpty()
 
         setState(
             when {
@@ -394,24 +410,15 @@ class PreviewGalleryPanel(
 
     /** The label path of every currently expanded row, from the first level below the invisible root down to
      *  that row — the same label mapping [visibleRowLabelsForTest] uses, so a path survives the rebuild even
-     *  though every node instance is replaced. Drops any path that is [excluding] itself or one of its prefixes
-     *  (see the call site in [applyFilter] for why). */
-    private fun capturedExpansion(excluding: List<String>?): List<List<String>> {
+     *  though every node instance is replaced. */
+    private fun capturedExpansion(): List<List<String>> {
         val expandedPaths = tree.getExpandedDescendants(TreePath(treeRoot)) ?: return emptyList()
         val result = mutableListOf<List<String>>()
         while (expandedPaths.hasMoreElements()) {
             val labels = labelPathFor(expandedPaths.nextElement()) ?: continue
-            val isRevealOnly = excluding != null && labels.size <= excluding.size && excluding.subList(0, labels.size) == labels
-            if (!isRevealOnly) result.add(labels)
+            result.add(labels)
         }
         return result
-    }
-
-    /** The label path of the branch holding the current selection, not including the leaf's own label (a leaf
-     *  is never itself "expanded"), or null if nothing is selected. See the call site in [applyFilter]. */
-    private fun selectionAncestorLabels(): List<String>? {
-        val path = tree.selectionPath ?: return null
-        return labelPathFor(path)?.dropLast(1)
     }
 
     /** Converts [path] (rooted at the invisible [treeRoot]) into the labels of every node below the root, or

@@ -254,17 +254,53 @@ class PreviewGalleryPanelTest : BasePlatformTestCase() {
         val entry = PreviewIndexService.getInstance(project).findAll()
             .single { it.indexed.displayName == "CheckoutPreview" }
 
-        // selectEntry is the reveal path: it expands the checkout branch and selects the leaf.
+        // selectEntry reveals the entry (expanding its branch); the user then closes everything by hand. The
+        // platform's own Collapse All (DefaultTreeExpander/TreeUtil.collapseAll) re-anchors the selection to the
+        // nearest surviving ancestor once the selected leaf is hidden, so the selection is already gone (no
+        // PreviewEntry selected) before the rebuild below ever runs — independent of this panel's own code.
         panel.selectEntry(entry.id)
-        assertTrue(panel.visibleRowLabelsForTest().contains("CheckoutPreview"))
+        panel.treeExpanderForTest().collapseAll()
+        assertNull(panel.selectedEntryIdForTest())
 
         // A plain rebuild with no query (e.g. triggered by ActiveModuleTracker on an unrelated editor
-        // selectionChanged) must restore the selection without re-opening the branch the user could have
-        // collapsed in the meantime; the tree goes back to showing only the module level.
+        // selectionChanged) must not re-open what the user just closed, nor spuriously select anything.
         panel.applyQueryForTest("")
 
-        assertEquals(entry.id, panel.selectedEntryIdForTest())
-        assertFalse(panel.visibleRowLabelsForTest().toString(), panel.visibleRowLabelsForTest().contains("CheckoutPreview"))
+        assertNull(panel.selectedEntryIdForTest())
+        assertFalse(panel.visibleRowLabelsForTest().toString(), panel.visibleRowLabelsForTest().contains("com.example.buy"))
+    }
+
+    fun `test a revealed entry stays visible across a rebuild`() {
+        twoDomainProject()
+        val panel = panel()
+        panel.reloadSynchronously()
+        val entry = PreviewIndexService.getInstance(project).findAll()
+            .single { it.indexed.displayName == "CheckoutPreview" }
+
+        panel.revealEntry(entry.id)
+
+        // An incidental rebuild (e.g. Refresh, or ActiveModuleTracker on an unrelated editor selectionChanged)
+        // must not collapse a branch the reveal just opened: a reveal is opened state like any other, and the
+        // user has not asked to close it.
+        panel.applyQueryForTest("")
+
+        assertTrue(panel.visibleRowLabelsForTest().toString(), panel.visibleRowLabelsForTest().contains("CheckoutPreview"))
+    }
+
+    fun `test clearing a query does not inherit its forced expansion`() {
+        twoDomainProject()
+        val panel = panel()
+        panel.reloadSynchronously()
+
+        // Matches both previews, so the tree keeps the same branch shape as the unfiltered tree — every
+        // expanded label path captured from it still resolves once the query is cleared below.
+        panel.applyQueryForTest("Preview")
+
+        panel.applyQueryForTest("")
+
+        // The tree must go back to its pre-query state (module level, for a freshly loaded panel), not inherit
+        // the query's machine-forced full expansion.
+        assertFalse(panel.visibleRowLabelsForTest().toString(), panel.visibleRowLabelsForTest().contains("BasketPreview"))
     }
 
     fun `test the tree expander opens every row`() {
