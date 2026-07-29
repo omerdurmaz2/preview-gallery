@@ -43,6 +43,10 @@ class PreviewTreeCellRenderer : ColoredTreeCellRenderer() {
                 append(node.packageName, SimpleTextAttributes.GRAYED_ATTRIBUTES)
             }
 
+            // Not produced by PreviewTreeModelBuilder yet (PG9-2 wires up the nested tree); this branch only
+            // keeps the `when` exhaustive against the sealed PreviewNode hierarchy.
+            is PreviewNode.PackageBranch -> Unit
+
             is PreviewNode.PreviewLeaf -> {
                 val indexed = node.row.indexed
                 val unsupported = indexed.unsupportedReason != null
