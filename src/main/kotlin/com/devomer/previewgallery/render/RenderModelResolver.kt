@@ -327,6 +327,12 @@ class RenderModelResolver {
      * `runBlockingCancellable` here blocks only this background render thread — never the EDT ([RenderPipeline]
      * always calls [LiveRenderer] off the EDT) — so a slow finder only makes one render take longer; it can no
      * longer freeze the IDE. Guarded against [Exception]/[LinkageError] → `null` → the default-config fallback.
+     *
+     * It does, however, require a cancellable context, which none of this method's callers arrive with: they all
+     * reach it on a pooled thread whose context was propagated from a plain EDT callback, so it carries neither a
+     * `Job` nor a `ProgressIndicator`. The platform reports that through `Logger.error` (an internal-error
+     * notification in the IDE) instead of throwing, so no `catch` below ever saw it. [RenderTaskContext] installs
+     * the context the bridge needs — see its doc for the whole mechanism.
      */
     private fun findConfigAwareElement(
         entry: PreviewEntry,
@@ -334,8 +340,10 @@ class RenderModelResolver {
     ): SingleComposePreviewElementInstance<*>? {
         if (!RenderApiProbe.isConfigAwareAvailable()) return null
         return try {
-            val elements = runBlockingCancellable {
-                AnnotationFilePreviewElementFinder.findPreviewElements(project, entry.file)
+            val elements = RenderTaskContext.runCancellable {
+                runBlockingCancellable {
+                    AnnotationFilePreviewElementFinder.findPreviewElements(project, entry.file)
+                }
             }
             // Reads only String properties of the finder's already-resolved snapshot elements (no live PSI), so it
             // is safe off a read action; the config-aware element itself is applied under one in the caller.

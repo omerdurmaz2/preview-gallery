@@ -227,6 +227,8 @@ selectPreview(entry, config):
 
 **Key property:** the live renderer writes every successful render to the disk cache. The fallback tier is therefore populated by the primary path — no separate snapshot infrastructure is required for the fallback to be useful.
 
+**Threading contract.** Every render starts on the EDT and hops to the application executor, so the render task begins with the context the EDT propagated — which for a plain Swing callback holds no coroutine `Job` and no `ProgressIndicator`. Any call that bridges a `suspend` Android Studio API from that task (today: the config-aware preview-element finder) must install a cancellable context of its own first; without one the platform logs an internal error and runs the coroutine as an uncancellable orphan. No render path holds a read lock across such a bridge either — the finder takes its own smart read access, and a held read lock starves the EDT of write-intent (a real 65 s freeze).
+
 ### 7.4 LiveRenderer — ⚠️ unverified APIs
 
 Renders through the same layoutlib pipeline Android Studio uses for its own Compose preview.
