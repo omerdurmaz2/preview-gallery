@@ -14,9 +14,11 @@ object PreviewAnnotationMatcher {
     const val JETBRAINS_PREVIEW = "org.jetbrains.compose.ui.tooling.preview.Preview"
     const val ANDROIDX_PREVIEW_PARAMETER = "androidx.compose.ui.tooling.preview.PreviewParameter"
     const val JETBRAINS_PREVIEW_PARAMETER = "org.jetbrains.compose.ui.tooling.preview.PreviewParameter"
+    const val PREVIEW_TEST = "com.android.tools.screenshot.PreviewTest"
 
     private const val PREVIEW_SHORT_NAME = "Preview"
     private const val PREVIEW_PARAMETER_SHORT_NAME = "PreviewParameter"
+    private const val PREVIEW_TEST_SHORT_NAME = "PreviewTest"
 
     /** @return the annotation kind, or null when [reference] is not a Compose `@Preview`. */
     fun matchPreview(reference: String, imports: List<ImportInfo>): AnnotationKind? =
@@ -30,6 +32,10 @@ object PreviewAnnotationMatcher {
             ANDROIDX_PREVIEW_PARAMETER,
             JETBRAINS_PREVIEW_PARAMETER,
         ) != null
+
+    /** `@PreviewTest` marks a snapshot function of the Compose Preview Screenshot Testing plugin. */
+    fun isPreviewTest(reference: String, imports: List<ImportInfo>): Boolean =
+        match(reference, imports, PREVIEW_TEST_SHORT_NAME, PREVIEW_TEST, PREVIEW_TEST) != null
 
     private fun match(
         reference: String,

@@ -83,4 +83,33 @@ class PreviewAnnotationMatcherTest {
         assertTrue(PreviewAnnotationMatcher.isPreviewParameter("PreviewParameter", listOf(parameterImport)))
         assertFalse(PreviewAnnotationMatcher.isPreviewParameter("Preview", listOf(parameterImport)))
     }
+
+    @Test
+    fun `preview test matched through an import`() {
+        val imports = listOf(ImportInfo("com.android.tools.screenshot.PreviewTest", null, false))
+        assertTrue(PreviewAnnotationMatcher.isPreviewTest("PreviewTest", imports))
+    }
+
+    @Test
+    fun `preview test matched when fully qualified`() {
+        assertTrue(PreviewAnnotationMatcher.isPreviewTest("com.android.tools.screenshot.PreviewTest", emptyList()))
+    }
+
+    @Test
+    fun `preview test matched through a star import`() {
+        val imports = listOf(ImportInfo("com.android.tools.screenshot", null, true))
+        assertTrue(PreviewAnnotationMatcher.isPreviewTest("PreviewTest", imports))
+    }
+
+    @Test
+    fun `unrelated PreviewTest name is not matched`() {
+        val imports = listOf(ImportInfo("com.example.PreviewTest", null, false))
+        assertFalse(PreviewAnnotationMatcher.isPreviewTest("PreviewTest", imports))
+    }
+
+    @Test
+    fun `plain Preview is not a preview test`() {
+        val imports = listOf(ImportInfo("androidx.compose.ui.tooling.preview.Preview", null, false))
+        assertFalse(PreviewAnnotationMatcher.isPreviewTest("Preview", imports))
+    }
 }
