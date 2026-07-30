@@ -25,3 +25,4 @@ at your own install if it is not at `~/Applications/Android Studio.app`, then:
 - [Plugin spec](compose-preview-gallery-plugin-spec.md)
 - [Phase 1 design](docs/superpowers/specs/2026-07-23-preview-gallery-phase1-design.md)
 - [Phase 1 plan](docs/superpowers/plans/2026-07-23-preview-gallery-phase1.md)
+- [Snapshot testing roadmap](docs/snapshot-testing-roadmap.md) — backlog, not yet designed
