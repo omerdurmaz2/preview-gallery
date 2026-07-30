@@ -26,7 +26,7 @@ object PackageTreeBuilder {
         val rootPreviews = mutableListOf<PreviewNode.PreviewLeaf>()
 
         for (row in rows) {
-            val leaf = PreviewNode.PreviewLeaf(row)
+            val leaf = PreviewNode.PreviewLeaf(row, row.snapshots.map { PreviewNode.SnapshotLeaf(it) })
             val segments = row.indexed.packageName.split('.').filter { it.isNotEmpty() }
             if (segments.isEmpty()) {
                 rootPreviews += leaf

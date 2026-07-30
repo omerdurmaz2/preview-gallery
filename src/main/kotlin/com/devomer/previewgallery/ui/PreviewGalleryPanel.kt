@@ -325,7 +325,8 @@ class PreviewGalleryPanel(
             moduleTracker.activeModuleName,
             moduleFilterOn,
         )
-        val modules = PreviewTreeModelBuilder.build(visible, searchField.text)
+        // No orphan snapshots wired in yet: task 10 wires this to PreviewIndexService.findOrphanSnapshots().
+        val modules = PreviewTreeModelBuilder.build(visible, emptyList(), searchField.text)
         // Capture the user's expansion before the rebuild discards every node instance, so it can be restored
         // in applyExpansionPolicy below. Only when the OUTGOING tree (the one still on screen, tested via
         // lastBuildWasQueryDriven) was not itself built from a query: a query's expansion is machine-made (every

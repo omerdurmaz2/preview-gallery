@@ -2,6 +2,7 @@ package com.devomer.previewgallery.ui
 
 import com.devomer.previewgallery.search.testRow
 import org.junit.Assert.assertEquals
+import org.junit.Assert.assertNotNull
 import org.junit.Assert.assertTrue
 import org.junit.Test
 
@@ -62,6 +63,20 @@ class ModuleTreeBuilderTest {
         assertEquals(listOf("ui"), compose.modules.map { it.segment })
     }
 
+    @Test fun `a module holding only orphans is not compacted away even with one child`() {
+        val modules = ModuleTreeBuilder.build(
+            listOf(testRow(displayName = "A", moduleName = "compose.ui")),
+            listOf(testRow(displayName = "Orphan", isSnapshotTest = true, moduleName = "compose")),
+        )
+
+        // Without its own rows, "compose" would normally compact into its single child "ui" — but it holds an
+        // orphan branch of its own, which needs a row to hang from, so it is kept separate instead.
+        val compose = modules.single()
+        assertEquals("compose", compose.segment)
+        assertNotNull(compose.orphans)
+        assertEquals(listOf("ui"), compose.modules.map { it.segment })
+    }
+
     @Test fun `counts sum the whole subtree including nested modules`() {
         // A second, unrelated top-level module ("design") keeps the forest at two roots, so the shared-root
         // drop rule does not fire and "features" survives as its own row to assert the count on.
@@ -99,6 +114,21 @@ class ModuleTreeBuilderTest {
         // "MyApp" itself holds no previews and no package branches, and forks into two modules, so it is
         // dropped rather than shown as a single noisy row above everything else.
         assertEquals(listOf("compose", "features"), modules.map { it.segment })
+    }
+
+    @Test fun `a shared single project root is kept when it holds only orphans`() {
+        val modules = ModuleTreeBuilder.build(
+            listOf(
+                testRow(displayName = "A", moduleName = "MyApp.features"),
+                testRow(displayName = "B", moduleName = "MyApp.compose"),
+            ),
+            listOf(testRow(displayName = "Orphan", isSnapshotTest = true, moduleName = "MyApp")),
+        )
+
+        // "MyApp" forks into two modules and would normally be dropped as noise, but it holds an orphan branch
+        // of its own, which needs a row to hang from, so it is kept instead of being silently discarded.
+        assertEquals(listOf("MyApp"), modules.map { it.segment })
+        assertNotNull(modules.single().orphans)
     }
 
     @Test fun `each level sorts case-insensitively`() {
