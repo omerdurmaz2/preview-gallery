@@ -2,12 +2,15 @@ package com.devomer.previewgallery.render
 
 import com.intellij.execution.executors.DefaultRunExecutor
 import com.intellij.openapi.Disposable
+import com.intellij.openapi.application.ReadAction
 import com.intellij.openapi.components.Service
 import com.intellij.openapi.components.service
 import com.intellij.openapi.diagnostic.thisLogger
 import com.intellij.openapi.module.Module
+import com.intellij.openapi.progress.ProcessCanceledException
 import com.intellij.openapi.project.DumbService
 import com.intellij.openapi.project.Project
+import java.nio.file.Path
 import java.util.concurrent.atomic.AtomicLong
 import java.util.concurrent.atomic.AtomicReference
 
@@ -28,6 +31,13 @@ import org.jetbrains.plugins.gradle.util.GradleConstants
 import org.jetbrains.plugins.gradle.util.GradleModuleData
 import org.jetbrains.plugins.gradle.util.GradleUtil
 
+// ── Android Studio internal API: the ONE piece of it this class needs — which Gradle tasks compile a module,
+// answered by AS's own build system instead of guessed from a task name (see studioCompileTarget). Guarded by
+// [RenderApiProbe.isCompileTaskFinderAvailable] plus Exception/LinkageError, like every AS call in render/. ──
+import com.android.tools.idea.gradle.project.build.invoker.GradleTaskFinder
+import com.android.tools.idea.gradle.util.BuildMode
+import com.google.common.collect.ListMultimap
+
 /**
  * Builds one module's classes on demand through the IDE's own Gradle integration, so [LiveRenderer] has something
  * to load (design §6). This is platform/Gradle plumbing, not AS-internal render API, so it lives outside
@@ -37,7 +47,8 @@ import org.jetbrains.plugins.gradle.util.GradleUtil
  *
  * - **Never spawns a Gradle daemon directly** (rule B1): everything goes through [ExternalSystemUtil.runTask] with
  *   [GradleConstants.SYSTEM_ID], the same entry point the IDE's own Gradle actions use.
- * - **Compiles the minimum** (rule B2): `:a:b:module:compileDebugKotlin`, never `assembleDebug`.
+ * - **Compiles the minimum** (rule B2): the module's own compile tasks — whatever Android Studio itself would run
+ *   for `BuildMode.COMPILE_JAVA` on that module (see [studioCompileTarget]) — never `assembleDebug`.
  * - **Single-flight** (rule B4): [build] cancels whatever build this service currently has in flight before
  *   starting a new one.
  * - **Dumb-mode gated** (rule B5): a no-op returning `onDone(false)` while [DumbService.isDumb].
@@ -85,7 +96,7 @@ class BuildService(private val project: Project) : Disposable {
 
         val settings = ExternalSystemTaskExecutionSettings().apply {
             externalProjectPath = target.projectPath
-            taskNames = listOf(target.taskPath)
+            taskNames = target.taskPaths
             externalSystemIdString = GradleConstants.SYSTEM_ID.id
         }
 
@@ -192,13 +203,83 @@ class BuildService(private val project: Project) : Disposable {
     }
 
     /**
+     * What to run for [module]: Android Studio's own answer when it can give one ([studioCompileTarget]), else the
+     * task-name derivation below.
+     *
+     * Both halves read the project model, so this takes a read action for the whole resolution rather than leaving
+     * it to the caller ([build] runs on the EDT today, which already has read access — this keeps that from being
+     * a silent requirement).
+     */
+    private fun resolveCompileTarget(module: Module): CompileTarget? =
+        ReadAction.compute<CompileTarget?, RuntimeException> {
+            studioCompileTarget(module) ?: derivedCompileTarget(module)
+        }
+
+    /**
+     * The tasks Android Studio itself would run to compile [module] — `GradleTaskFinder` with
+     * [BuildMode.COMPILE_JAVA], the same resolution behind AS's own *Build > Compile Module* and the build its
+     * editor preview requests. `null` when the API is absent, fails, or finds no task for this module, which sends
+     * the caller to [derivedCompileTarget].
+     *
+     * ## The bug this exists for
+     *
+     * [derivedCompileTarget] picks a task *name* from the ones the module reports having, and falls back to
+     * [COMPILE_TASK_NAME] when it can report none. In Android Studio it can never report any:
+     * `GradleExperimentalSettings.SKIP_GRADLE_TASKS_LIST` is initialised to `IdeInfo.getInstance().isAndroidStudio()`
+     * (verified with javap on `android.jar`), so AS sync deliberately never builds the Gradle task list and no
+     * `ProjectKeys.TASK` node exists to enumerate. Every module therefore fell back to `compileDebugKotlin` — which
+     * a classic AGP module happens to have, and a Kotlin Multiplatform module does not:
+     * `Cannot locate tasks that match ':primus:ui:compileDebugKotlin' as task 'compileDebugKotlin' not found in
+     * project ':primus:ui'`, while AS's own preview of the same file rendered fine.
+     *
+     * Asking AS instead of guessing removes the whole class of bug: the variant, the Android-vs-KMP task naming and
+     * the composite-build root all come from the model AS builds for its own builds.
+     *
+     * ## Which module is asked
+     *
+     * The [AndroidModuleResolver] hop first (PG11-1): a `@Preview` in a KMP **common** source set belongs to a
+     * module with no Android facet and no AGP variant model, so the finder has nothing to resolve for it — the
+     * Android target's module is the one that compiles it. Falls back to [module] itself when that walk finds
+     * nothing, so a non-Android Gradle module still gets its own tasks.
+     */
+    private fun studioCompileTarget(module: Module): CompileTarget? {
+        if (!RenderApiProbe.isCompileTaskFinderAvailable()) return null
+        val compiled = AndroidModuleResolver.androidModule(module) ?: module
+        return try {
+            val target = compileTargetOf(
+                GradleTaskFinder.getInstance().findTasksToExecute(arrayOf(compiled), BuildMode.COMPILE_JAVA),
+            )
+            if (target == null) {
+                thisLogger().info("Android Studio found no compile task for module '${compiled.name}'")
+            } else {
+                thisLogger().info(
+                    "Android Studio resolved ${target.taskPaths} in '${target.projectPath}' for module '${compiled.name}'",
+                )
+            }
+            target
+        } catch (e: ProcessCanceledException) {
+            throw e // Never swallow cancellation — the platform relies on it propagating.
+        } catch (e: Exception) {
+            thisLogger().warn("Android Studio's compile-task lookup failed for module '${compiled.name}'", e)
+            null
+        } catch (e: LinkageError) {
+            thisLogger().warn("The Android Studio compile-task API is incompatible with this IDE build", e)
+            null
+        }
+    }
+
+    /**
      * Derives the module's Gradle project path (`:a:b:module`) and the directory to invoke Gradle from, using the
      * same `org.jetbrains.plugins.gradle.util` helpers the IDE's own Gradle integration uses to run a task for a
      * module — never a hand-rolled derivation from [Module.getName]. `null` means [module] is not a module IDEA
      * imported from a linked Gradle project (for example, a module created by hand, or one belonging to a
      * different external system).
+     *
+     * The fallback for [studioCompileTarget], kept for an IDE build where that AS API is absent or changed shape:
+     * IntelliJ IDEA (as opposed to Android Studio) does populate the task list, so the candidate matching below is
+     * the correct behaviour there.
      */
-    private fun resolveCompileTarget(module: Module): CompileTarget? = try {
+    private fun derivedCompileTarget(module: Module): CompileTarget? = try {
         val dataNode = GradleUtil.findGradleModuleData(module)
         if (dataNode == null) {
             null
@@ -226,7 +307,7 @@ class BuildService(private val project: Project) : Disposable {
                 } else {
                     "$identityPath:$compileTaskName"
                 }
-                CompileTarget(projectPath = data.directoryToRunTask, taskPath = taskPath)
+                CompileTarget(projectPath = data.directoryToRunTask, taskPaths = listOf(taskPath))
             }
         }
     } catch (e: Exception) {
@@ -256,8 +337,9 @@ class BuildService(private val project: Project) : Disposable {
         emptyList()
     }
 
-    /** [projectPath] is the directory to invoke Gradle from; [taskPath] is the fully qualified task, e.g. `:app:compileDebugKotlin`. */
-    private class CompileTarget(val projectPath: String, val taskPath: String)
+    /** [projectPath] is the directory to invoke Gradle from; [taskPaths] are fully qualified tasks, e.g.
+     *  `:app:compileDebugKotlin` — a list because [studioCompileTarget] can name more than one task for a module. */
+    internal class CompileTarget(val projectPath: String, val taskPaths: List<String>)
 
     companion object {
         private const val COMPILE_TASK_NAME = "compileDebugKotlin"
@@ -278,6 +360,24 @@ class BuildService(private val project: Project) : Disposable {
          */
         internal fun chooseCompileTaskName(availableTaskNames: Collection<String>): String? =
             COMPILE_TASK_CANDIDATES.firstOrNull { it in availableTaskNames }
+
+        /**
+         * The pure shape conversion behind [studioCompileTarget]: `GradleTaskFinder` keys its tasks by the root
+         * directory Gradle must be invoked from, which is exactly the split
+         * [ExternalSystemTaskExecutionSettings] wants (`externalProjectPath` + `taskNames`).
+         *
+         * One module's compile tasks all live under one root, so the first non-empty root is the answer; a second
+         * root would mean the finder reached across a composite build, which [build] cannot express in one
+         * external-system request anyway. Returns null for an empty result — the caller then falls back to
+         * [derivedCompileTarget] rather than starting a build with no tasks.
+         */
+        internal fun compileTargetOf(tasksByRoot: ListMultimap<Path, String>): CompileTarget? {
+            for (root in tasksByRoot.keySet()) {
+                val taskPaths = tasksByRoot.get(root).orEmpty()
+                if (taskPaths.isNotEmpty()) return CompileTarget(root.toString(), taskPaths.toList())
+            }
+            return null
+        }
 
         fun getInstance(project: Project): BuildService = project.service()
     }

@@ -293,7 +293,7 @@ Live rendering requires the target module's classes on disk.
 | # | Rule | Rationale |
 |---|---|---|
 | B1 | Use the IDE's Gradle integration (`ExternalSystemUtil.runTask`, `GradleConstants.SYSTEM_ID`). **Never spawn a Gradle daemon directly.** | A second daemon costs gigabytes of RAM. This is the single largest performance risk. |
-| B2 | Compile the minimum: `:path:to:module:compileDebugKotlin`, never `assembleDebug`. | Transitive deps are pulled in automatically; app packaging is not needed. |
+| B2 | Compile the minimum, never `assembleDebug`: run whatever tasks Android Studio's own `Compile Module` resolves for the module (`GradleTaskFinder` + `BuildMode.COMPILE_JAVA`), asked of the module's **Android** target so a KMP common source set resolves too. Never a task name of our own — Android Studio's sync skips building the Gradle task list, so a name can be neither verified nor guessed (`:module:compileDebugKotlin` does not exist in a KMP module). | Transitive deps are pulled in automatically; app packaging is not needed. |
 | B3 | Selection must not trigger a build. Builds run only on explicit **Render**, or when outputs are already fresh. | Browsing the tree must stay free. |
 | B4 | Debounce 400 ms; single-flight; cancel any in-flight build when the selection changes. | Arrow-keying through 20 nodes must not queue 20 builds. |
 | B5 | Disabled while `DumbService.isDumb`. | Never compete with indexing. |

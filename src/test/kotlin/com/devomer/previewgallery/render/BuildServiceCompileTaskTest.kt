@@ -1,18 +1,69 @@
 package com.devomer.previewgallery.render
 
+import com.google.common.collect.ArrayListMultimap
+import com.google.common.collect.ListMultimap
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertNull
 import org.junit.Test
+import java.nio.file.Path
 
 /**
- * Covers [BuildService.chooseCompileTaskName], the pure half of the build-fix that picks a module's actual
- * Kotlin compile task instead of always assuming `compileDebugKotlin` (PG4-BUILDFIX). A standard AGP Android
- * module has `compileDebugKotlin`; a Kotlin-Multiplatform module's Android target has `compileDebugKotlinAndroid`
- * instead; a plain Kotlin/JVM module only has `compileKotlin`. The IDE-integration half — reading a module's
- * actually-available Gradle task names via `GradleModuleData.findAll` inside `BuildService.resolveCompileTarget`
- * — needs a real Gradle-linked project and so is not covered here.
+ * Covers the two pure pieces of compile-target resolution.
+ *
+ * [BuildService.compileTargetOf] converts Android Studio's own answer — `GradleTaskFinder`'s tasks keyed by the
+ * root directory Gradle runs from — into the `externalProjectPath` + `taskNames` split the external-system
+ * request needs. That is the primary path now; asking AS replaced guessing a task name, because AS never
+ * populates the task list its predecessor matched against (see `BuildService.studioCompileTarget`).
+ *
+ * [BuildService.chooseCompileTaskName] is that predecessor, kept as the fallback for an IDE build without the AS
+ * API — IntelliJ IDEA does populate the task list, so matching a candidate against it is correct there. A
+ * standard AGP Android module has `compileDebugKotlin`; a Kotlin-Multiplatform module's Android target has
+ * `compileDebugKotlinAndroid` instead; a plain Kotlin/JVM module only has `compileKotlin`.
+ *
+ * The IDE-integration halves of both — a real Gradle-linked project, a real AGP/KMP variant model — are covered
+ * as far as a light fixture can in [BuildServiceCompileTargetTest] and otherwise at the `runIde` gate.
  */
 class BuildServiceCompileTaskTest {
+
+    @Test
+    fun `one root with one task becomes that root and task`() {
+        val target = BuildService.compileTargetOf(tasks("/repo" to listOf(":app:compileDebugKotlin")))
+
+        assertEquals("/repo", target?.projectPath)
+        assertEquals(listOf(":app:compileDebugKotlin"), target?.taskPaths)
+    }
+
+    @Test
+    fun `every task a module needs is kept, not just the first`() {
+        val target = BuildService.compileTargetOf(
+            tasks("/repo" to listOf(":primus:ui:compileDebugKotlinAndroid", ":primus:ui:processDebugResources")),
+        )
+
+        assertEquals(
+            listOf(":primus:ui:compileDebugKotlinAndroid", ":primus:ui:processDebugResources"),
+            target?.taskPaths,
+        )
+    }
+
+    @Test
+    fun `an empty result is no target, so the caller can fall back`() {
+        assertNull(BuildService.compileTargetOf(tasks()))
+    }
+
+    @Test
+    fun `a root that carries no task is skipped for one that does`() {
+        val target = BuildService.compileTargetOf(
+            tasks("/empty" to emptyList(), "/repo" to listOf(":app:compileDebugKotlin")),
+        )
+
+        assertEquals("/repo", target?.projectPath)
+    }
+
+    private fun tasks(vararg roots: Pair<String, List<String>>): ListMultimap<Path, String> {
+        val multimap = ArrayListMultimap.create<Path, String>()
+        roots.forEach { (root, taskPaths) -> multimap.putAll(Path.of(root), taskPaths) }
+        return multimap
+    }
 
     @Test
     fun `AGP Android module with compileDebugKotlin returns compileDebugKotlin`() {

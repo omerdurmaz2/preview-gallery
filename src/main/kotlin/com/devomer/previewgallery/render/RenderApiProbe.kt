@@ -76,6 +76,15 @@ object RenderApiProbe {
         "com.android.tools.idea.util.ModuleExtensionsKt" to listOf("findAndroidModule"),
     )
 
+    // The Gradle tasks that compile a module, per Android Studio's own build system ([BuildService]). Its own
+    // class for the same reason as the walk above: a build without it must still build classic AGP modules
+    // through BuildService's task-name derivation, so this can never gate building as a whole.
+    private val compileTaskFinderRequired = listOf(
+        "com.android.tools.idea.gradle.project.build.invoker.GradleTaskFinder" to
+            listOf("getInstance", "findTasksToExecute"),
+        "com.android.tools.idea.gradle.util.BuildMode" to emptyList(),
+    )
+
     fun isAvailable(): Boolean = allPresent(required)
 
     /** Whether Android Studio's own @Preview property picker can be driven on this build (spec §5). */
@@ -106,6 +115,13 @@ object RenderApiProbe {
      *  of [isAvailable]: a build missing it still renders every classic Android module through
      *  [AndroidModuleResolver]'s fallback; only KMP common source sets degrade to `Unsupported`. */
     fun isAndroidModuleWalkAvailable(): Boolean = allPresent(androidModuleWalkRequired)
+
+    /** Whether [BuildService] can ask Android Studio which Gradle tasks compile a module (`GradleTaskFinder` +
+     *  `BuildMode`) instead of matching a task name against the module's reported task list — which in Android
+     *  Studio is always empty, because its sync skips building the Gradle task list. Independent of
+     *  [isAvailable]: a build missing it falls back to that name derivation, which is correct in IntelliJ IDEA and
+     *  for a classic AGP module in AS, and only mis-names the task for a KMP module. */
+    fun isCompileTaskFinderAvailable(): Boolean = allPresent(compileTaskFinderRequired)
 
     private fun allPresent(required: List<Pair<String, List<String>>>): Boolean = runCatching {
         required.all { (className, methods) ->
