@@ -1,5 +1,6 @@
 package com.devomer.previewgallery.ui
 
+import com.devomer.previewgallery.model.SnapshotCoverage
 import com.intellij.icons.AllIcons
 import com.intellij.openapi.util.IconLoader
 import com.intellij.ui.ColoredTreeCellRenderer
@@ -12,8 +13,8 @@ import javax.swing.tree.DefaultMutableTreeNode
  * [PreviewTreeModelBuilder] / [PreviewNode]. Module and package rows are visually secondary so the preview name
  * — what someone is actually scanning the tree for — reads as the prominent element on each row.
  *
- * Icons are verified to exist in this SDK (`javap` against the bundled `AllIcons$Nodes`), per the same
- * API-stability discipline the render pipeline uses for AS-internal classes (see `LiveRenderer`).
+ * Icons are verified to exist in this SDK (`javap` against the bundled `AllIcons$Nodes` / `AllIcons$FileTypes`),
+ * per the same API-stability discipline the render pipeline uses for AS-internal classes (see `LiveRenderer`).
  */
 class PreviewTreeCellRenderer : ColoredTreeCellRenderer() {
 
@@ -62,7 +63,34 @@ class PreviewTreeCellRenderer : ColoredTreeCellRenderer() {
                 if (badges.isNotEmpty()) {
                     append("  ${badges.joinToString(" · ")}", SimpleTextAttributes.GRAYED_SMALL_ATTRIBUTES)
                 }
+                val coverage = coverageText(node.row.coverage)
+                if (coverage != null) {
+                    append("  $coverage", SimpleTextAttributes.GRAYED_SMALL_ATTRIBUTES)
+                }
+            }
+
+            is PreviewNode.SnapshotLeaf -> {
+                icon = AllIcons.FileTypes.Image
+                append(node.row.indexed.functionName, SimpleTextAttributes.REGULAR_ATTRIBUTES)
+            }
+
+            is PreviewNode.OrphanSnapshotBranch -> {
+                icon = AllIcons.Nodes.Folder
+                append("Snapshots without a preview", SimpleTextAttributes.GRAYED_ATTRIBUTES)
+                append("  (${node.count})", SimpleTextAttributes.GRAYED_SMALL_ATTRIBUTES)
             }
         }
+    }
+
+    /**
+     * Text, not an icon alone: a first-time user of the plugin cannot be expected to decode a glyph. Null for
+     * [SnapshotCoverage.NotApplicable] — the module has no `src/screenshotTest`, so the row renders as it did
+     * before this feature existed.
+     */
+    private fun coverageText(coverage: SnapshotCoverage): String? = when (coverage) {
+        is SnapshotCoverage.Covered ->
+            if (coverage.count == 1) "· 1 snapshot" else "· ${coverage.count} snapshots"
+        SnapshotCoverage.Uncovered -> "· no snapshot"
+        SnapshotCoverage.NotApplicable -> null
     }
 }

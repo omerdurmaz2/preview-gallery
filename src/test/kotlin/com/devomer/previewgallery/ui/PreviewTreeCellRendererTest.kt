@@ -1,11 +1,14 @@
 package com.devomer.previewgallery.ui
 
+import com.devomer.previewgallery.model.SnapshotCoverage
 import com.devomer.previewgallery.search.testRow
 import com.intellij.icons.AllIcons
 import com.intellij.ui.SimpleTextAttributes
 import org.junit.Assert.assertEquals
+import org.junit.Assert.assertFalse
 import org.junit.Assert.assertNotSame
 import org.junit.Assert.assertNull
+import org.junit.Assert.assertTrue
 import org.junit.Test
 import javax.swing.JTree
 import javax.swing.tree.DefaultMutableTreeNode
@@ -21,7 +24,10 @@ class PreviewTreeCellRendererTest {
 
     private fun render(node: PreviewNode): PreviewTreeCellRenderer {
         val renderer = PreviewTreeCellRenderer()
-        val leaf = node is PreviewNode.PreviewLeaf
+        // SnapshotLeaf carries no children field (unlike OrphanSnapshotBranch, which holds a List<SnapshotLeaf>
+        // and is a genuine branch), so it is as much a tree leaf as PreviewLeaf. customizeCellRenderer never reads
+        // this flag, but the helper should still describe the tree shape honestly.
+        val leaf = node is PreviewNode.PreviewLeaf || node is PreviewNode.SnapshotLeaf
         renderer.getTreeCellRendererComponent(tree, DefaultMutableTreeNode(node), false, false, leaf, 0, false)
         return renderer
     }
@@ -35,6 +41,11 @@ class PreviewTreeCellRendererTest {
         }
         return result
     }
+
+    private fun text(node: PreviewNode): String =
+        fragments(render(node)).joinToString("") { it.first }
+
+    private fun rowWith(coverage: SnapshotCoverage) = testRow().copy(coverage = coverage)
 
     @Test
     fun `a module row uses the module icon, grey name, and a small grey count`() {
@@ -111,5 +122,45 @@ class PreviewTreeCellRendererTest {
         val badge = fragments(renderer).last()
         assertEquals("  private · @PreviewParameter", badge.first)
         assertEquals(SimpleTextAttributes.GRAYED_SMALL_ATTRIBUTES, badge.second)
+    }
+
+    @Test
+    fun `a covered preview shows a singular badge`() {
+        val rendered = text(PreviewNode.PreviewLeaf(rowWith(SnapshotCoverage.Covered(1))))
+        assertTrue(rendered, rendered.contains("· 1 snapshot"))
+        assertFalse(rendered, rendered.contains("1 snapshots"))
+    }
+
+    @Test
+    fun `a covered preview shows a plural badge`() {
+        val rendered = text(PreviewNode.PreviewLeaf(rowWith(SnapshotCoverage.Covered(2))))
+        assertTrue(rendered, rendered.contains("· 2 snapshots"))
+    }
+
+    @Test
+    fun `an uncovered preview says so`() {
+        val rendered = text(PreviewNode.PreviewLeaf(rowWith(SnapshotCoverage.Uncovered)))
+        assertTrue(rendered, rendered.contains("· no snapshot"))
+    }
+
+    @Test
+    fun `a module without screenshot testing gets no badge`() {
+        val rendered = text(PreviewNode.PreviewLeaf(rowWith(SnapshotCoverage.NotApplicable)))
+        assertFalse(rendered, rendered.contains("snapshot"))
+    }
+
+    @Test
+    fun `a snapshot row shows its function name`() {
+        val row = testRow(displayName = "Widget_Default_Snapshot", functionName = "Widget_Default_Snapshot")
+        val rendered = text(PreviewNode.SnapshotLeaf(row))
+        assertTrue(rendered, rendered.contains("Widget_Default_Snapshot"))
+    }
+
+    @Test
+    fun `the orphan branch row is labelled and counted`() {
+        val leaf = PreviewNode.SnapshotLeaf(testRow())
+        val rendered = text(PreviewNode.OrphanSnapshotBranch(listOf(leaf), 1))
+        assertTrue(rendered, rendered.contains("Snapshots without a preview"))
+        assertTrue(rendered, rendered.contains("(1)"))
     }
 }
