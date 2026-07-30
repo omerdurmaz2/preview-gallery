@@ -179,4 +179,46 @@ class ZoomableRenderViewTest : BasePlatformTestCase() {
 
         assertEquals(listOf(source), received)
     }
+
+    fun `test a fit requested before layout is deferred, not applied at full size`() {
+        val view = ZoomableRenderView()
+        JBScrollPane(view) // never sized: the viewport reports a 0x0 extent
+        view.setContent(pixelClassRender(), emptyList(), 440)
+        assertTrue("the fit should still be owed", view.isFitPending)
+        assertEquals(1.0, view.zoomFactor, 1e-9)
+    }
+
+    fun `test the deferred fit lands once the viewport has a size`() {
+        val view = ZoomableRenderView()
+        val scroll = JBScrollPane(view)
+        view.setContent(pixelClassRender(), emptyList(), 440)
+        assertTrue(view.isFitPending)
+
+        scroll.setSize(400, 560)
+        scroll.doLayout()
+        view.retryFitIfPending() // exactly what the installed ComponentListener does on resize
+
+        assertFalse("the fit should have been honoured", view.isFitPending)
+        val extent = scroll.viewport.extentSize
+        assertTrue(
+            "zoom=${view.zoomFactor} preferred=${view.preferredSize} extent=$extent",
+            view.preferredSize.width <= extent.width && view.preferredSize.height <= extent.height,
+        )
+    }
+
+    fun `test a manual zoom cancels the pending fit and survives a later resize`() {
+        val view = ZoomableRenderView()
+        val scroll = JBScrollPane(view)
+        view.setContent(pixelClassRender(), emptyList(), 440)
+        assertTrue(view.isFitPending)
+
+        view.zoomFactor = 2.0
+        assertFalse("a deliberate zoom retires the debt", view.isFitPending)
+
+        scroll.setSize(400, 560)
+        scroll.doLayout()
+        view.retryFitIfPending()
+
+        assertEquals(2.0, view.zoomFactor, 1e-9)
+    }
 }

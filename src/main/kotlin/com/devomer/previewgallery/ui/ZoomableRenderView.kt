@@ -12,6 +12,8 @@ import java.awt.Graphics
 import java.awt.Graphics2D
 import java.awt.Point
 import java.awt.RenderingHints
+import java.awt.event.ComponentAdapter
+import java.awt.event.ComponentEvent
 import java.awt.event.MouseAdapter
 import java.awt.event.MouseEvent
 import java.awt.event.MouseMotionAdapter
@@ -53,6 +55,9 @@ class ZoomableRenderView : JComponent() {
     var zoomFactor: Double = 1.0
         set(value) {
             field = value.coerceIn(ZoomMath.MIN, ZoomMath.MAX)
+            // Any assignment settles what this view owes the current render: either it IS the fit (from
+            // fitToViewport), or the user picked a zoom themselves and a later resize must not overwrite it.
+            pendingFit = false
             revalidate() // preferredSize changed -> scroll pane updates scrollbars
             repaint()
         }
@@ -62,6 +67,46 @@ class ZoomableRenderView : JComponent() {
 
     /** The current image's size in dp — what [fitToViewport] fits, so its result is a zoom percentage. */
     private var contentDp: Dimension = Dimension(0, 0)
+
+    /**
+     * Whether the current image still owes this view a fit (PG12-4).
+     *
+     * On the first render after the tool window opens, `add()` does not lay the scroll pane out synchronously, so
+     * the enclosing viewport still reports a 0x0 extent and [fitToViewport] has nothing to fit against — the
+     * preview would show at 100%, overflowing the pane, which is exactly the bug this phase fixes. Rather than
+     * retry on a timer (which spins forever on a component that is never shown) or re-fit on every resize (which
+     * would throw away a zoom the user chose), the debt is recorded here and settled by the first resize that
+     * gives the viewport a real size — or by the user zooming, via the [zoomFactor] setter.
+     */
+    private var pendingFit: Boolean = false
+
+    /** Exposed for `ZoomableRenderViewTest`: the state machine above, without pumping AWT ComponentEvents. */
+    internal val isFitPending: Boolean get() = pendingFit
+
+    /** The whole body of [fitListener]. Internal so the test can drive it directly. */
+    internal fun retryFitIfPending() {
+        if (pendingFit) fitToViewport()
+    }
+
+    private val fitListener = object : ComponentAdapter() {
+        override fun componentResized(e: ComponentEvent) = retryFitIfPending()
+    }
+
+    /**
+     * The listener goes on the *viewport*, not on this component: this component's own size is its zoomed extent,
+     * which changes for reasons that have nothing to do with the pane growing. Swing pairs
+     * [addNotify]/[removeNotify], so the listener is installed exactly once per attachment — including when
+     * `PreviewRenderPanel` reparents a comparison view through `JBScrollPane.setViewportView`.
+     */
+    override fun addNotify() {
+        super.addNotify()
+        enclosingViewport()?.addComponentListener(fitListener)
+    }
+
+    override fun removeNotify() {
+        enclosingViewport()?.removeComponentListener(fitListener) // before super: the ancestor is still reachable
+        super.removeNotify()
+    }
 
     /**
      * The factor every on-screen dimension is expressed in: the user's zoom percentage times the render's own
@@ -108,6 +153,7 @@ class ZoomableRenderView : JComponent() {
         this.hovered = null
         this.contentScale = ZoomMath.contentScale(dpi)
         this.contentDp = ZoomMath.dpSize(Dimension(image.width, image.height), dpi)
+        this.pendingFit = true
         fitToViewport()
     }
 
@@ -117,6 +163,7 @@ class ZoomableRenderView : JComponent() {
         hovered = null
         contentScale = 1.0
         contentDp = Dimension(0, 0)
+        pendingFit = false
         revalidate(); repaint()
     }
 
@@ -125,6 +172,9 @@ class ZoomableRenderView : JComponent() {
     fun fitToViewport() {
         if (image == null) return
         val vp = enclosingViewport()?.extentSize ?: size
+        // Not laid out yet: leave pendingFit standing so the resize retry picks this up. Assigning a factor here
+        // would settle the debt with a meaningless 1.0.
+        if (vp.width <= 0 || vp.height <= 0) return
         zoomFactor = ZoomMath.fitFactor(vp, contentDp)
     }
 
