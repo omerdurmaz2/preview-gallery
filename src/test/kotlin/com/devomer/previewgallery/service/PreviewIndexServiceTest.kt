@@ -90,4 +90,35 @@ class PreviewIndexServiceTest : BasePlatformTestCase() {
     fun `test an empty project yields no entries`() {
         assertTrue(PreviewIndexService.getInstance(project).findAll().isEmpty())
     }
+
+    fun `test snapshot rows do not appear as previews`() {
+        myFixture.addFileToProject(
+            "src/main/kotlin/com/example/Widgets.kt",
+            """
+            package com.example
+
+            import androidx.compose.ui.tooling.preview.Preview
+
+            @Preview
+            fun WidgetPreview() = PreviewComponent { Widget() }
+            """.trimIndent(),
+        )
+        myFixture.addFileToProject(
+            "src/screenshotTest/kotlin/com/example/WidgetSnapshots.kt",
+            """
+            package com.example
+
+            import com.android.tools.screenshot.PreviewTest
+
+            @PreviewTest
+            fun Widget_Default_Snapshot() = PreviewComponent { Widget() }
+            """.trimIndent(),
+        )
+
+        val previews = PreviewIndexService.getInstance(project).findAll()
+
+        assertEquals(1, previews.size)
+        assertEquals("WidgetPreview", previews.single().indexed.functionName)
+        assertEquals(1, previews.single().snapshots.size)
+    }
 }
