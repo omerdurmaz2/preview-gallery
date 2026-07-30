@@ -117,6 +117,16 @@ Android Studio only renders previews for the file currently open in the editor. 
 | `FAILED` | Error summary + **Open file** + expandable log |
 | `UNSUPPORTED` | Explanation (e.g. `@PreviewParameter` unsupported) + **Open file** |
 
+### 5.4 Render panel zoom (PG12)
+
+| Rule | Behaviour |
+|---|---|
+| Unit | The preview is drawn at **dp**, not at the device's pixel density. layoutlib renders a 393x851 dp phone at 440 dpi as a 1080x2340 image; the panel scales that by `160 / dpi` so `100%` means what it means in Android Studio's own preview. The image is kept at full resolution — only the draw is scaled, so a HiDPI screen stays sharp and PNG export is unaffected. |
+| Density source | `RenderTask.getHardwareConfigHelper().getConfig().getDensity()` — the density the render actually used. Falls back to `Configuration.getDensity()`, then to 160 dpi, at which the conversion is the identity (raw render pixels, the pre-PG12 display). |
+| First render | Starts at **Fit**: the whole composable is visible in the pane without scrolling. If the scroll pane has not been laid out yet — the usual case on the first render after the tool window opens — the fit is deferred and applied on the first resize that gives the viewport a real size. |
+| Fit bounds | Fit may land anywhere in `[5%, 400%]`, including below the 25% step stop; the zoom ladder (25/50/75/100/150/200/300/400) is only where the step buttons and Ctrl+wheel stop. Content smaller than the pane is upscaled to fill it, as Android Studio's zoom-to-fit does. |
+| User zoom wins | Any deliberate zoom — toolbar, Ctrl+wheel, trackpad pinch — cancels the pending fit; a later resize never overwrites it. The next render starts at Fit again. |
+
 ---
 
 ## 6. Architecture
