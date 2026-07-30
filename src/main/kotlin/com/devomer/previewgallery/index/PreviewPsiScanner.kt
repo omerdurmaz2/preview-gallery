@@ -12,7 +12,11 @@ import org.jetbrains.kotlin.psi.KtObjectDeclaration
 import org.jetbrains.kotlin.psi.KtStringTemplateExpression
 import org.jetbrains.kotlin.psi.KtTreeVisitorVoid
 
-/** Extracts every directly `@Preview`-annotated function from a single Kotlin file. */
+/**
+ * Extracts every directly `@Preview`-annotated function from a single Kotlin file. Also extracts a function that
+ * carries `@PreviewTest` even when it has no direct `@Preview` match, since the project's snapshot functions are
+ * marked through a custom multipreview that a file-local indexer can never resolve.
+ */
 object PreviewPsiScanner {
 
     private const val UNSUPPORTED_IN_CLASS = "declared inside a class"
@@ -37,10 +41,18 @@ object PreviewPsiScanner {
                     val reference = entry.referenceText() ?: return@mapNotNull null
                     PreviewAnnotationMatcher.matchPreview(reference, imports)?.let { entry to it }
                 }
-                if (matches.isEmpty()) return
-                val (annotation, kind) = matches.first()
+                val isSnapshotTest = function.annotationEntries.any { entry ->
+                    val reference = entry.referenceText() ?: return@any false
+                    PreviewAnnotationMatcher.isPreviewTest(reference, imports)
+                }
+                // A `FileBasedIndex` indexer cannot resolve across files, so a function whose only preview
+                // annotation is a custom multipreview (unresolvable here) still needs to be emitted when it
+                // carries `@PreviewTest` directly.
+                if (matches.isEmpty() && !isSnapshotTest) return
+                val (annotation, kind) = matches.firstOrNull() ?: (null to AnnotationKind.UNKNOWN)
                 result += build(
                     function, annotation, kind, matches.size > 1, packageName, file.name, jvmNameOverride, imports,
+                    isSnapshotTest,
                 )
             }
         })
@@ -49,13 +61,14 @@ object PreviewPsiScanner {
 
     private fun build(
         function: KtNamedFunction,
-        annotation: KtAnnotationEntry,
+        annotation: KtAnnotationEntry?,
         kind: AnnotationKind,
         hasMultiplePreviews: Boolean,
         packageName: String,
         fileName: String,
         jvmNameOverride: String?,
         imports: List<ImportInfo>,
+        isSnapshotTest: Boolean,
     ): IndexedPreview {
         val container = containerOf(function)
         val functionName = function.name ?: ""
@@ -67,9 +80,10 @@ object PreviewPsiScanner {
             jvmNameOverride = jvmNameOverride,
             containerObjectName = (container as? Container.InObject)?.name,
         )
-        val name = if (hasMultiplePreviews) {
-            // No single config's name represents a function carrying several @Preview annotations, so label it
-            // by the function name. v1 renders nothing, so the configs need not become separate entries.
+        val name = if (hasMultiplePreviews || annotation == null) {
+            // No single config's name represents a function carrying several @Preview annotations, and a
+            // snapshot-only function (no @Preview match at all) has no config to read either — both fall back
+            // to the function name. v1 renders nothing, so the configs need not become separate entries.
             functionName
         } else {
             namedString(annotation, "name") ?: positionalString(annotation, 0) ?: functionName
@@ -89,8 +103,10 @@ object PreviewPsiScanner {
                     PreviewAnnotationMatcher.isPreviewParameter(reference, imports)
                 }
             },
-            previewGroup = namedString(annotation, "group"),
+            previewGroup = annotation?.let { namedString(it, "group") },
             unsupportedReason = (container as? Container.Unsupported)?.reason,
+            isSnapshotTest = isSnapshotTest,
+            targets = TargetExtractor.extract(function),
         )
     }
 

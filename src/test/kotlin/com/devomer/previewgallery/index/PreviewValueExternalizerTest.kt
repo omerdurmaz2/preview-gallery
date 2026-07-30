@@ -3,6 +3,7 @@ package com.devomer.previewgallery.index
 import com.devomer.previewgallery.model.AnnotationKind
 import com.devomer.previewgallery.model.IndexedPreview
 import org.junit.Assert.assertEquals
+import org.junit.Assert.assertFalse
 import org.junit.Test
 import java.io.ByteArrayInputStream
 import java.io.ByteArrayOutputStream
@@ -58,5 +59,25 @@ class PreviewValueExternalizerTest {
     fun `round trips non-ascii text`() {
         val values = listOf(preview("BarPreview").copy(displayName = "Ödeme ekranı"))
         assertEquals(values, roundTrip(values))
+    }
+
+    @Test
+    fun `snapshot flag and targets survive a round trip`() {
+        val values = listOf(
+            preview("ErrorRetryRow_Default_Snapshot").copy(
+                isSnapshotTest = true,
+                targets = listOf("ErrorRetryRow", "ErrorRetryRowHeader"),
+            ),
+        )
+        assertEquals(values, roundTrip(values))
+    }
+
+    @Test
+    fun `an empty target list survives a round trip`() {
+        val values = listOf(preview("BarPreview"))
+        val read = roundTrip(values)
+        assertEquals(values, read)
+        assertFalse(read.single().isSnapshotTest)
+        assertEquals(emptyList<String>(), read.single().targets)
     }
 }

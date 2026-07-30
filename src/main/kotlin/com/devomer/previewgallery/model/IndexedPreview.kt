@@ -17,4 +17,8 @@ data class IndexedPreview(
     val previewGroup: String?,
     /** Non-null when the preview cannot be rendered, e.g. because it is declared inside a class. */
     val unsupportedReason: String?,
+    /** `@PreviewTest` is written directly on this function: it is a snapshot, not a gallery preview. */
+    val isSnapshotTest: Boolean = false,
+    /** The composables this body shows, used to match a preview to the snapshot of the same component. */
+    val targets: List<String> = emptyList(),
 )

@@ -280,4 +280,47 @@ class PreviewPsiScannerTest : BasePlatformTestCase() {
         val previews = scan("Foo.kt", text)
         assertEquals(text.indexOf("BarPreview"), previews.single().offset)
     }
+
+    fun `test preview test function is flagged and its target extracted`() {
+        val previews = scan(
+            "ComponentsSnapshots.kt",
+            """
+            package com.example
+
+            import com.android.tools.screenshot.PreviewTest
+
+            @PreviewTest
+            @SnapshotPreviews
+            internal fun ErrorRetryRow_Default_Snapshot() = PreviewComponent {
+                PrimusTheme {
+                    ErrorRetryRow(onRetry = {})
+                }
+            }
+            """.trimIndent(),
+        )
+        assertEquals(1, previews.size)
+        val preview = previews.single()
+        assertTrue(preview.isSnapshotTest)
+        assertEquals(listOf("ErrorRetryRow"), preview.targets)
+        assertEquals("com.example.ComponentsSnapshotsKt", preview.jvmClassName)
+    }
+
+    fun `test ordinary preview is not flagged and still carries targets`() {
+        val previews = scan(
+            "Components.kt",
+            """
+            package com.example
+
+            import androidx.compose.ui.tooling.preview.Preview
+
+            @Preview
+            private fun ErrorRetryRowPreview() = PreviewComponent {
+                ErrorRetryRow(onRetry = {})
+            }
+            """.trimIndent(),
+        )
+        val preview = previews.single()
+        assertFalse(preview.isSnapshotTest)
+        assertEquals(listOf("ErrorRetryRow"), preview.targets)
+    }
 }

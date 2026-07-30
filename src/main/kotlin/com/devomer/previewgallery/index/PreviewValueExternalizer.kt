@@ -28,6 +28,9 @@ object PreviewValueExternalizer : DataExternalizer<List<IndexedPreview>> {
             out.writeBoolean(preview.hasPreviewParameter)
             writeNullable(out, preview.previewGroup)
             writeNullable(out, preview.unsupportedReason)
+            out.writeBoolean(preview.isSnapshotTest)
+            DataInputOutputUtil.writeINT(out, preview.targets.size)
+            preview.targets.forEach { IOUtil.writeUTF(out, it) }
         }
     }
 
@@ -46,6 +49,9 @@ object PreviewValueExternalizer : DataExternalizer<List<IndexedPreview>> {
             val hasPreviewParameter = input.readBoolean()
             val previewGroup = readNullable(input)
             val unsupportedReason = readNullable(input)
+            val isSnapshotTest = input.readBoolean()
+            val targetCount = DataInputOutputUtil.readINT(input)
+            val targets = List(targetCount) { IOUtil.readUTF(input) }
             result += IndexedPreview(
                 displayName = displayName,
                 functionName = functionName,
@@ -58,6 +64,8 @@ object PreviewValueExternalizer : DataExternalizer<List<IndexedPreview>> {
                 hasPreviewParameter = hasPreviewParameter,
                 previewGroup = previewGroup,
                 unsupportedReason = unsupportedReason,
+                isSnapshotTest = isSnapshotTest,
+                targets = targets,
             )
         }
         return result

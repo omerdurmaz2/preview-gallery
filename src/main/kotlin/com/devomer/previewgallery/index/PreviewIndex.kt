@@ -47,11 +47,14 @@ class PreviewIndex : FileBasedIndexExtension<String, List<IndexedPreview>>() {
         val NAME: ID<String, List<IndexedPreview>> = ID.create("com.devomer.previewgallery.PreviewIndex")
 
         /** Bump on any change to [PreviewValueExternalizer] or to what the scanner produces. */
-        const val VERSION = 1
+        const val VERSION = 2
 
         private const val KOTLIN_EXTENSION = "kt"
 
-        /** Cheap text gate: files that never mention Preview are skipped before PSI is built. */
+        /**
+         * Cheap text gate: files that never mention Preview are skipped before PSI is built. `@PreviewTest`
+         * contains the same substring, so snapshot files pass this gate unchanged.
+         */
         private const val MARKER = "Preview"
     }
 }

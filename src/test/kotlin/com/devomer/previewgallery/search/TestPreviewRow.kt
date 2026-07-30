@@ -15,6 +15,8 @@ fun testRow(
     functionName: String = "BarPreview",
     packageName: String = "com.example",
     moduleName: String = "app",
+    isSnapshotTest: Boolean = false,
+    targets: List<String> = emptyList(),
 ): TestPreviewRow = TestPreviewRow(
     indexed = IndexedPreview(
         displayName = displayName,
@@ -28,6 +30,8 @@ fun testRow(
         hasPreviewParameter = false,
         previewGroup = null,
         unsupportedReason = null,
+        isSnapshotTest = isSnapshotTest,
+        targets = targets,
     ),
     moduleName = moduleName,
 )
