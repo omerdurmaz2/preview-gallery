@@ -9,8 +9,10 @@ import com.devomer.previewgallery.render.LiveRenderer
 import com.devomer.previewgallery.render.PreviewPickerBridge
 import com.devomer.previewgallery.render.RenderApiProbe
 import com.devomer.previewgallery.render.RenderPipeline
+import com.devomer.previewgallery.render.RenderState
 import com.devomer.previewgallery.search.PreviewModuleFilter
 import com.devomer.previewgallery.service.PreviewIndexService
+import com.devomer.previewgallery.service.ReferenceImageLocator
 import com.intellij.ide.CommonActionsManager
 import com.intellij.ide.DefaultTreeExpander
 import com.intellij.ide.TreeExpander
@@ -19,9 +21,11 @@ import com.intellij.openapi.actionSystem.ActionManager
 import com.intellij.openapi.actionSystem.DefaultActionGroup
 import com.intellij.openapi.application.ModalityState
 import com.intellij.openapi.application.ReadAction
+import com.intellij.openapi.diagnostic.thisLogger
 import com.intellij.openapi.fileEditor.OpenFileDescriptor
 import com.intellij.openapi.project.DumbService
 import com.intellij.openapi.project.Project
+import com.intellij.openapi.roots.ProjectFileIndex
 import com.intellij.openapi.util.Disposer
 import com.intellij.openapi.vfs.VirtualFile
 import com.intellij.psi.search.FilenameIndex
@@ -41,6 +45,9 @@ import java.awt.BorderLayout
 import java.awt.event.KeyAdapter
 import java.awt.event.KeyEvent
 import java.awt.event.MouseEvent
+import java.awt.image.BufferedImage
+import java.io.IOException
+import javax.imageio.ImageIO
 import javax.swing.JTree
 import javax.swing.event.DocumentEvent
 import javax.swing.tree.DefaultMutableTreeNode
@@ -68,6 +75,14 @@ class PreviewGalleryPanel(
     private val alarm = Alarm(Alarm.ThreadToUse.SWING_THREAD, parentDisposable)
 
     private var entries: List<PreviewEntry> = emptyList()
+
+    /** The snapshots that matched no preview, shown under each module's own orphan branch (spec D4). Loaded in
+     *  [reload] alongside [entries] rather than read per [applyFilter]: [PreviewIndexService.findOrphanSnapshots]
+     *  shares [PreviewIndexService.findAll]'s cached computation, so calling it from [applyFilter] — which runs on
+     *  the EDT, on every keystroke and every editor selection change — would put that whole index join on the EDT
+     *  the first time a PSI change had invalidated the cache. */
+    private var orphanSnapshots: List<PreviewEntry> = emptyList()
+
     private var lastSelectedEntry: PreviewEntry? = null
 
     /** The label path (see [labelPathFor]) of every row expanded in the tree, captured just before a rebuild
@@ -125,9 +140,7 @@ class PreviewGalleryPanel(
         tree.selectionModel.selectionMode = TreeSelectionModel.SINGLE_TREE_SELECTION
         tree.addTreeSelectionListener {
             if (restoringSelection) return@addTreeSelectionListener
-            val selected = selectedEntry()
-            lastSelectedEntry = selected
-            pipeline.select(selected)
+            routeSelection(deferReferenceLookup = true)
         }
 
         object : DoubleClickListener() {
@@ -217,19 +230,29 @@ class PreviewGalleryPanel(
             }
             return
         }
-        ReadAction.nonBlocking<List<PreviewEntry>> { PreviewIndexService.getInstance(project).findAll() }
+        ReadAction.nonBlocking<LoadedRows> { loadRows() }
             .expireWith(parentDisposable)
             .finishOnUiThread(ModalityState.defaultModalityState()) { loaded ->
-                entries = loaded
+                entries = loaded.previews
+                orphanSnapshots = loaded.orphans
                 applyFilter()
             }
             .submit(AppExecutorUtil.getAppExecutorService())
     }
 
+    /** Both halves of one index read, taken together so the tree never mixes previews from one computation with
+     *  orphan snapshots from another — the service caches them as a pair for the same reason. */
+    private fun loadRows(): LoadedRows {
+        val service = PreviewIndexService.getInstance(project)
+        return LoadedRows(service.findAll(), service.findOrphanSnapshots())
+    }
+
     /** Synchronous reload for tests — the production path is [reload]. */
     @TestOnly
     fun reloadSynchronously() {
-        entries = PreviewIndexService.getInstance(project).findAll()
+        val loaded = loadRows()
+        entries = loaded.previews
+        orphanSnapshots = loaded.orphans
         applyFilter()
     }
 
@@ -306,6 +329,48 @@ class PreviewGalleryPanel(
     @TestOnly
     fun treeExpanderForTest(): TreeExpander = treeExpander
 
+    /** Labels of the children of the first node whose own label is [label]; empty when no such node exists.
+     *  Searches the whole node tree rather than the visible rows, so a test does not depend on how deeply the
+     *  module and package levels nest, nor on whether the row is currently expanded. */
+    @TestOnly
+    fun childLabelsForTest(label: String): List<String> {
+        val node = findNodeByLabel(treeRoot, label) ?: return emptyList()
+        return (0 until node.childCount).mapNotNull { index ->
+            (node.getChildAt(index) as? DefaultMutableTreeNode)?.let { labelOf(it.userObject) }
+        }
+    }
+
+    /**
+     * Selects the node at the given label path, resolved from the tree root downwards: the first label is matched
+     * anywhere in the tree (the same whole-tree lookup [childLabelsForTest] uses, so a test need not spell out the
+     * module and package levels), each later one against the children of the node found so far. A no-op when the
+     * path does not resolve.
+     *
+     * The selection listener is suppressed for the assignment and [routeSelection] is then called synchronously:
+     * that is the very same production routing, only without the thread hop a snapshot's reference lookup would
+     * otherwise take, so a test can assert [renderStateForTest] without pumping the event queue — the same
+     * synchronous-for-tests seam [reloadSynchronously] is for [reload].
+     */
+    @TestOnly
+    fun selectByLabelPathForTest(vararg labels: String) {
+        val first = labels.firstOrNull() ?: return
+        var node = findNodeByLabel(treeRoot, first) ?: return
+        for (label in labels.drop(1)) {
+            node = childByLabel(node, label) ?: return
+        }
+        restoringSelection = true
+        try {
+            tree.selectionPath = TreePath(node.path)
+        } finally {
+            restoringSelection = false
+        }
+        routeSelection(deferReferenceLookup = false)
+    }
+
+    /** The render panel's current state, so selection routing can be asserted without a live render. */
+    @get:TestOnly
+    val renderStateForTest: RenderState get() = renderPanel.activeState
+
     /** Whether [searchField] currently holds a query the tree should filter/expand for. [PreviewSearchFilter]
      *  trims the query before matching, so a single stray space filters nothing — this must agree with that
      *  trimming (`isNotBlank`, not `isNotEmpty`), or a whitespace-only query would force-expand the entire
@@ -325,8 +390,15 @@ class PreviewGalleryPanel(
             moduleTracker.activeModuleName,
             moduleFilterOn,
         )
-        // No orphan snapshots wired in yet: task 10 wires this to PreviewIndexService.findOrphanSnapshots().
-        val modules = PreviewTreeModelBuilder.build(visible, emptyList(), searchField.text)
+        // The orphan branch goes through the same module filter as the previews: "show only the active editor's
+        // module" that still showed another module's snapshots would not be that filter at all. The query is
+        // applied to the two independently, inside the builder (spec D11).
+        val visibleOrphans = PreviewModuleFilter.apply(
+            orphanSnapshots,
+            moduleTracker.activeModuleName,
+            moduleFilterOn,
+        )
+        val modules = PreviewTreeModelBuilder.build(visible, visibleOrphans, searchField.text)
         // Capture the user's expansion before the rebuild discards every node instance, so it can be restored
         // in applyExpansionPolicy below. Only when the OUTGOING tree (the one still on screen, tested via
         // lastBuildWasQueryDriven) was not itself built from a query: a query's expansion is machine-made (every
@@ -397,6 +469,12 @@ class PreviewGalleryPanel(
      * every keystroke), so it must not silently undo a Collapse All from the toolbar or a branch the user closed
      * by hand. Only the very first build, when [rememberedExpansion] is still null, falls back to expanding the
      * module level.
+     *
+     * Both paths already handle the snapshot children a preview row now carries (spec D4), and differently on
+     * purpose. The query path walks *rows*, re-reading `rowCount` as it grows, so it opens every level that
+     * survived filtering — snapshots included, which is the point: they are part of the result. The module-level
+     * default expands the module rows only, so a plain load reveals a preview's snapshot children not at all;
+     * they arrive with the handle the user (or a query) can open, never opened for them.
      */
     private fun applyExpansionPolicy() {
         if (isQueryActive()) {
@@ -455,11 +533,17 @@ class PreviewGalleryPanel(
         return labels
     }
 
-    /** The label [visibleRowLabelsForTest] would show for [userObject], or null for an unrecognised node. */
+    /** The label [visibleRowLabelsForTest] would show for [userObject], or null for an unrecognised node. Covers
+     *  every node kind the tree can hold, including the two snapshot ones: the expansion bookkeeping keys rows by
+     *  this label, so a kind missing here would be a row whose expansion could not survive a rebuild. */
     private fun labelOf(userObject: Any?): String? = when (userObject) {
         is PreviewNode.ModuleNode -> userObject.segment
         is PreviewNode.PackageBranch -> userObject.segment
         is PreviewNode.PreviewLeaf -> userObject.row.indexed.displayName
+        is PreviewNode.SnapshotLeaf -> userObject.row.indexed.functionName
+        // Must stay in step with what PreviewTreeCellRenderer draws for this row: a label path is only useful if
+        // it names the row the user sees.
+        is PreviewNode.OrphanSnapshotBranch -> ORPHAN_BRANCH_LABEL
         else -> null
     }
 
@@ -469,17 +553,29 @@ class PreviewGalleryPanel(
     private fun findNodeByLabelPath(labels: List<String>): DefaultMutableTreeNode? {
         var current = treeRoot
         for (label in labels) {
-            var next: DefaultMutableTreeNode? = null
-            for (index in 0 until current.childCount) {
-                val child = current.getChildAt(index) as? DefaultMutableTreeNode ?: continue
-                if (labelOf(child.userObject) == label) {
-                    next = child
-                    break
-                }
-            }
-            current = next ?: return null
+            current = childByLabel(current, label) ?: return null
         }
         return current
+    }
+
+    /** The first child of [node] whose label is [label], or null when it has none. */
+    private fun childByLabel(node: DefaultMutableTreeNode, label: String): DefaultMutableTreeNode? {
+        for (index in 0 until node.childCount) {
+            val child = node.getChildAt(index) as? DefaultMutableTreeNode ?: continue
+            if (labelOf(child.userObject) == label) return child
+        }
+        return null
+    }
+
+    /** Depth-first (pre-order) search for the first node anywhere under [node] whose own label is [label].
+     *  [treeRoot] itself carries no user object, so it can never match. */
+    private fun findNodeByLabel(node: DefaultMutableTreeNode, label: String): DefaultMutableTreeNode? {
+        if (labelOf(node.userObject) == label) return node
+        for (index in 0 until node.childCount) {
+            val child = node.getChildAt(index) as? DefaultMutableTreeNode ?: continue
+            findNodeByLabel(child, label)?.let { return it }
+        }
+        return null
     }
 
     private fun setState(newState: State) {
@@ -498,6 +594,108 @@ class PreviewGalleryPanel(
         val node = tree.selectionPath?.lastPathComponent as? DefaultMutableTreeNode ?: return null
         return (node.userObject as? PreviewNode.PreviewLeaf)?.row as? PreviewEntry
     }
+
+    /**
+     * Routes whatever the tree has selected: a snapshot row to its reference images, everything else to
+     * [pipeline] — where a module, package or orphan-branch row lands as "nothing selected", exactly as before.
+     *
+     * The snapshot branch hands [pipeline] a null selection rather than the snapshot: a snapshot is never
+     * rendered (spec D8), and null is what a switch away from a preview already does — it cancels the debounced
+     * dispatch AND bumps the pipeline's generation, so a render still in flight can no longer publish over the
+     * strip. Going through the pipeline's own entry point rather than adding a "cancel" API is deliberate: the
+     * cancellation semantics then cannot drift from the preview-to-preview switch's.
+     *
+     * [deferReferenceLookup] is false only for [selectByLabelPathForTest], which needs the routing to have
+     * finished by the time it returns. Production always defers, keeping the VFS lookup and the PNG decode off
+     * the EDT.
+     */
+    private fun routeSelection(deferReferenceLookup: Boolean) {
+        val snapshot = selectedSnapshotEntry()
+        if (snapshot != null) {
+            lastSelectedEntry = null
+            pipeline.select(null)
+            if (deferReferenceLookup) {
+                showReferenceImages(snapshot)
+            } else {
+                publishReferences(snapshot, decodeReferences(snapshot))
+            }
+            return
+        }
+        val selected = selectedEntry()
+        lastSelectedEntry = selected
+        pipeline.select(selected)
+    }
+
+    /** The selected snapshot row, or null when the selection is anything else — deliberately disjoint from
+     *  [selectedEntry], which only ever matches a [PreviewNode.PreviewLeaf], so a snapshot can never be mistaken
+     *  for something renderable (spec D8). */
+    private fun selectedSnapshotEntry(): PreviewEntry? {
+        val node = tree.selectionPath?.lastPathComponent as? DefaultMutableTreeNode ?: return null
+        return (node.userObject as? PreviewNode.SnapshotLeaf)?.row as? PreviewEntry
+    }
+
+    /**
+     * Shows [snapshot]'s committed reference PNGs (spec D6/D7). The VFS lookup and the PNG decode both run off the
+     * EDT, then [publishReferences] installs the strip on it.
+     *
+     * Nothing here goes near [pipeline]: the caller has just handed it a null selection, and this path produces
+     * images read straight off disk.
+     */
+    private fun showReferenceImages(snapshot: PreviewEntry) {
+        ReadAction.nonBlocking<DecodedReferences> { decodeReferences(snapshot) }
+            .expireWith(parentDisposable)
+            .finishOnUiThread(ModalityState.defaultModalityState()) { decoded ->
+                publishReferences(snapshot, decoded)
+            }
+            .submit(AppExecutorUtil.getAppExecutorService())
+    }
+
+    /**
+     * EDT half of [showReferenceImages]. Dropped unless [snapshot] is *still* the selected row: arrow-keying down
+     * a preview's snapshot children starts one decode per row, and a slower earlier one must not land on top of a
+     * later selection — nor on top of a live render, if the user has moved back to a preview meanwhile. Re-reading
+     * the tree's own selection is the whole guard; no separate generation counter can disagree with it.
+     */
+    private fun publishReferences(snapshot: PreviewEntry, decoded: DecodedReferences) {
+        if (selectedSnapshotEntry()?.id != snapshot.id) return
+        renderPanel.showReference(snapshot, decoded.images, decoded.skipped)
+    }
+
+    /**
+     * Locates and decodes every reference image of [snapshot] (spec D6). Off the EDT, under a read action: the
+     * module resolution and the VFS walk both need one.
+     *
+     * The module comes from the snapshot's own file via [ProjectFileIndex], the same way
+     * `PreviewIndexService.compute` resolves a preview's — a snapshot's `src/screenshotTest` file belongs to the
+     * module whose reference directory holds its PNGs. No module (a file outside the project model) means no
+     * directory to look in, which is the no-reference state, not an error (spec D10).
+     */
+    private fun decodeReferences(snapshot: PreviewEntry): DecodedReferences {
+        val module = ProjectFileIndex.getInstance(project).getModuleForFile(snapshot.file)
+            ?: return DecodedReferences(emptyList(), emptyList())
+        val images = mutableListOf<ReferenceStripView.LabelledImage>()
+        val skipped = mutableListOf<String>()
+        for (reference in ReferenceImageLocator.locate(snapshot, module)) {
+            val image = readImage(reference.file)
+            if (image == null) {
+                skipped += reference.variant
+            } else {
+                images += ReferenceStripView.LabelledImage(reference.variant, image)
+            }
+        }
+        return DecodedReferences(images, skipped)
+    }
+
+    /** null when the PNG cannot be read: `ImageIO.read` returns null for a stream no decoder recognises and
+     *  throws for an IO failure. Either way that one variant is skipped and reported, never fatal — the other
+     *  variants still show (spec's error-handling table). */
+    private fun readImage(file: VirtualFile): BufferedImage? =
+        try {
+            file.inputStream.use { ImageIO.read(it) }
+        } catch (e: IOException) {
+            thisLogger().warn("Could not read reference image ${file.path}", e)
+            null
+        }
 
     private fun navigateToSelection(): Boolean {
         val entry = selectedEntry() ?: return false
@@ -553,25 +751,46 @@ class PreviewGalleryPanel(
     /** Builds one module row and everything nested under it: child modules first, then this module's own
      *  package branches, then its own default-package leaves — the same branches-before-leaves ordering
      *  [addBranch] uses one level down, extended one level up so a nested module never reads as if it belonged
-     *  to a sibling package branch. */
+     *  to a sibling package branch — and finally its orphan-snapshot branch, if it has one. */
     private fun addModule(parent: DefaultMutableTreeNode, module: PreviewNode.ModuleNode) {
         val node = DefaultMutableTreeNode(module)
         module.modules.forEach { addModule(node, it) }
         module.branches.forEach { addBranch(node, it) }
-        module.previews.forEach { node.add(DefaultMutableTreeNode(it)) }
+        module.previews.forEach { addPreview(node, it) }
+        // Last, below this module's own previews: an orphan is what did NOT match one of them (spec D4), so it
+        // reads as a remainder rather than as a peer of the package branches.
+        module.orphans?.let { orphans ->
+            val orphanNode = DefaultMutableTreeNode(orphans)
+            orphans.snapshots.forEach { orphanNode.add(DefaultMutableTreeNode(it)) }
+            node.add(orphanNode)
+        }
         parent.add(node)
     }
 
     private fun addBranch(parent: DefaultMutableTreeNode, branch: PreviewNode.PackageBranch) {
         val node = DefaultMutableTreeNode(branch)
         branch.branches.forEach { addBranch(node, it) }
-        branch.previews.forEach { node.add(DefaultMutableTreeNode(it)) }
+        branch.previews.forEach { addPreview(node, it) }
+        parent.add(node)
+    }
+
+    /** One preview row and the snapshots that cover it, hung under it as children (spec D4). Shared by
+     *  [addModule] and [addBranch] so a default-package preview carries its snapshots exactly like a packaged one.
+     *  A preview with snapshots is therefore no longer a `JTree` leaf: it gains a handle and stays collapsed until
+     *  something expands it (the load-time policy expands the module level only). */
+    private fun addPreview(parent: DefaultMutableTreeNode, leaf: PreviewNode.PreviewLeaf) {
+        val node = DefaultMutableTreeNode(leaf)
+        leaf.snapshots.forEach { node.add(DefaultMutableTreeNode(it)) }
         parent.add(node)
     }
 
     /**
      * Depth-first search for the leaf carrying [entryId]. Runs on every rebuild (selection restore), so it walks
      * children by index rather than materialising a list per level.
+     *
+     * Matches a [PreviewNode.PreviewLeaf] only — deliberately, even though the tree now also holds snapshot rows
+     * that carry a [PreviewEntry] of their own. Selection restore and reveal are both about *previews*: a snapshot
+     * selection is simply not restored across a rebuild, exactly as a module or package row's is not.
      */
     private fun findPath(entryId: String): TreePath? = findPath(treeRoot, entryId)
 
@@ -585,8 +804,21 @@ class PreviewGalleryPanel(
         return null
     }
 
+    /** The two halves of one index read, kept together by [loadRows]. */
+    private data class LoadedRows(val previews: List<PreviewEntry>, val orphans: List<PreviewEntry>)
+
+    /** What [decodeReferences] found: the variants it could decode, and the ones it could not — reported in the
+     *  strip's tooltip rather than dropped silently. */
+    private data class DecodedReferences(
+        val images: List<ReferenceStripView.LabelledImage>,
+        val skipped: List<String>,
+    )
+
     private companion object {
         const val SEARCH_DEBOUNCE_MS = 150
+
+        /** The orphan branch's label, which must read exactly as `PreviewTreeCellRenderer` draws that row. */
+        const val ORPHAN_BRANCH_LABEL = "Snapshots without a preview"
     }
 }
 

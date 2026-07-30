@@ -34,10 +34,13 @@ import com.intellij.util.ui.UIUtil
 import java.awt.BorderLayout
 import java.awt.FlowLayout
 import java.awt.Point
+import java.awt.event.ComponentAdapter
+import java.awt.event.ComponentEvent
+import java.awt.image.BufferedImage
 import javax.swing.Icon
 import javax.swing.JComponent
 
-/** The right side of the tool window's split. Shows the six [RenderState]s plus a persistent actions bar. */
+/** The right side of the tool window's split. Shows the eight [RenderState]s plus a persistent actions bar. */
 class PreviewRenderPanel(private val project: Project) : JBPanel<PreviewRenderPanel>(BorderLayout()) {
 
     var onRender: (PreviewEntry) -> Unit = {}
@@ -122,12 +125,48 @@ class PreviewRenderPanel(private val project: Project) : JBPanel<PreviewRenderPa
      *  must leave them alone. */
     private var currentEntry: PreviewEntry? = null
 
+    // ── PG13-12: the reference-image strip a snapshot row shows instead of a render (spec D7/D8). ──
+
+    /**
+     * The strip installed in [renderScroll]'s viewport, or null in every state but [RenderState.REFERENCE] —
+     * which is exactly what makes it the single "is a snapshot showing?" test the zoom and export actions
+     * branch on, and what [clearReferenceStrip] uses to know it has to put [renderView] back.
+     */
+    private var referenceStrip: ReferenceStripView? = null
+
+    /** [referenceStrip]'s one shared scale (spec D7: fit and zoom apply to the whole strip, never per image). */
+    private var referenceScale: Double = 1.0
+
+    /**
+     * Whether [referenceStrip] still owes its first fit because the viewport had no size yet — the strip's half
+     * of PG12-4's deferred fit. Settled by the viewport resize listener installed in `init` below, or by any
+     * manual zoom (see [setReferenceScale]), exactly as [ZoomableRenderView]'s own `pendingFit` is.
+     */
+    private var referenceFitPending: Boolean = false
+
+    /** The state [show] last installed a view for. Internal, not private, only so [PreviewGalleryPanel]'s
+     *  `renderStateForTest` seam can assert what a selection routed to without a live render — mirroring
+     *  [ZoomableRenderView.isFitPending]. */
+    internal var activeState: RenderState = RenderState.IDLE
+        private set
+
     init {
         border = JBUI.Borders.empty(8)
         renderView.onNavigateToSource = { onNavigateToSource(it) }
         actionsBar.isOpaque = false
         add(actionsBar, BorderLayout.NORTH)
         add(centerPanel, BorderLayout.CENTER)
+
+        // PG12-4's deferred first fit, for the reference strip. On the first selection after the tool window
+        // opens, add() has not laid the scroll pane out yet, so its viewport still reports a 0x0 extent and
+        // there is nothing to fit against. [ZoomableRenderView] records that debt itself and settles it from a
+        // listener on this very viewport; the strip is a plain JComponent, so the panel that owns it holds the
+        // debt instead — same mechanism, same viewport, same trigger, rather than a second one inside the strip.
+        renderScroll.viewport.addComponentListener(object : ComponentAdapter() {
+            override fun componentResized(event: ComponentEvent) {
+                if (referenceFitPending) fitReferenceStrip()
+            }
+        })
 
         // First activation of a not-yet-rendered extra tab (brief step 4). addExtraTab already marks its id as
         // requested before this can fire for it, so in practice this is a defensive fallback, not the primary
@@ -145,7 +184,37 @@ class PreviewRenderPanel(private val project: Project) : JBPanel<PreviewRenderPa
         }
     }
 
+    /** The render pipeline's entry point: shows one published [RenderResultView]. */
     fun show(view: RenderResultView, entry: PreviewEntry?) {
+        show(view, entry, strip = null)
+    }
+
+    /**
+     * Shows [entry]'s committed reference PNGs (spec D6/D7) — the snapshot path, which never goes through
+     * [com.devomer.previewgallery.render.RenderPipeline] at all (spec D8), so it is its own entry point rather
+     * than a state the pipeline publishes. [images] must already be decoded: this runs on the EDT, and reading
+     * PNGs off disk does not belong there (the caller decodes off the EDT).
+     *
+     * [skipped] names the variants whose PNG could not be decoded; they are reported in the strip's tooltip and
+     * the variants that did decode still show (spec's error-handling table). An empty [images] is
+     * [RenderState.NO_REFERENCE] — whether because nothing is committed yet or because every variant failed.
+     */
+    fun showReference(entry: PreviewEntry, images: List<ReferenceStripView.LabelledImage>, skipped: List<String>) {
+        if (images.isEmpty()) {
+            show(RenderResultView(RenderState.NO_REFERENCE, null, entry.moduleName), entry, strip = null)
+            return
+        }
+        val strip = ReferenceStripView(images)
+        if (skipped.isNotEmpty()) {
+            strip.toolTipText = PreviewGalleryBundle.message("render.referenceUnreadable", skipped.joinToString(", "))
+        }
+        show(RenderResultView(RenderState.REFERENCE, null, entry.moduleName), entry, strip)
+    }
+
+    /** [strip] is non-null only on the [RenderState.REFERENCE] path ([showReference]): [RenderResultView] is the
+     *  render pipeline's own type and deliberately carries no Swing, so the strip travels as its own argument
+     *  instead of inside it. */
+    private fun show(view: RenderResultView, entry: PreviewEntry?, strip: ReferenceStripView?) {
         // PG6-4/V3: a genuinely new selection (including to/from nothing selected) drops every comparison-view
         // extra and frees its image; another state update for the SAME entry (e.g. a retry's RENDERING -> LIVE,
         // or a picker-triggered re-render) must leave them alone. Compared by id, not reference, so a fresh
@@ -156,8 +225,13 @@ class PreviewRenderPanel(private val project: Project) : JBPanel<PreviewRenderPa
             clearComparisonExtras()
         }
         currentEntry = entry
+        activeState = view.state
         centerPanel.removeAll()
         renderView.clearContent()
+        // Whatever a previous REFERENCE state put in renderScroll's viewport, renderView goes back in before this
+        // state decides what to show — otherwise a live render would draw behind a strip that is still installed.
+        // The REFERENCE branch below then replaces it again with its own strip.
+        clearReferenceStrip()
         when (view.state) {
             RenderState.IDLE -> center(idle())
             RenderState.RENDERING -> center(JBLabel(PreviewGalleryBundle.message("render.rendering")))
@@ -165,6 +239,10 @@ class PreviewRenderPanel(private val project: Project) : JBPanel<PreviewRenderPa
             RenderState.NEEDS_BUILD -> center(JBLabel(PreviewGalleryBundle.message("render.building")))
             RenderState.FAILED -> center(failed(view.outcome as? RenderOutcome.Failure, entry))
             RenderState.UNSUPPORTED -> center(unsupported(view.outcome as? RenderOutcome.Unsupported, entry))
+            // [showReference] is the only caller that publishes REFERENCE and it always hands over a strip; a
+            // missing one would mean there is nothing to show, which is the no-reference state by definition.
+            RenderState.REFERENCE -> if (strip != null) showReferenceStrip(strip) else center(noReference(entry))
+            RenderState.NO_REFERENCE -> center(noReference(entry))
         }
         updateActionsBar(entry)
         revalidate(); repaint()
@@ -179,7 +257,20 @@ class PreviewRenderPanel(private val project: Project) : JBPanel<PreviewRenderPa
     private fun updateActionsBar(entry: PreviewEntry?) {
         actionsBar.removeAll()
         val group = DefaultActionGroup()
-        if (renderView.rawImage() != null) {
+        val strip = referenceStrip
+        if (strip != null) {
+            // PG13-12: a reference strip gets the same zoom ladder and the same export controls as a render, all
+            // driving the strip's one shared scale (spec D7). No hand tool — the strip is a plain component whose
+            // panning the scroll pane already does — and neither comparison views nor Properties, since both
+            // exist to re-render, and a snapshot is never rendered (spec D8).
+            group.add(ZoomOutAction())
+            group.add(ZoomInAction())
+            group.add(FitAction())
+            group.add(ActualSizeAction())
+            group.addSeparator()
+            group.add(SavePngAction())
+            group.add(CopyImageAction())
+        } else if (renderView.rawImage() != null) {
             group.add(ZoomOutAction())
             group.add(ZoomInAction())
             group.add(FitAction())
@@ -200,11 +291,12 @@ class PreviewRenderPanel(private val project: Project) : JBPanel<PreviewRenderPa
         // ([propertiesAvailable]); with a copy active it re-renders that copy instead (PG6-9), which needs only
         // the view-override render capability, not the picker. Never both, never neither once one of the two is
         // actually available — a build missing the relevant capability simply never gets the control, matching
-        // every other capability gate in this class (never a dead control).
+        // every other capability gate in this class (never a dead control). Never on a reference strip: both
+        // branches end in a render.
         val activeCopy = activeComparisonView()
         val originalActive = activeCopy == null || activeCopy.id == ComparisonViewList.ORIGINAL_ID
         val propertiesGated = if (originalActive) propertiesAvailable else deviceOverrideAvailable
-        if (propertiesGated && entry != null) {
+        if (strip == null && propertiesGated && entry != null) {
             if (group.childrenCount > 0) group.addSeparator()
             group.add(PropertiesAction(entry))
         }
@@ -254,25 +346,41 @@ class PreviewRenderPanel(private val project: Project) : JBPanel<PreviewRenderPa
     private inner class ZoomOutAction : DumbAwareAction(
         PreviewGalleryBundle.message("render.zoomOut"), null, AllIcons.General.ZoomOut,
     ) {
-        override fun actionPerformed(e: AnActionEvent) { activeView().zoomFactor = ZoomMath.stepOut(activeView().zoomFactor) }
+        override fun actionPerformed(e: AnActionEvent) { zoomBy(ZoomMath::stepOut) }
     }
 
     private inner class ZoomInAction : DumbAwareAction(
         PreviewGalleryBundle.message("render.zoomIn"), null, AllIcons.General.ZoomIn,
     ) {
-        override fun actionPerformed(e: AnActionEvent) { activeView().zoomFactor = ZoomMath.stepIn(activeView().zoomFactor) }
+        override fun actionPerformed(e: AnActionEvent) { zoomBy(ZoomMath::stepIn) }
     }
 
     private inner class FitAction : DumbAwareAction(
         PreviewGalleryBundle.message("render.fit"), null, AllIcons.General.FitContent,
     ) {
-        override fun actionPerformed(e: AnActionEvent) { activeView().fitToViewport() }
+        override fun actionPerformed(e: AnActionEvent) { fitActive() }
     }
 
     private inner class ActualSizeAction : DumbAwareAction(
         PreviewGalleryBundle.message("render.actualSize"), null, AllIcons.General.ActualZoom,
     ) {
-        override fun actionPerformed(e: AnActionEvent) { activeView().zoomFactor = 1.0 }
+        override fun actionPerformed(e: AnActionEvent) { zoomBy { 1.0 } }
+    }
+
+    /** Moves whatever is on screen to `next(currentZoom)`: the reference strip's one shared scale (spec D7) while
+     *  a snapshot is showing, else the active tab's live render. The same ladder drives both, so a snapshot and a
+     *  render zoom by identical steps. */
+    private fun zoomBy(next: (Double) -> Double) {
+        if (referenceStrip != null) {
+            setReferenceScale(next(referenceScale))
+        } else {
+            activeView().zoomFactor = next(activeView().zoomFactor)
+        }
+    }
+
+    /** Fit, for whichever of the two is showing — the whole strip, not one image of it (spec D7). */
+    private fun fitActive() {
+        if (referenceStrip != null) fitReferenceStrip() else activeView().fitToViewport()
     }
 
     /** Hand-tool as a real toggle so the toolbar shows its pressed state; mirrors [ZoomableRenderView.handToolActive]. */
@@ -350,6 +458,61 @@ class PreviewRenderPanel(private val project: Project) : JBPanel<PreviewRenderPa
         // then fit — otherwise the first render (before any later revalidate) would show at 100% instead of Fit.
         centerPanel.validate()
         renderView.fitToViewport()
+    }
+
+    // ── PG13-12: the reference-image strip a snapshot row shows (spec D7/D8) ──────────────────────────────
+
+    /**
+     * Installs [strip] as the view of the *existing* [renderScroll] — the same scroll pane a live render uses, so
+     * the strip inherits its scrollbars and its panning without a second one — and fits it.
+     *
+     * [centerPanel] is validated first for exactly the reason [showImage] validates it: `add()` does not lay the
+     * scroll pane out synchronously, so its viewport would still report a 0x0 extent and [fitReferenceStrip]
+     * would have nothing to fit against. When it still has no size, the fit debt stays standing and the viewport
+     * resize listener from `init` settles it (PG12-4).
+     *
+     * [renderScroll] goes straight into [centerPanel] rather than through [refreshLiveContainer]: a snapshot has
+     * no comparison tabs — it is never rendered — and selecting it already cleared any that existed, since its
+     * entry id necessarily differs from the preview's.
+     */
+    private fun showReferenceStrip(strip: ReferenceStripView) {
+        referenceStrip = strip
+        referenceScale = 1.0
+        referenceFitPending = true
+        renderScroll.setViewportView(strip)
+        centerPanel.add(renderScroll, BorderLayout.CENTER)
+        centerPanel.validate()
+        fitReferenceStrip()
+    }
+
+    /** Drops the strip and its decoded images and puts [renderView] back in [renderScroll], so the next render
+     *  shows there instead of behind a strip that is no longer wanted. A no-op when no strip is installed. */
+    private fun clearReferenceStrip() {
+        if (referenceStrip == null) return
+        referenceStrip = null
+        referenceScale = 1.0
+        referenceFitPending = false
+        renderScroll.setViewportView(renderView)
+    }
+
+    /** Fits the whole strip into [renderScroll]'s viewport at one shared scale (spec D7). Leaves
+     *  [referenceFitPending] standing when the viewport has no size yet — assigning a scale here would settle the
+     *  debt with a meaningless 1.0, which is the same reason [ZoomableRenderView.fitToViewport] returns early. */
+    private fun fitReferenceStrip() {
+        val strip = referenceStrip ?: return
+        val extent = renderScroll.viewport.extentSize
+        if (extent.width <= 0 || extent.height <= 0) return
+        setReferenceScale(strip.fitScale(extent.width, extent.height))
+    }
+
+    /** Applies one shared scale to the whole strip, bounded like a render's zoom factor is, and settles the fit
+     *  debt: either this IS the fit, or the user picked a zoom themselves and a later resize must not overwrite
+     *  it — the same contract [ZoomableRenderView.zoomFactor]'s setter has (PG12-4). */
+    private fun setReferenceScale(scale: Double) {
+        val strip = referenceStrip ?: return
+        referenceScale = scale.coerceIn(ZoomMath.MIN, ZoomMath.MAX)
+        referenceFitPending = false
+        strip.setScale(referenceScale)
     }
 
     // ── PG6-4: comparison-view tab strip ──────────────────────────────────────────────────────────────────
@@ -543,10 +706,35 @@ class PreviewRenderPanel(private val project: Project) : JBPanel<PreviewRenderPa
         )
     }
 
-    /** Writes the current raw render (no overlay) to a user-chosen PNG file (PG5-3/V2). No-op if there is no live
-     *  image, or if the user cancels the save dialog. */
+    /**
+     * What Save PNG / Copy act on: the reference strip while a snapshot is showing, else the active tab's raw
+     * render (PG5-3/V2, PG6-4/D10 — the *active* tab, never always Original). Null when there is nothing to
+     * export, which both callers treat as a no-op.
+     *
+     * Deliberately not symmetric with a render's `rawImage()`, because the two are not symmetric: a render's raw
+     * image exists at native resolution independently of the zoom, while the strip's pixels only exist as drawn —
+     * so what is exported is the strip exactly as it is on screen, labels and all, which is also the artefact
+     * worth sharing (`phone` next to `small`). Actual size (100%) exports the references at native resolution.
+     */
+    private fun exportImage(): BufferedImage? {
+        val strip = referenceStrip ?: return activeView().rawImage()
+        // JComponent.paint is a no-op for a zero-sized component, so a strip not laid out yet has nothing to
+        // export — the same no-op posture as a missing render image.
+        if (strip.width <= 0 || strip.height <= 0) return null
+        val image = BufferedImage(strip.width, strip.height, BufferedImage.TYPE_INT_ARGB)
+        val graphics = image.createGraphics()
+        try {
+            strip.paint(graphics)
+        } finally {
+            graphics.dispose()
+        }
+        return image
+    }
+
+    /** Writes what [exportImage] resolves to — the raw render (no overlay), or the reference strip — to a
+     *  user-chosen PNG file (PG5-3/V2). No-op if there is nothing to export, or if the user cancels the dialog. */
     private fun savePng() {
-        val image = activeView().rawImage() ?: return
+        val image = exportImage() ?: return
         val descriptor = FileSaverDescriptor(PreviewGalleryBundle.message("render.savePng"), "", "png")
         val dialog = FileChooserFactory.getInstance().createSaveFileDialog(descriptor, project)
         val wrapper = dialog.save(null as VirtualFile?, "preview.png") ?: return
@@ -555,10 +743,10 @@ class PreviewRenderPanel(private val project: Project) : JBPanel<PreviewRenderPa
         }
     }
 
-    /** Copies the current raw render (no overlay) to the system clipboard (PG5-3/V2). No-op if there is no live
-     *  image. */
+    /** Copies what [exportImage] resolves to — the raw render (no overlay), or the reference strip — to the system
+     *  clipboard (PG5-3/V2). No-op if there is nothing to export. */
     private fun copyImage() {
-        val image = activeView().rawImage() ?: return
+        val image = exportImage() ?: return
         try {
             RenderImageExporter.copyToClipboard(image)
         } catch (e: Exception) {
@@ -590,6 +778,17 @@ class PreviewRenderPanel(private val project: Project) : JBPanel<PreviewRenderPa
 
     private fun unsupported(outcome: RenderOutcome.Unsupported?, entry: PreviewEntry?): JBPanel<*> = JBPanel<JBPanel<*>>(BorderLayout()).apply {
         add(JBLabel(outcome?.reason ?: PreviewGalleryBundle.message("render.unsupported")), BorderLayout.NORTH)
+        if (entry != null) add(ActionLink(PreviewGalleryBundle.message("detail.openFile")) { onOpenFile(entry) }, BorderLayout.SOUTH)
+    }
+
+    /**
+     * A snapshot with nothing committed to show (spec D10): the message names the Gradle task that generates the
+     * references, since "no images" without the fix is not actionable. Offers Open file, and deliberately **not**
+     * Render the way [failed] does — a snapshot is never rendered at all (spec D8), so a Render button here would
+     * be a control that cannot do what it says.
+     */
+    private fun noReference(entry: PreviewEntry?): JBPanel<*> = JBPanel<JBPanel<*>>(BorderLayout()).apply {
+        add(JBLabel(PreviewGalleryBundle.message("render.noReference")), BorderLayout.NORTH)
         if (entry != null) add(ActionLink(PreviewGalleryBundle.message("detail.openFile")) { onOpenFile(entry) }, BorderLayout.SOUTH)
     }
 

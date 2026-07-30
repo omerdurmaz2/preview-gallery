@@ -1,5 +1,6 @@
 package com.devomer.previewgallery.ui
 
+import com.devomer.previewgallery.render.RenderState
 import com.devomer.previewgallery.service.PreviewIndexService
 import com.intellij.openapi.util.Disposer
 import com.intellij.testFramework.LightProjectDescriptor
@@ -374,5 +375,86 @@ class PreviewGalleryPanelTest : BasePlatformTestCase() {
         panel.applyQueryForTest("")
 
         assertTrue(panel.visibleRowLabelsForTest().toString(), panel.visibleRowLabelsForTest().contains("BasketPreview"))
+    }
+
+    private fun projectWithSnapshot() {
+        myFixture.addFileToProject(
+            "src/main/kotlin/com/example/Widgets.kt",
+            """
+            package com.example
+
+            import androidx.compose.ui.tooling.preview.Preview
+
+            @Preview
+            fun WidgetPreview() = PreviewComponent { Widget() }
+            """.trimIndent(),
+        )
+        myFixture.addFileToProject(
+            "src/screenshotTest/kotlin/com/example/WidgetSnapshots.kt",
+            """
+            package com.example
+
+            import com.android.tools.screenshot.PreviewTest
+
+            @PreviewTest
+            fun Widget_Default_Snapshot() = PreviewComponent { Widget() }
+            """.trimIndent(),
+        )
+    }
+
+    fun `test a snapshot hangs under the preview it corresponds to`() {
+        projectWithSnapshot()
+        val panel = panel()
+        panel.reloadSynchronously()
+
+        val children = panel.childLabelsForTest("WidgetPreview")
+        assertEquals(listOf("Widget_Default_Snapshot"), children)
+    }
+
+    fun `test a snapshot is not revealed by a plain load`() {
+        projectWithSnapshot()
+        val panel = panel()
+        panel.reloadSynchronously()
+
+        // The preview row is no longer a JTree leaf, but the load-time policy expands the module level only —
+        // a snapshot child arrives with a handle, never already opened.
+        val labels = panel.visibleRowLabelsForTest()
+        assertFalse(labels.toString(), labels.contains("Widget_Default_Snapshot"))
+    }
+
+    fun `test a query expands a preview far enough to reveal its snapshot`() {
+        projectWithSnapshot()
+        val panel = panel()
+        panel.reloadSynchronously()
+
+        panel.applyQueryForTest("Widget")
+
+        val labels = panel.visibleRowLabelsForTest()
+        assertTrue(labels.toString(), labels.contains("WidgetPreview"))
+        assertTrue(labels.toString(), labels.contains("Widget_Default_Snapshot"))
+    }
+
+    fun `test selecting a snapshot without references reports NO_REFERENCE`() {
+        projectWithSnapshot()
+        val panel = panel()
+        panel.reloadSynchronously()
+
+        panel.selectByLabelPathForTest("WidgetPreview", "Widget_Default_Snapshot")
+
+        // The fixture commits no reference PNGs, and a snapshot is never rendered — so neither RENDERING nor
+        // FAILED is correct here.
+        assertEquals(RenderState.NO_REFERENCE, panel.renderStateForTest)
+    }
+
+    fun `test selecting a snapshot leaves the preview selection empty`() {
+        projectWithSnapshot()
+        val panel = panel()
+        panel.reloadSynchronously()
+
+        panel.selectByLabelPathForTest("WidgetPreview", "Widget_Default_Snapshot")
+
+        // A snapshot is not a renderable entry: the render selection the pipeline sees must be nothing at all,
+        // never the snapshot itself (spec D8).
+        assertNull(panel.selectedEntryIdForTest())
     }
 }
