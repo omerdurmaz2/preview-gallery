@@ -2,6 +2,7 @@ package com.devomer.previewgallery.ui
 
 import com.devomer.previewgallery.render.RenderState
 import com.devomer.previewgallery.service.PreviewIndexService
+import com.intellij.openapi.fileEditor.FileEditorManager
 import com.intellij.openapi.util.Disposer
 import com.intellij.testFramework.LightProjectDescriptor
 import com.intellij.testFramework.fixtures.BasePlatformTestCase
@@ -456,5 +457,51 @@ class PreviewGalleryPanelTest : BasePlatformTestCase() {
         // A snapshot is not a renderable entry: the render selection the pipeline sees must be nothing at all,
         // never the snapshot itself (spec D8).
         assertNull(panel.selectedEntryIdForTest())
+    }
+
+    fun `test Enter on a snapshot row opens the snapshot's own source`() {
+        projectWithSnapshot()
+        val panel = panel()
+        panel.reloadSynchronously()
+        panel.selectByLabelPathForTest("WidgetPreview", "Widget_Default_Snapshot")
+
+        // Navigation is not rendering, so the snapshot fallback does not weaken spec D8 — and without it a
+        // snapshot's source was reachable from nowhere: double-click and Enter both silently did nothing.
+        assertTrue(panel.navigateToSelectionForTest())
+
+        val open = FileEditorManager.getInstance(project).selectedFiles.map { it.name }
+        assertTrue(open.toString(), open.contains("WidgetSnapshots.kt"))
+    }
+
+    fun `test Enter on a module row still navigates nowhere`() {
+        projectWithSnapshot()
+        val panel = panel()
+        panel.reloadSynchronously()
+
+        panel.selectByLabelPathForTest(LightProjectDescriptor.TEST_MODULE_NAME)
+
+        assertFalse(panel.navigateToSelectionForTest())
+    }
+
+    fun `test a module with only orphan snapshots is not reported as having no previews`() {
+        myFixture.addFileToProject(
+            "src/screenshotTest/kotlin/com/example/WidgetSnapshots.kt",
+            """
+            package com.example
+
+            import com.android.tools.screenshot.PreviewTest
+
+            @PreviewTest
+            fun Widget_Default_Snapshot() = PreviewComponent { Widget() }
+            """.trimIndent(),
+        )
+        val panel = panel()
+
+        panel.reloadSynchronously()
+
+        // The tree visibly holds rows, so "No @Preview functions found in this project" would simply be false.
+        assertEquals(PreviewGalleryPanel.State.LOADED, panel.state)
+        val labels = panel.visibleRowLabelsForTest()
+        assertTrue(labels.toString(), labels.contains(PreviewTreeCellRenderer.ORPHAN_BRANCH_LABEL))
     }
 }

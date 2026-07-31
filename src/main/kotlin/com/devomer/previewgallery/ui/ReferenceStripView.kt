@@ -30,6 +30,11 @@ class ReferenceStripView(private val images: List<LabelledImage>) : JComponent()
         repaint()
     }
 
+    /**
+     * The size the strip occupies at [scale]. The gaps between the images and the label row under them are
+     * **chrome**: they are laid out at the display's scale and do not grow with the zoom — only the images do.
+     * [fitScale] has to invert exactly this, or Fit would not fit.
+     */
     fun preferredStripSize(scale: Double): Dimension {
         if (images.isEmpty()) return Dimension(0, scaledLabelHeight())
         val width = images.sumOf { (it.image.width * scale).toInt() } + scaledGap() * (images.size - 1)
@@ -37,26 +42,45 @@ class ReferenceStripView(private val images: List<LabelledImage>) : JComponent()
         return Dimension(width, height)
     }
 
-    /** The largest scale at which the whole strip fits [viewportWidth] x [viewportHeight]. */
+    /**
+     * The largest scale at which the whole strip fits [viewportWidth] x [viewportHeight].
+     *
+     * The chrome is **subtracted from the viewport**, never folded into the denominator: it does not scale (see
+     * [preferredStripSize]), so dividing by `sum(width) + gaps` would return a scale whose own preferred size is
+     * still larger than the viewport by up to one label row and one set of gaps — pressing Fit would grow
+     * scrollbars, the exact defect PG12 existed to remove. The inverse holds exactly, truncation included:
+     * `sum(trunc(w * s)) <= trunc(sum(w) * s)`.
+     *
+     * A viewport smaller than the chrome alone has no scale that fits; the floor is returned rather than a zero
+     * or negative one, and the caller's own [ZoomMath.MIN]/[ZoomMath.MAX] clamp agrees with it.
+     */
     fun fitScale(viewportWidth: Int, viewportHeight: Int): Double {
         if (images.isEmpty()) return 1.0
-        val naturalWidth = images.sumOf { it.image.width } + scaledGap() * (images.size - 1)
-        val naturalHeight = images.maxOf { it.image.height } + scaledLabelHeight()
+        val naturalWidth = images.sumOf { it.image.width }
+        val naturalHeight = images.maxOf { it.image.height }
         if (naturalWidth <= 0 || naturalHeight <= 0) return 1.0
-        return minOf(viewportWidth.toDouble() / naturalWidth, viewportHeight.toDouble() / naturalHeight)
+        val availableWidth = viewportWidth - scaledGap() * (images.size - 1)
+        val availableHeight = viewportHeight - scaledLabelHeight()
+        if (availableWidth <= 0 || availableHeight <= 0) return ZoomMath.MIN
+        return minOf(availableWidth.toDouble() / naturalWidth, availableHeight.toDouble() / naturalHeight)
     }
 
     override fun paintComponent(g: Graphics) {
+        if (images.isEmpty()) return
         val g2 = g.create() as Graphics2D
         try {
             g2.setRenderingHint(RenderingHints.KEY_INTERPOLATION, RenderingHints.VALUE_INTERPOLATION_BILINEAR)
+            // One shared baseline for every label, at the tallest image's foot: [preferredStripSize] reserves a
+            // single label row there, so drawing each label at its own image's height would leave a short
+            // variant's name floating in the middle of the strip instead of on the row that was reserved for it.
+            val baseline = images.maxOf { (it.image.height * scale).toInt() } + JBUI.scale(LABEL_BASELINE)
             var x = 0
             for (labelled in images) {
                 val width = (labelled.image.width * scale).toInt()
                 val height = (labelled.image.height * scale).toInt()
                 g2.drawImage(labelled.image, x, 0, width, height, null)
                 g2.color = JBColor.GRAY
-                g2.drawString(labelled.variant, x, height + JBUI.scale(LABEL_BASELINE))
+                g2.drawString(labelled.variant, x, baseline)
                 x += width + scaledGap()
             }
         } finally {

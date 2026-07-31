@@ -157,6 +157,25 @@ class PreviewTreeCellRendererTest {
     }
 
     @Test
+    fun `a snapshot row carries an FQN tooltip like a preview row`() {
+        val row = testRow(displayName = "Widget_Default_Snapshot", functionName = "Widget_Default_Snapshot")
+
+        val renderer = render(PreviewNode.SnapshotLeaf(row))
+
+        // The row text is only the function name, so the FQN is the fact that identifies it — and the tooltip is
+        // where this plugin has put that fact since PG2-10.
+        assertEquals(row.indexed.composableFqn, renderer.toolTipText)
+    }
+
+    @Test
+    fun `the orphan branch row carries no tooltip`() {
+        val renderer = render(PreviewNode.OrphanSnapshotBranch(listOf(PreviewNode.SnapshotLeaf(testRow())), 1))
+
+        // The renderer instance is reused across cells: a branch row must clear the previous leaf's tooltip.
+        assertNull(renderer.toolTipText)
+    }
+
+    @Test
     fun `the orphan branch row is labelled and counted`() {
         val leaf = PreviewNode.SnapshotLeaf(testRow())
         val rendered = text(PreviewNode.OrphanSnapshotBranch(listOf(leaf), 1))

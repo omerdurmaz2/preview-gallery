@@ -18,6 +18,27 @@ import org.jetbrains.kotlin.psi.KtNamedFunction
  *
  * This runs inside a `FileBasedIndex` indexer, so it resolves nothing: a callee is identified by the text of its
  * name, not by what that name binds to.
+ *
+ * ## What it does not see
+ *
+ * A statement is a target only when it is *itself* a [KtCallExpression]. Every other statement shape is skipped
+ * silently, and a body made only of those yields no targets at all — which the coverage join reads as "never
+ * matched" (spec's error table), not as an error. The shapes deliberately left out:
+ *
+ * - **Qualified calls** — `Foo.Bar()` and `foo.Bar()` are `KtDotQualifiedExpression`s, `foo?.Bar()` a
+ *   `KtSafeQualifiedExpression`; none of them is a `KtCallExpression`, so none is a target. Every sampled body
+ *   calls its composable unqualified, which is the Compose convention.
+ * - **Parenthesized calls** — `(Bar())`.
+ * - **Expression bodies that are not a call** — `= return X()` cannot occur, but a block body shaped
+ *   `{ return X() }` yields nothing (`KtReturnExpression`), as does `{ if (flag) X() else Y() }`
+ *   (`KtIfExpression`), a `when`, a `val x = X()` (`KtProperty`), or a call wrapped in `remember { … }`'s
+ *   argument list.
+ * - **Non-trailing lambdas** — descent follows `lambdaArguments.last()` only, so `Foo(content = { Bar() })` is
+ *   an argument-list lambda and is not entered (by design: that is the same rule that keeps `state = FakeState()`
+ *   out).
+ *
+ * Widening any of these is a heuristic change, not a bug fix: each one also admits shapes that are not the
+ * composable under test. Measure against the corpus before adding one.
  */
 object TargetExtractor {
 

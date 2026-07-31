@@ -48,6 +48,45 @@ class ReferenceStripViewTest {
         assertTrue(tall.fitScale(viewportWidth = 5000, viewportHeight = 500) < 1.0)
     }
 
+    /**
+     * The assertion that actually binds: a scale is only a *fit* if the strip it produces is no larger than the
+     * viewport on either axis. Asserting `< 1.0` cannot catch a fit that folds the fixed chrome into the
+     * denominator — that formula also shrinks, just not far enough, and leaves scrollbars behind.
+     */
+    @Test
+    fun `fit leaves the strip inside the viewport on both axes`() {
+        val viewportWidth = 500
+        val viewportHeight = 400
+
+        for (strip in listOf(strip(1000 to 100), strip(100 to 1000), strip(1000 to 1000, 300 to 700))) {
+            val fitted = strip.preferredStripSize(strip.fitScale(viewportWidth, viewportHeight))
+            assertTrue(fitted.toString(), fitted.width <= viewportWidth)
+            assertTrue(fitted.toString(), fitted.height <= viewportHeight)
+        }
+    }
+
+    /** One tall image, a label row, and a viewport just short of the natural height: the height binds and the
+     *  label row must come out of the viewport, not out of the image's share of it. */
+    @Test
+    fun `the label row is reserved out of the viewport, not scaled with the images`() {
+        val strip = strip(100 to 1000)
+        val viewportHeight = 500
+
+        val fit = strip.fitScale(viewportWidth = 5000, viewportHeight = viewportHeight)
+
+        assertEquals((viewportHeight - ReferenceStripView.scaledLabelHeight()) / 1000.0, fit, 0.0001)
+        assertTrue(strip.preferredStripSize(fit).height <= viewportHeight)
+    }
+
+    @Test
+    fun `a viewport smaller than the chrome still yields a usable scale`() {
+        val fit = strip(100 to 100).fitScale(viewportWidth = 1, viewportHeight = 1)
+
+        // No scale can fit a label row into a 1 px viewport; the floor is the honest answer, and a zero or
+        // negative one would make the strip vanish or throw.
+        assertEquals(ZoomMath.MIN, fit, 0.0001)
+    }
+
     @Test
     fun `an empty strip fits at one to one`() {
         assertEquals(1.0, ReferenceStripView(emptyList()).fitScale(100, 100), 0.0001)

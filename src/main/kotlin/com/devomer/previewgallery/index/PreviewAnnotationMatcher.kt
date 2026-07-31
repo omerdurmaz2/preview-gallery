@@ -3,7 +3,7 @@ package com.devomer.previewgallery.index
 import com.devomer.previewgallery.model.AnnotationKind
 
 /**
- * Identifies `@Preview` and `@PreviewParameter` annotations from the file's import list alone.
+ * Identifies `@Preview`, `@PreviewParameter` and `@PreviewTest` annotations from the file's import list alone.
  *
  * A `FileBasedIndex` indexer must not resolve references outside the file it is indexing, so this never touches
  * anything but the text of the annotation reference and the imports declared in the same file.
@@ -35,6 +35,9 @@ object PreviewAnnotationMatcher {
 
     /** `@PreviewTest` marks a snapshot function of the Compose Preview Screenshot Testing plugin. */
     fun isPreviewTest(reference: String, imports: List<ImportInfo>): Boolean =
+        // [match] takes two FQNs because `@Preview` has an androidx and a JetBrains spelling; `@PreviewTest` has
+        // only the one, so both parameters get it and the returned kind carries no information — a non-null
+        // result simply means "matched".
         match(reference, imports, PREVIEW_TEST_SHORT_NAME, PREVIEW_TEST, PREVIEW_TEST) != null
 
     private fun match(

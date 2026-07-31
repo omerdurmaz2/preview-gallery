@@ -3,6 +3,7 @@ package com.devomer.previewgallery.ui
 import com.devomer.previewgallery.PreviewGalleryBundle
 import com.devomer.previewgallery.model.PreviewEntry
 import com.devomer.previewgallery.model.PreviewSourceLocation
+import com.devomer.previewgallery.model.ReferenceImage
 import com.devomer.previewgallery.render.BuildService
 import com.devomer.previewgallery.render.EphemeralPickerBridge
 import com.devomer.previewgallery.render.LiveRenderer
@@ -19,13 +20,16 @@ import com.intellij.ide.TreeExpander
 import com.intellij.openapi.Disposable
 import com.intellij.openapi.actionSystem.ActionManager
 import com.intellij.openapi.actionSystem.DefaultActionGroup
+import com.intellij.openapi.application.ApplicationManager
 import com.intellij.openapi.application.ModalityState
 import com.intellij.openapi.application.ReadAction
 import com.intellij.openapi.diagnostic.thisLogger
 import com.intellij.openapi.fileEditor.OpenFileDescriptor
+import com.intellij.openapi.progress.ProcessCanceledException
 import com.intellij.openapi.project.DumbService
 import com.intellij.openapi.project.Project
 import com.intellij.openapi.roots.ProjectFileIndex
+import com.intellij.openapi.util.CheckedDisposable
 import com.intellij.openapi.util.Disposer
 import com.intellij.openapi.vfs.VirtualFile
 import com.intellij.psi.search.FilenameIndex
@@ -73,6 +77,16 @@ class PreviewGalleryPanel(
     private val treeExpander = SelectionPreservingTreeExpander(tree, treeRoot, ::restoringSelection)
     private val statusLabel = com.intellij.ui.components.JBLabel()
     private val alarm = Alarm(Alarm.ThreadToUse.SWING_THREAD, parentDisposable)
+
+    /** The snapshot-selection debounce (see [showReferenceImages]). Separate from [alarm], which the search field
+     *  cancels on every keystroke. */
+    private val referenceAlarm = Alarm(Alarm.ThreadToUse.SWING_THREAD, parentDisposable)
+
+    /** "Is the panel gone?", checked before the reference lookup's own EDT hop — the same live disposal check
+     *  [RenderPipeline] keeps for its render results, and for the same reason: [Alarm] and
+     *  `ReadAction.expireWith` cover the work they own, but the plain `invokeLater` that publishes the decoded
+     *  images is not tied to [parentDisposable] by itself. */
+    private val disposalCheck: CheckedDisposable = Disposer.newCheckedDisposable(parentDisposable)
 
     private var entries: List<PreviewEntry> = emptyList()
 
@@ -193,6 +207,9 @@ class PreviewGalleryPanel(
         // which is the behaviour a user coming from that tree expects.
         val commonActions = CommonActionsManager.getInstance()
         val actionGroup = DefaultActionGroup(
+            // The lambda is the reload only: RefreshAction itself invalidates PreviewIndexService's cache first,
+            // which is what makes the button a real escape hatch for inputs that raise no PSI event — a
+            // module's `src/screenshotTest` directory appearing or disappearing (PG13) is exactly such an input.
             RefreshAction(project) { reload() },
             ModuleFilterToggleAction(project) { applyFilter() },
             commonActions.createExpandAllAction(treeExpander, this),
@@ -371,6 +388,10 @@ class PreviewGalleryPanel(
     @get:TestOnly
     val renderStateForTest: RenderState get() = renderPanel.activeState
 
+    /** What double-click and Enter do to the current selection, without a mouse or a key event. */
+    @TestOnly
+    fun navigateToSelectionForTest(): Boolean = navigateToSelection()
+
     /** Whether [searchField] currently holds a query the tree should filter/expand for. [PreviewSearchFilter]
      *  trims the query before matching, so a single stray space filters nothing — this must agree with that
      *  trimming (`isNotBlank`, not `isNotEmpty`), or a whitespace-only query would force-expand the entire
@@ -452,10 +473,13 @@ class PreviewGalleryPanel(
             pipeline.select(currentSelection)
         }
 
+        // Both emptiness tests count the orphan snapshots too (spec D4): a module that snapshots composables it
+        // has no `@Preview` for shows orphan rows, and "No @Preview functions found in this project" printed
+        // underneath a tree that visibly has rows in it is simply false.
         setState(
             when {
-                entries.isEmpty() -> State.NO_PREVIEWS
-                moduleFilterOn && visible.isEmpty() -> State.NO_ACTIVE_MODULE
+                entries.isEmpty() && orphanSnapshots.isEmpty() -> State.NO_PREVIEWS
+                moduleFilterOn && visible.isEmpty() && visibleOrphans.isEmpty() -> State.NO_ACTIVE_MODULE
                 modules.isEmpty() -> State.NO_MATCH
                 else -> State.LOADED
             },
@@ -541,9 +565,9 @@ class PreviewGalleryPanel(
         is PreviewNode.PackageBranch -> userObject.segment
         is PreviewNode.PreviewLeaf -> userObject.row.indexed.displayName
         is PreviewNode.SnapshotLeaf -> userObject.row.indexed.functionName
-        // Must stay in step with what PreviewTreeCellRenderer draws for this row: a label path is only useful if
+        // Read from the renderer that draws this row rather than repeated here: a label path is only useful if
         // it names the row the user sees.
-        is PreviewNode.OrphanSnapshotBranch -> ORPHAN_BRANCH_LABEL
+        is PreviewNode.OrphanSnapshotBranch -> PreviewTreeCellRenderer.ORPHAN_BRANCH_LABEL
         else -> null
     }
 
@@ -606,8 +630,9 @@ class PreviewGalleryPanel(
      * cancellation semantics then cannot drift from the preview-to-preview switch's.
      *
      * [deferReferenceLookup] is false only for [selectByLabelPathForTest], which needs the routing to have
-     * finished by the time it returns. Production always defers, keeping the VFS lookup and the PNG decode off
-     * the EDT.
+     * finished by the time it returns — so it runs the two halves inline, in the same order [loadReferences]
+     * runs them. Production always defers, keeping the VFS lookup and the PNG decode off the EDT and behind the
+     * selection debounce.
      */
     private fun routeSelection(deferReferenceLookup: Boolean) {
         val snapshot = selectedSnapshotEntry()
@@ -617,10 +642,13 @@ class PreviewGalleryPanel(
             if (deferReferenceLookup) {
                 showReferenceImages(snapshot)
             } else {
-                publishReferences(snapshot, decodeReferences(snapshot))
+                publishReferences(snapshot, decodeReferences(locateReferences(snapshot)))
             }
             return
         }
+        // Anything pending on the reference alarm belongs to a row that is no longer selected: drop it before it
+        // starts rather than letting it run and be discarded on arrival by [publishReferences]' guard.
+        referenceAlarm.cancelAllRequests()
         val selected = selectedEntry()
         lastSelectedEntry = selected
         pipeline.select(selected)
@@ -635,19 +663,56 @@ class PreviewGalleryPanel(
     }
 
     /**
-     * Shows [snapshot]'s committed reference PNGs (spec D6/D7). The VFS lookup and the PNG decode both run off the
-     * EDT, then [publishReferences] installs the strip on it.
+     * Shows [snapshot]'s committed reference PNGs (spec D6/D7), debounced exactly as a preview selection is.
      *
-     * Nothing here goes near [pipeline]: the caller has just handed it a null selection, and this path produces
-     * images read straight off disk.
+     * The debounce is the whole point of this method: arrow-keying down a preview's snapshot children fires one
+     * selection per row, and locating plus decoding device-resolution PNGs (~1080x2340, ~10 MB decoded, once per
+     * variant) for a row the user has already left is pure waste — [publishReferences]' guard only discards the
+     * *result*, after the work has run to completion. [RenderPipeline.DEBOUNCE_MS] is shared with the render path
+     * deliberately: both are "the user settled on a row", and they should not feel different.
+     *
+     * Its own alarm, not the search field's: that one is cancelled on every keystroke, and a query typed while a
+     * snapshot is selected must not drop the images (nor a selection drop a pending re-filter).
+     *
+     * `coalesceBy` on the read action would not do this job — every row is a different snapshot id, so nothing
+     * would coalesce; keying it on a panel-wide constant would cancel *and* still start each lookup.
      */
     private fun showReferenceImages(snapshot: PreviewEntry) {
-        ReadAction.nonBlocking<DecodedReferences> { decodeReferences(snapshot) }
-            .expireWith(parentDisposable)
-            .finishOnUiThread(ModalityState.defaultModalityState()) { decoded ->
-                publishReferences(snapshot, decoded)
+        referenceAlarm.cancelAllRequests()
+        referenceAlarm.addRequest({ loadReferences(snapshot) }, RenderPipeline.DEBOUNCE_MS)
+    }
+
+    /**
+     * Locates [snapshot]'s reference images under a read action and decodes them **outside** it, both on the same
+     * background executor, then hands the result to [publishReferences] on the EDT.
+     *
+     * The split is the point (`RenderPipeline`'s own class doc calls holding the read lock across long work "a
+     * prime freeze suspect", and PG3-6 removed exactly this pattern from the render path): only
+     * [ProjectFileIndex] and the VFS walk need the read lock, and they are a directory listing. `ImageIO.read`
+     * on two device-resolution PNGs is tens of milliseconds of decode that would otherwise hold the *global*
+     * read lock, blocking every write action in the IDE, once per snapshot selection.
+     */
+    private fun loadReferences(snapshot: PreviewEntry) {
+        val modality = ModalityState.defaultModalityState()
+        AppExecutorUtil.getAppExecutorService().execute {
+            val references = try {
+                ReadAction.nonBlocking<List<ReferenceImage>> { locateReferences(snapshot) }
+                    .expireWith(parentDisposable)
+                    .executeSynchronously()
+            } catch (e: ProcessCanceledException) {
+                // The panel is gone, or a write action preempted the lookup. Nothing to publish and nothing to
+                // retry: the selection that would want this result is gone with it.
+                return@execute
             }
-            .submit(AppExecutorUtil.getAppExecutorService())
+            val decoded = decodeReferences(references)
+            ApplicationManager.getApplication().invokeLater(
+                {
+                    if (disposalCheck.isDisposed) return@invokeLater
+                    publishReferences(snapshot, decoded)
+                },
+                modality,
+            )
+        }
     }
 
     /**
@@ -662,20 +727,25 @@ class PreviewGalleryPanel(
     }
 
     /**
-     * Locates and decodes every reference image of [snapshot] (spec D6). Off the EDT, under a read action: the
-     * module resolution and the VFS walk both need one.
+     * Finds [snapshot]'s committed reference images (spec D6). **This** is the half that needs a read action:
+     * [ProjectFileIndex] and the VFS directory listing, and nothing else.
      *
      * The module comes from the snapshot's own file via [ProjectFileIndex], the same way
      * `PreviewIndexService.compute` resolves a preview's — a snapshot's `src/screenshotTest` file belongs to the
      * module whose reference directory holds its PNGs. No module (a file outside the project model) means no
      * directory to look in, which is the no-reference state, not an error (spec D10).
      */
-    private fun decodeReferences(snapshot: PreviewEntry): DecodedReferences {
-        val module = ProjectFileIndex.getInstance(project).getModuleForFile(snapshot.file)
-            ?: return DecodedReferences(emptyList(), emptyList())
+    private fun locateReferences(snapshot: PreviewEntry): List<ReferenceImage> {
+        val module = ProjectFileIndex.getInstance(project).getModuleForFile(snapshot.file) ?: return emptyList()
+        return ReferenceImageLocator.locate(snapshot, module)
+    }
+
+    /** Decodes what [locateReferences] found — deliberately holding no read lock (see [loadReferences]); a
+     *  `VirtualFile`'s bytes are readable without one, and this is the slow half. */
+    private fun decodeReferences(references: List<ReferenceImage>): DecodedReferences {
         val images = mutableListOf<ReferenceStripView.LabelledImage>()
         val skipped = mutableListOf<String>()
-        for (reference in ReferenceImageLocator.locate(snapshot, module)) {
+        for (reference in references) {
             val image = readImage(reference.file)
             if (image == null) {
                 skipped += reference.variant
@@ -697,8 +767,16 @@ class PreviewGalleryPanel(
             null
         }
 
+    /**
+     * Double-click / Enter: opens the selected row's source.
+     *
+     * Falls back to the selected snapshot row, which [selectedEntry] deliberately never returns. Navigation is
+     * not rendering, so this does not touch spec D8 — it is the same `PreviewEntry`, opened in an editor rather
+     * than handed to layoutlib — and without it double-click and Enter on a snapshot row silently did nothing.
+     * Anything else (a module, package or orphan-branch row) still navigates nowhere.
+     */
     private fun navigateToSelection(): Boolean {
-        val entry = selectedEntry() ?: return false
+        val entry = selectedEntry() ?: selectedSnapshotEntry() ?: return false
         OpenFileDescriptor(project, entry.file, entry.indexed.offset).navigate(true)
         return true
     }
@@ -816,9 +894,6 @@ class PreviewGalleryPanel(
 
     private companion object {
         const val SEARCH_DEBOUNCE_MS = 150
-
-        /** The orphan branch's label, which must read exactly as `PreviewTreeCellRenderer` draws that row. */
-        const val ORPHAN_BRANCH_LABEL = "Snapshots without a preview"
     }
 }
 

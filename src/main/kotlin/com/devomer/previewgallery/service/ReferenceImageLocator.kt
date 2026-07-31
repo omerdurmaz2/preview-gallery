@@ -28,9 +28,21 @@ object ReferenceImageLocator {
     }
 
     /**
-     * @return the variant segment of [fileName], or null when the name does not belong to [functionName] or does
-     * not carry the trailing `_<hash>_<index>` the plugin appends. Rejecting rather than half-parsing is
-     * deliberate: a half-parsed name would label an image with someone else's variant.
+     * @return the variant segment of [fileName], or null when the name does not start with `<functionName>_` or
+     * does not carry the trailing `_<hash>_<index>` the plugin appends. A name that fits neither shape is
+     * rejected rather than half-parsed, since a half-parsed name would label an image with someone else's
+     * variant.
+     *
+     * **Known limitation — a prefix is not an identity.** When one function's name is a prefix of another's, the
+     * shorter one over-collects the longer one's files and reports the difference as a variant:
+     * `variantOf("Row_Wide_phone_eee23ffd_0.png", "Row")` returns `"Wide_phone"`, not null. Both names satisfy
+     * every rule this function can apply — `Row_` really is the prefix, and the trailing two segments really are
+     * a hash and an index — so validating those segments harder does not discriminate; nothing in the file name
+     * distinguishes the two cases. Only the shorter sibling over-collects, and only when such a sibling exists in
+     * the same facade class: `Row`'s strip would then show `Row_Wide`'s images under a bogus `Wide_phone` label,
+     * while `Row_Wide`'s own strip stays correct. Fixing it needs the caller's set of sibling function names,
+     * which is a different API than this one; the cost is a mislabelled extra image in a rare naming collision,
+     * never a wrong or missing snapshot row.
      */
     fun variantOf(fileName: String, functionName: String): String? {
         if (!fileName.endsWith(PNG_SUFFIX)) return null

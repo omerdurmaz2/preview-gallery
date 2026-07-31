@@ -54,9 +54,20 @@ class PreviewIndexService(private val project: Project) {
         )
     }
 
-    /** Detects the screenshot-tested modules and joins their coverage onto [entries] via [SnapshotCoverageResolver]. */
+    /**
+     * Detects the screenshot-tested modules and joins their coverage onto [entries] via [SnapshotCoverageResolver].
+     *
+     * The join is where the two independent inputs meet, so it is where they are reconciled: the `src/screenshotTest`
+     * directory comes from the VFS, the snapshot rows from the index, and only a module both agree on gets badged
+     * (see [ScreenshotModuleDetector.applicableModules]). Doing it here rather than inside the detector is what
+     * gives the detector the indexed rows it cannot see for itself.
+     */
     private fun resolve(entries: List<PreviewEntry>): Rows {
-        val modules = ScreenshotModuleDetector.modulesWithSnapshots(project)
+        val indexedSnapshotModules = entries.filter { it.indexed.isSnapshotTest }.mapTo(HashSet()) { it.moduleName }
+        val modules = ScreenshotModuleDetector.applicableModules(
+            ScreenshotModuleDetector.candidates(project),
+            indexedSnapshotModules,
+        )
         val resolved = SnapshotCoverageResolver.resolve(entries, modules) { row, coverage, snapshots ->
             row.copy(coverage = coverage, snapshots = snapshots)
         }

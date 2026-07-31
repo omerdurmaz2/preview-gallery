@@ -8,17 +8,32 @@ import org.junit.Test
 
 class SnapshotCoverageResolverTest {
 
-    private fun preview(name: String, targets: List<String>, module: String = "app") =
-        testRow(displayName = name, functionName = name, moduleName = module, targets = targets)
+    private fun preview(
+        name: String,
+        targets: List<String>,
+        module: String = "app",
+        packageName: String = "com.example",
+    ) = testRow(
+        displayName = name,
+        functionName = name,
+        packageName = packageName,
+        moduleName = module,
+        targets = targets,
+    )
 
-    private fun snapshot(name: String, targets: List<String>, module: String = "app") =
-        testRow(
-            displayName = name,
-            functionName = name,
-            moduleName = module,
-            isSnapshotTest = true,
-            targets = targets,
-        )
+    private fun snapshot(
+        name: String,
+        targets: List<String>,
+        module: String = "app",
+        packageName: String = "com.example",
+    ) = testRow(
+        displayName = name,
+        functionName = name,
+        packageName = packageName,
+        moduleName = module,
+        isSnapshotTest = true,
+        targets = targets,
+    )
 
     private fun resolve(rows: List<TestPreviewRow>, modules: Set<String> = setOf("app")) =
         SnapshotCoverageResolver.resolve(rows, modules) { row, coverage, snapshots ->
@@ -84,6 +99,45 @@ class SnapshotCoverageResolverTest {
             modules = emptySet(),
         )
         assertEquals(SnapshotCoverage.NotApplicable, resolved.previews.single().coverage)
+    }
+
+    @Test
+    fun `a snapshot in another package of the same module still matches`() {
+        val resolved = resolve(
+            listOf(
+                preview("NoResultRendererPreview", listOf("NoResultRenderer"), packageName = "com.example.renderer"),
+                snapshot(
+                    "NoResultRenderer_Snapshot",
+                    listOf("NoResultRenderer"),
+                    packageName = "com.example.snapshots",
+                ),
+            ),
+        )
+
+        // Package equality is deliberately not required (spec D3): a module's SDUI renderer snapshots sit in a
+        // different package from the composables they render.
+        assertEquals(SnapshotCoverage.Covered(1), resolved.previews.single().coverage)
+        assertEquals(emptyList<TestPreviewRow>(), resolved.orphans)
+    }
+
+    @Test
+    fun `a snapshot matching several previews is attached to each of them`() {
+        val resolved = resolve(
+            listOf(
+                preview("WidgetLightPreview", listOf("Widget")),
+                preview("WidgetDarkPreview", listOf("Widget")),
+                snapshot("Widget_Default_Snapshot", listOf("Widget")),
+            ),
+        )
+
+        // Spec's error table: "appears as a child of each; coverage counts are per preview" — and it is claimed
+        // by both, so it is not also an orphan.
+        assertEquals(listOf(SnapshotCoverage.Covered(1), SnapshotCoverage.Covered(1)), resolved.previews.map { it.coverage })
+        assertEquals(
+            listOf("Widget_Default_Snapshot", "Widget_Default_Snapshot"),
+            resolved.previews.flatMap { row -> row.snapshots.map { it.indexed.functionName } },
+        )
+        assertEquals(emptyList<TestPreviewRow>(), resolved.orphans)
     }
 
     @Test

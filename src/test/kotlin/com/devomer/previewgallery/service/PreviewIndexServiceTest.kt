@@ -1,5 +1,6 @@
 package com.devomer.previewgallery.service
 
+import com.devomer.previewgallery.model.SnapshotCoverage
 import com.intellij.testFramework.fixtures.BasePlatformTestCase
 
 class PreviewIndexServiceTest : BasePlatformTestCase() {
@@ -120,5 +121,60 @@ class PreviewIndexServiceTest : BasePlatformTestCase() {
         assertEquals(1, previews.size)
         assertEquals("WidgetPreview", previews.single().indexed.functionName)
         assertEquals(1, previews.single().snapshots.size)
+        // The corroborated case: a `src/screenshotTest` directory on disk AND indexed `@PreviewTest` rows from
+        // it, so the badge is trustworthy and gets drawn.
+        assertEquals(SnapshotCoverage.Covered(1), previews.single().coverage)
+    }
+
+    fun `test a screenshotTest directory the index cannot see degrades to NotApplicable`() {
+        myFixture.addFileToProject(
+            "src/main/kotlin/com/example/Widgets.kt",
+            """
+            package com.example
+
+            import androidx.compose.ui.tooling.preview.Preview
+
+            @Preview
+            fun WidgetPreview() = PreviewComponent { Widget() }
+            """.trimIndent(),
+        )
+        // Kotlin under src/screenshotTest that yields no indexed snapshot row — the shape spec Risk 1 produces
+        // when the source set never reaches `projectScope`. Disk says "this module has adopted screenshot
+        // testing", the index says "it has no snapshots"; they disagree, so no badge is drawn at all.
+        myFixture.addFileToProject(
+            "src/screenshotTest/kotlin/com/example/Fixtures.kt",
+            """
+            package com.example
+
+            internal object Fixtures
+            """.trimIndent(),
+        )
+
+        val previews = PreviewIndexService.getInstance(project).findAll()
+
+        assertEquals(1, previews.size)
+        // Not Uncovered: `· no snapshot` on every row of an adopted module is the loudest possible wrong signal.
+        assertEquals(SnapshotCoverage.NotApplicable, previews.single().coverage)
+    }
+
+    fun `test an empty screenshotTest directory reports its previews as uncovered`() {
+        myFixture.addFileToProject(
+            "src/main/kotlin/com/example/Widgets.kt",
+            """
+            package com.example
+
+            import androidx.compose.ui.tooling.preview.Preview
+
+            @Preview
+            fun WidgetPreview() = PreviewComponent { Widget() }
+            """.trimIndent(),
+        )
+        // A directory holding no Kotlin at all: adopted, nothing written yet. Zero indexed rows is the truth
+        // here, not a symptom, so the badge is drawn and says so.
+        myFixture.addFileToProject("src/screenshotTest/kotlin/com/example/.gitkeep", "")
+
+        val previews = PreviewIndexService.getInstance(project).findAll()
+
+        assertEquals(SnapshotCoverage.Uncovered, previews.single().coverage)
     }
 }

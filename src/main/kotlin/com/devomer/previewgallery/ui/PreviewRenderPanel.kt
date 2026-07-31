@@ -31,6 +31,7 @@ import com.intellij.ui.components.JBScrollPane
 import com.intellij.ui.components.JBTabbedPane
 import com.intellij.util.ui.JBUI
 import com.intellij.util.ui.UIUtil
+import org.jetbrains.annotations.TestOnly
 import java.awt.BorderLayout
 import java.awt.FlowLayout
 import java.awt.Point
@@ -128,9 +129,13 @@ class PreviewRenderPanel(private val project: Project) : JBPanel<PreviewRenderPa
     // ── PG13-12: the reference-image strip a snapshot row shows instead of a render (spec D7/D8). ──
 
     /**
-     * The strip installed in [renderScroll]'s viewport, or null in every state but [RenderState.REFERENCE] —
-     * which is exactly what makes it the single "is a snapshot showing?" test the zoom and export actions
-     * branch on, and what [clearReferenceStrip] uses to know it has to put [renderView] back.
+     * The strip installed in [renderScroll]'s viewport, or null whenever there is none.
+     *
+     * It answers "is a strip installed?", which is what the zoom and export actions need — they act on the
+     * strip's pixels, so without one there is nothing for them to do — and what [clearReferenceStrip] uses to
+     * know it has to put [renderView] back. It is deliberately **not** the test for "is a snapshot showing?":
+     * the two diverge in [RenderState.NO_REFERENCE], where a snapshot is selected but no strip exists. That
+     * question has its own answer, [showingSnapshot].
      */
     private var referenceStrip: ReferenceStripView? = null
 
@@ -149,6 +154,25 @@ class PreviewRenderPanel(private val project: Project) : JBPanel<PreviewRenderPa
      *  [ZoomableRenderView.isFitPending]. */
     internal var activeState: RenderState = RenderState.IDLE
         private set
+
+    /**
+     * Whether the entry on screen is a snapshot (spec D8) — the question every "this control ends in a render"
+     * gate has to ask, and which [referenceStrip] cannot answer: [RenderState.NO_REFERENCE] is a snapshot with
+     * no strip installed, so testing the strip would leave a snapshot holding controls that can only act on a
+     * `@Preview`. Read from [activeState], which [show] assigns before it calls [updateActionsBar].
+     */
+    private val showingSnapshot: Boolean
+        get() = activeState == RenderState.REFERENCE || activeState == RenderState.NO_REFERENCE
+
+    /** The group [updateActionsBar] built last, kept only for [actionTitlesForTest] — the toolbar itself is a
+     *  platform component whose buttons a test cannot read back without pumping the event queue. */
+    private var lastActionGroup = DefaultActionGroup()
+
+    /** The titles of the controls currently on the actions bar, separators excluded, so a capability gate can be
+     *  asserted without clicking anything. */
+    @TestOnly
+    internal fun actionTitlesForTest(): List<String> =
+        lastActionGroup.childActionsOrStubs.mapNotNull { it.templatePresentation.text }
 
     init {
         border = JBUI.Borders.empty(8)
@@ -241,7 +265,7 @@ class PreviewRenderPanel(private val project: Project) : JBPanel<PreviewRenderPa
             RenderState.UNSUPPORTED -> center(unsupported(view.outcome as? RenderOutcome.Unsupported, entry))
             // [showReference] is the only caller that publishes REFERENCE and it always hands over a strip; a
             // missing one would mean there is nothing to show, which is the no-reference state by definition.
-            RenderState.REFERENCE -> if (strip != null) showReferenceStrip(strip) else center(noReference(entry))
+            RenderState.REFERENCE -> if (strip != null) showReferenceStrip(strip, entry) else center(noReference(entry))
             RenderState.NO_REFERENCE -> center(noReference(entry))
         }
         updateActionsBar(entry)
@@ -291,15 +315,18 @@ class PreviewRenderPanel(private val project: Project) : JBPanel<PreviewRenderPa
         // ([propertiesAvailable]); with a copy active it re-renders that copy instead (PG6-9), which needs only
         // the view-override render capability, not the picker. Never both, never neither once one of the two is
         // actually available — a build missing the relevant capability simply never gets the control, matching
-        // every other capability gate in this class (never a dead control). Never on a reference strip: both
-        // branches end in a render.
+        // every other capability gate in this class (never a dead control). Never for a snapshot: both branches
+        // end in a render, and a `@SnapshotPreviews`-marked function has no `@Preview` entry for the picker to
+        // resolve either. Gated on [showingSnapshot], NOT on the strip above: NO_REFERENCE is a snapshot with no
+        // strip, and testing the strip there left Properties as the toolbar's only control, bound to a snapshot.
         val activeCopy = activeComparisonView()
         val originalActive = activeCopy == null || activeCopy.id == ComparisonViewList.ORIGINAL_ID
         val propertiesGated = if (originalActive) propertiesAvailable else deviceOverrideAvailable
-        if (strip == null && propertiesGated && entry != null) {
+        if (!showingSnapshot && propertiesGated && entry != null) {
             if (group.childrenCount > 0) group.addSeparator()
             group.add(PropertiesAction(entry))
         }
+        lastActionGroup = group
         if (group.childrenCount > 0) {
             val toolbar = ActionManager.getInstance().createActionToolbar(ACTIONS_PLACE, group, true)
             // The target component must always be SHOWING: the platform silently refuses to perform a toolbar
@@ -474,13 +501,27 @@ class PreviewRenderPanel(private val project: Project) : JBPanel<PreviewRenderPa
      * [renderScroll] goes straight into [centerPanel] rather than through [refreshLiveContainer]: a snapshot has
      * no comparison tabs — it is never rendered — and selecting it already cleared any that existed, since its
      * entry id necessarily differs from the preview's.
+     *
+     * Open file sits under the strip for the same reason [noReference] offers it: the images are the only thing
+     * this state shows, so without it the snapshot's own source would be reachable from nowhere at all — a
+     * snapshot row is not renderable (spec D8) and therefore has no Render/Properties route to its file either.
+     * Navigation is not rendering, so offering it here does not weaken D8.
      */
-    private fun showReferenceStrip(strip: ReferenceStripView) {
+    private fun showReferenceStrip(strip: ReferenceStripView, entry: PreviewEntry?) {
         referenceStrip = strip
         referenceScale = 1.0
         referenceFitPending = true
+        // Before the viewport view is installed, not after: setScale is what assigns the strip its preferredSize,
+        // and a scroll pane laid out around a 0x0 view shows nothing. fitReferenceStrip below replaces this
+        // placeholder scale the moment the viewport has a size; when it does not, the strip is at least visible
+        // at 100% until the resize listener settles the fit debt (referenceFitPending stays standing — this
+        // assigns the strip's scale directly rather than going through setReferenceScale, which would clear it).
+        strip.setScale(referenceScale)
         renderScroll.setViewportView(strip)
         centerPanel.add(renderScroll, BorderLayout.CENTER)
+        if (entry != null) {
+            centerPanel.add(ActionLink(PreviewGalleryBundle.message("detail.openFile")) { onOpenFile(entry) }, BorderLayout.SOUTH)
+        }
         centerPanel.validate()
         fitReferenceStrip()
     }

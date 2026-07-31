@@ -29,9 +29,15 @@ class PreviewTreeCellRenderer : ColoredTreeCellRenderer() {
     ) {
         val node = (value as? DefaultMutableTreeNode)?.userObject as? PreviewNode ?: return
         // The detail panel that used to show the composable FQN is gone (Fix PG2-10); surface it as a tooltip
-        // instead so the information is not lost. Explicitly cleared for non-leaf rows: this renderer instance
-        // is reused across cells, so a stale tooltip would otherwise leak from a previously rendered leaf.
-        toolTipText = (node as? PreviewNode.PreviewLeaf)?.row?.indexed?.composableFqn
+        // instead so the information is not lost. A snapshot row gets the same treatment — its own FQN, which is
+        // the fact that identifies it, since its row text is only the function name. Explicitly null for every
+        // other row: this renderer instance is reused across cells, so a stale tooltip would otherwise leak from
+        // a previously rendered leaf.
+        toolTipText = when (node) {
+            is PreviewNode.PreviewLeaf -> node.row.indexed.composableFqn
+            is PreviewNode.SnapshotLeaf -> node.row.indexed.composableFqn
+            else -> null
+        }
         when (node) {
             is PreviewNode.ModuleNode -> {
                 icon = AllIcons.Nodes.Module
@@ -76,7 +82,7 @@ class PreviewTreeCellRenderer : ColoredTreeCellRenderer() {
 
             is PreviewNode.OrphanSnapshotBranch -> {
                 icon = AllIcons.Nodes.Folder
-                append("Snapshots without a preview", SimpleTextAttributes.GRAYED_ATTRIBUTES)
+                append(ORPHAN_BRANCH_LABEL, SimpleTextAttributes.GRAYED_ATTRIBUTES)
                 append("  (${node.count})", SimpleTextAttributes.GRAYED_SMALL_ATTRIBUTES)
             }
         }
@@ -92,5 +98,15 @@ class PreviewTreeCellRenderer : ColoredTreeCellRenderer() {
             if (coverage.count == 1) "· 1 snapshot" else "· ${coverage.count} snapshots"
         SnapshotCoverage.Uncovered -> "· no snapshot"
         SnapshotCoverage.NotApplicable -> null
+    }
+
+    companion object {
+        /**
+         * The orphan branch's row text. Owned here because this is what actually draws it;
+         * [PreviewGalleryPanel]'s label bookkeeping reads it from here rather than repeating the literal, since a
+         * label path is only useful if it names the row the user sees. Not a bundle key: this renderer is
+         * unit-tested as plain JUnit, with no `Application` to resolve a `DynamicBundle` against.
+         */
+        const val ORPHAN_BRANCH_LABEL = "Snapshots without a preview"
     }
 }
