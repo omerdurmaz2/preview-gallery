@@ -1904,7 +1904,12 @@ Run the sandbox against `hepsi-android` and check:
 - [ ] The module's "Snapshots without a preview" branch holds `NoResultRenderer_Snapshot`.
 - [ ] A module with no `src/screenshotTest` shows no badges at all.
 
-If no badges appear anywhere, the source set is not reaching the index. The fallback is in
-`ScreenshotModuleDetector`'s note: locate `src/screenshotTest` from the content root and index those files by
-path rather than relying on `projectScope`. That is a follow-up task, not a change to this plan's tasks — the
-rest of the feature is already correct and silent in that case (spec D10).
+**This gate was run against `hepsi-android`, and it failed.** No badges appeared anywhere in
+`features/favorites/ui` — no snapshot child rows, not even the orphan branch; the whole feature was inert
+there. The symptom matched what this note used to predict: the source set was not reaching the index. The
+fix is Phase 14, and it goes further than indexing `src/screenshotTest` files by path — it reads and parses
+them directly from the VFS, bypassing the index for that source set entirely. See
+[2026-07-31-snapshot-source-set-fallback-design.md](../specs/2026-07-31-snapshot-source-set-fallback-design.md)
+for the gate's full evidence (including a second, independent module-per-source-set mismatch it also
+uncovered), and [2026-07-31-snapshot-source-set-fallback.md](2026-07-31-snapshot-source-set-fallback.md) for
+the fix's plan and its own manual verification gate, which repeats this same checklist.

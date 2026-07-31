@@ -47,10 +47,13 @@ inside a `JBScrollPane`, with fit-to-view and a zoom ladder (Phase 12).
 
 Two facts about the current behaviour matter here. First, because the index only gates on the text
 `Preview`, snapshot functions written with a plain `@Preview` are **already** indexed and appear in the
-tree as ordinary previews, while ones written with the project's `@SnapshotPreviews` multipreview are
-not — the matcher is file-local and cannot resolve a custom annotation declared in another file. That
-inconsistency is fixed here as a side effect of D1. Second, `IndexedPreview.jvmClassName` already holds
-the JVM facade class name, which turns out to be exactly the directory name the reference PNGs live in.
+tree as ordinary previews (when `src/screenshotTest` reaches the project model in the first place —
+[Phase 14](2026-07-31-snapshot-source-set-fallback-design.md) found that this is not always true, and
+reads those files from the VFS instead), while ones written with the project's `@SnapshotPreviews`
+multipreview are not — the matcher is file-local and cannot resolve a custom annotation declared in
+another file. That inconsistency is fixed here as a side effect of D1. Second,
+`IndexedPreview.jvmClassName` already holds the JVM facade class name, which turns out to be exactly the
+directory name the reference PNGs live in.
 
 ## Evidence
 
@@ -207,7 +210,7 @@ inputs, so the heuristic is measured against the code it was designed from.
 
 | Risk | Mitigation |
 |---|---|
-| **The `screenshotTest` source set may not be in the IDE's project model** when the consuming project is synced without `-Pandroid.experimental.enableScreenshotTest=true`, so its files may fall outside `projectScope` and never be indexed. Unverified. | Verify first — it is the first task of the plan. `FileBasedIndex` indexes files under content roots regardless of source-root marking, so the expectation is that they are indexed. If they are not, fall back to locating `src/screenshotTest` from the module's content root by path convention. Either way D10 keeps the failure silent. |
+| **The `screenshotTest` source set may not be in the IDE's project model** when the consuming project is synced without `-Pandroid.experimental.enableScreenshotTest=true`, so its files may fall outside `projectScope` and never be indexed. Confirmed by the manual gate — see Mitigation. | Verify first — it is the first task of the plan. `FileBasedIndex` indexes files under content roots regardless of source-root marking, so the expectation was that they would be indexed. **The gate disproved this**: run against `hepsi-android`, `PreviewIndexService.compute()` produced zero rows with `isSnapshotTest = true` — no badges, no snapshot children, not even the orphan branch. If they are not indexed, fall back to locating `src/screenshotTest` from the module's content root by path convention — which is exactly what [Phase 14](2026-07-31-snapshot-source-set-fallback-design.md) did. Either way D10 keeps the failure silent. |
 | `targets` extraction is a heuristic; a body shape nobody sampled yields a wrong target and therefore a wrong badge. | Tests are written from the 50 real snapshot bodies. A wrong badge is visible and low-stakes — it never changes code, and the snapshot row itself still shows the true reference images. |
 | Coverage counts could be read as a quality metric and drive snapshot-writing for its own sake, including for composables the project's own guidance says not to snapshot (modal sheets). | The badge states a fact (`no snapshot`), not a verdict, and this phase deliberately ships no aggregate score. F2 will need to decide how it presents module totals. |
 | The reference path layout is an implementation detail of the screenshot plugin and may change between AGP versions. | It is derived in one place (`ReferenceImageLocator`) and its failure mode is D10's no-reference state, not an error. |

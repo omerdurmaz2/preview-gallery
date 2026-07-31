@@ -48,7 +48,7 @@ Authoring constraints that the generator (F3) must respect:
 
 | Component | File | Reused for |
 |---|---|---|
-| Preview index | `index/PreviewIndex.kt`, `index/PreviewPsiScanner.kt` | Indexing `screenshotTest` previews (F1) |
+| Preview index | `index/PreviewIndex.kt`, `index/PreviewPsiScanner.kt` | Indexing `screenshotTest` previews (F1) — `PreviewPsiScanner` only; Phase 14 stopped relying on `PreviewIndex` for this source set, see `service/SnapshotSourceScanner.kt` |
 | Index model | `model/IndexedPreview.kt` | Already carries `isPrivate`, `hasPreviewParameter`, `annotationKind`, `unsupportedReason` |
 | Search / filter | `search/PreviewSearchFilter.kt`, `search/PreviewModuleFilter.kt` | "Uncovered only" filter (F2) |
 | Tree | `ui/PreviewTreeModelBuilder.kt`, `ui/PreviewTreeCellRenderer.kt`, `ui/PackageTreeBuilder.kt` | Coverage badges (F1), failure badges (F6) |
@@ -80,8 +80,12 @@ strategies, and the design must pick one and state what it does with mismatches.
 - **Hooks:** `PreviewPsiScanner`, `PreviewIndex`, `IndexedPreview`, `PreviewTreeCellRenderer`
 - **Effort:** M · **Risk:** low (pure PSI/index work, no AS-internal API)
 - **Depends on:** nothing
-- **Open:** does the IDE model expose `src/screenshotTest` when the Gradle gate flag is off? Which
-  matching strategy (naming convention vs. resolving the called composable) survives real code?
+- **Open:** Does the IDE model expose `src/screenshotTest` when the Gradle gate flag is off? **No** —
+  Phase 13's manual gate against `hepsi-android` found the index produced zero rows for that source set
+  (badges, child rows and even the orphan branch were all empty); Phase 14
+  (`docs/superpowers/specs/2026-07-31-snapshot-source-set-fallback-design.md`) reads the source set from the
+  VFS instead. Which matching strategy (naming convention vs. resolving the called composable) survives real
+  code?
 
 #### F2 · "Uncovered previews" filter and coverage report
 
@@ -154,10 +158,15 @@ plugin renders the `screenshotTest` function itself.
   antialiasing noise; what the diff shows when the two images differ in size.
 
 > **Spike required before F5/F6.** The `screenshotTest` source set only enters the AGP model when
-> `-Pandroid.experimental.enableScreenshotTest=true` is set. Whether the plugin can resolve and render
-> a `@PreviewTest` composable from that source set through `RenderModelResolver` is **unverified**.
-> Loading and displaying the reference PNG does not depend on this; rendering the `screenshotTest`
-> function live does. Run a Phase-0-style spike (as in the plugin spec §10) before committing to a design.
+> `-Pandroid.experimental.enableScreenshotTest=true` is set — no longer a hypothetical: F1's manual gate
+> against `hepsi-android` found exactly this, and Phase 14
+> (`docs/superpowers/specs/2026-07-31-snapshot-source-set-fallback-design.md`) had to read
+> `src/screenshotTest` from the VFS because the index could not see it. That fix covers reading and parsing
+> the source; whether the plugin can resolve and render a `@PreviewTest` composable from that source set
+> through `RenderModelResolver` is **still unverified** — rendering through layoutlib is a different,
+> AS-internal question Phase 14 deliberately left untouched. Loading and displaying the reference PNG does
+> not depend on this; rendering the `screenshotTest` function live does. Run a Phase-0-style spike (as in
+> the plugin spec §10) before committing to a design.
 
 #### F6 · Run the Gradle tasks and badge failures
 
