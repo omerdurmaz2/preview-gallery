@@ -69,7 +69,7 @@ for them is a defect once the recovery costs one fallback branch.
 service/
   ReferenceRoots            NEW · discovers src/screenshotTest*/reference, refreshes it, names its task
   ModuleDirectoryResolver   NEW · path derivation, then getModuleForFile as fallback (D6)
-  ReferenceImageLocator     loses REFERENCE_ROOT; locate() takes one root instead of a module directory
+  ReferenceImageLocator     loses REFERENCE_ROOT; locate() takes the root list and merges it
 model/
   ReferenceImage            gains sourceSet (D7)
 ui/
@@ -84,8 +84,12 @@ data class Root(val sourceSetName: String, val variant: String?, val directory: 
 
 fun refresh(moduleDirectory: VirtualFile)          // MUST NOT hold the read lock; blocking IO
 fun of(moduleDirectory: VirtualFile): List<Root>   // read action
-fun updateTask(root: Root): String?                // pure; null when variant is null
+fun updateTask(variant: String?): String?          // pure; null when variant is null
 ```
+
+`Root.directory` is the `reference` directory itself, not the source set that holds it, so
+`ReferenceImageLocator` no longer prefixes a root onto the path it derives: its `relativeDirectory`
+becomes `packageDirectory`, returning `<package path>/<facade>` alone.
 
 Unchanged: `SnapshotSourceScanner`, `PreviewIndexService`, `SnapshotCoverageResolver`,
 `ReferenceStripView`, every tree component.
@@ -100,7 +104,9 @@ Unchanged: `SnapshotSourceScanner`, `PreviewIndexService`, `SnapshotCoverageReso
 2. **No lock** — `ReferenceRoots.refresh(moduleDirectory)`: shallow refresh of `src`, then a recursive
    refresh of each `src/screenshotTest*` child (D1, D2).
 3. **Read action** — `ReferenceRoots.of(moduleDirectory)`, then `ReferenceImageLocator.locate(entry,
-   root)` per root; the results are concatenated and sorted by `(sourceSet, variant)` (D7).
+   roots)`, which lists each root, stamps D4's token onto every image and returns them sorted by
+   `(sourceSet, variant)` (D7). Merging belongs to the locator rather than the panel: it is the object
+   that knows what a reference image is, and the sort is meaningless on one root's results alone.
 4. **No lock** — `ImageIO.read` per image, exactly as today; undecodable images are collected as
    `skipped`.
 5. **EDT** — `publishReferences` drops the result unless the row is still selected, then
@@ -111,8 +117,9 @@ Today's single read action becomes three steps, two of them locked. The split is
 `loadReferences` already documents for decoding: the lock is held for the two cheap model/VFS reads and
 released for the two slow ones.
 
-Label composition happens between steps 4 and 5: if the images span more than one `sourceSet`, each
-label becomes `"$sourceSet · $variant"`; otherwise it stays `variant` (D4).
+Label composition is `ReferenceImageLocator.labels`, applied in step 4: if the images span more than one
+`sourceSet`, each label becomes `"$sourceSet · $variant"`; otherwise it stays `variant` (D4). It sits with
+the locator rather than the panel because only a merged result knows whether it spans one root or two.
 
 ## Error handling
 
@@ -158,8 +165,9 @@ Plain JUnit 4:
 
 - `ReferenceRoots.updateTask` — `GoogleDebug` → `updateGoogleDebugScreenshotTest`, `Debug` →
   `updateDebugScreenshotTest`, null variant → null.
-
-`ReferenceImageLocatorTest` (the pure `variantOf` tests) is untouched: that signature does not change.
+- `ReferenceImageLocatorTest`'s two `relativeDirectory` cases move to `packageDirectory` and lose the
+  `src/screenshotTestDebug/reference/` prefix from their expected value. Its `variantOf` cases are
+  untouched — that signature does not change.
 
 ## Risks
 
