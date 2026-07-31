@@ -1,9 +1,34 @@
 # Snapshot Testing — Feature Roadmap
 
-> **Status:** backlog only. Nothing here is designed or planned yet. Each entry becomes its own
-> session: brainstorm → design spec in `docs/superpowers/specs/` → plan in `docs/superpowers/plans/`
-> → implementation. Commit prefixes (`PG13-N`, `PG14-N`, …) are assigned when a feature is planned,
-> continuing from the last used phase (`PG12`).
+> **Status:** **F1 shipped** — Phase 13 (badge, snapshot rows, reference strip) and Phase 14 (read the
+> source set from the VFS, fix attribution). The manual gate against `hepsi-android` passes: snapshots
+> are listed and hang under the previews they belong to. Everything else below is still backlog.
+>
+> Each remaining entry becomes its own session: brainstorm → design spec in `docs/superpowers/specs/`
+> → plan in `docs/superpowers/plans/` → implementation. Commit prefixes (`PG15-N`, …) are assigned when
+> a feature is planned, continuing from the last used phase (`PG14`).
+
+## Priority order
+
+Ranked for what to build next, not by theme. Effort is a rough order of magnitude for one session.
+
+| # | Item | Why it is here | Effort |
+|---|---|---|---|
+| 1 | **H1 · Hardening the shipped feature** | Both defects sit on the flow that just went live, and each one silently produces a wrong or missing image. Trust in a new feature is cheapest to keep, most expensive to win back. | XS |
+| 2 | **F2 · Coverage filter and report** | The badge provokes exactly one question — "so what is uncovered?" — and today the only way to answer it is to scroll. Smallest change with a daily payoff, and it needs no new data. | S |
+| 3 | **F8 · MCP server over the index** | The consuming project already has a `snapshot-testing` skill that tells an agent *how* to write a snapshot. What the agent cannot get is *which* composables lack one. This closes that loop — and it may make F3 unnecessary, see below. | M |
+| 4 | **F3 · "Create snapshot test" action** | The action the filter's answer demands. Worth building **only if** F8 plus the existing skill turns out not to cover it — an agent with project context writes a better fake `UiState` than a PSI template can. | L |
+| 5 | **Spike, then F5 · Reference vs. live diff** | Highest ceiling of anything here, still gated on an unanswered AS-internal question. Run the spike early, decide after. | L |
+| 6 | **F7 · Degenerate golden detector** | Small, and it protects the value of every snapshot F3/F8 produces. | S |
+| 7 | **F6 · Gradle task runner** | Depends on F5's diff view to be worth the wiring. | L |
+| 8 | **F4 · Promote a comparison view to a variant** | Depends on F3's writer. Nice, not load-bearing. | M |
+
+**The F3-versus-F8 tension is worth deciding deliberately.** F3 generates snapshot files from inside the
+plugin with a PSI writer; F8 hands an agent the coverage data and lets it write them with the project's
+own skill in hand. The agent route reads the real preview body, knows which fake-state factories exist,
+and can tell an `internal` composable from a `private` one by resolving it — all things a template
+cannot do. F3's advantage is that it works with no agent and no network. Build F8 first, use it on a
+real module, and only then decide whether F3 still earns its cost.
 
 ## Why
 
@@ -65,9 +90,37 @@ Authoring constraints that the generator (F3) must respect:
 
 Effort is a rough order of magnitude for a single feature session, not a commitment.
 
+### Theme 0 — Hardening what shipped
+
+#### H1 · Close the gaps the gate did not exercise
+
+**Goal:** stop the shipped feature from silently showing the wrong thing on paths nobody walked yet.
+
+Three known defects, all on the flow that is now live:
+
+- **No VFS refresh before reading the reference directory.** `ReferenceImageLocator` reads
+  `directory.children` straight from the VFS. A PNG that `updateDebugScreenshotTest` just wrote from a
+  terminal may not be there yet, and the panel then shows *"No reference images — run
+  `updateDebugScreenshotTest`"* — telling the user to run the command they just ran. Refresh the
+  directory before the glob, or refresh on window activation.
+- **Only one build variant is understood.** The reference path hardcodes `src/screenshotTestDebug`. A
+  flavoured module's references live under `src/screenshotTest<Flavor>Debug/reference`, so every
+  snapshot in such a module reports no images, and the message names the wrong Gradle task as well. The
+  pilot module is a library, which is why this has not bitten yet; the consuming project does ship
+  Google and Huawei flavours. Glob `src/screenshotTest*/reference/…` and derive the task name from the
+  variant that matched.
+- **Index-fallback rows have no reference images.** A snapshot row that came from Phase 14's index
+  fallback (a layout the content-root probe does not recognise) cannot yield a module directory from its
+  own path, so it always shows `NO_REFERENCE`. Documented in Phase 14's review; recovering it means
+  re-introducing a `getModuleForFile` fallback for exactly those rows.
+
+- **Hooks:** `service/ReferenceImageLocator.kt`, `ui/PreviewRenderPanel.kt`
+- **Effort:** XS · **Risk:** low
+- **Depends on:** nothing
+
 ### Theme 1 — Visibility
 
-#### F1 · Snapshot coverage badge in the tree
+#### F1 · Snapshot coverage badge in the tree — **shipped (PG13, PG14)**
 
 **Goal:** show, per preview in the gallery tree, whether a snapshot exists for it.
 
@@ -90,16 +143,24 @@ strategies, and the design must pick one and state what it does with mismatches.
   set from the VFS, which fixes attribution and makes the modelling question moot either way. Which
   matching strategy (naming convention vs. resolving the called composable) survives real code?
 
-#### F2 · "Uncovered previews" filter and coverage report
+#### F2 · Coverage filter and report
 
-**Goal:** turn F1's per-row facts into a module-level metric the team can act on.
+**Goal:** turn F1's per-row facts into something you can act on without scrolling.
 
-A toggle that filters the tree to previews with no snapshot, plus an exportable report
-(`X/Y covered` per module, markdown). Useful before the consuming project's CI job exists.
+A filter with three states rather than a plain toggle — **all** / **uncovered only** / **covered only**.
+Both directions earn their place: *uncovered* is the work queue, *covered* is what you scan when you
+change a shared component and want to know which snapshots you are about to invalidate. Modules with no
+`src/screenshotTest` stay unbadged and are hidden by either filter, since the question does not apply
+to them.
 
-- **Hooks:** `PreviewSearchFilter`, `ModuleFilterToggleAction`, `PreviewGalleryPanel`
+Plus an exportable report — `X/Y covered` per module, markdown — so the number can go in a ticket or a
+channel before the consuming project's CI job exists.
+
+- **Hooks:** `PreviewSearchFilter`, `ModuleFilterToggleAction`, `PreviewGalleryPanel`, `SnapshotCoverage`
 - **Effort:** S · **Risk:** low
-- **Depends on:** F1
+- **Depends on:** F1 (shipped)
+- **Open:** does the filter compose with the search box and the module filter, or replace them? What
+  happens to the orphan branch under "covered only" — an orphan is a snapshot, not a preview.
 
 ### Theme 2 — Authoring
 
@@ -199,18 +260,57 @@ renders and over committed reference PNGs, and warn on blank or single-colour re
 - **Effort:** S · **Risk:** low
 - **Depends on:** F1 (to find the reference files)
 
+### Theme 4 — Agents
+
+#### F8 · Serve the preview and snapshot index over MCP
+
+**Goal:** let an agent ask the plugin what the project contains, instead of re-deriving it by grepping.
+
+The gallery already holds, per composable: which module and package it lives in, whether it has a
+snapshot, which snapshot functions cover it, which reference PNGs are committed for each, and which
+snapshots match no preview. That is precisely the data an agent needs and cannot cheaply reconstruct —
+matching a preview to its snapshot took a call-site heuristic and two phases to get right.
+
+Expose it read-only over MCP. Candidate tools:
+
+| Tool | Returns |
+|---|---|
+| `list_previews(module?, package?)` | Composable FQN, module, file, `isPrivate`, `hasPreviewParameter`, coverage |
+| `list_snapshots(module?)` | Snapshot function FQN, the composable it shows, its variants |
+| `coverage(module?)` | Covered / uncovered counts plus the uncovered composables themselves |
+| `reference_images(snapshotFqn)` | Variant name and absolute path per committed PNG |
+
+**Why this may replace F3.** The consuming project already carries a `snapshot-testing` skill that tells
+an agent exactly how to write a snapshot — the wrapper, the naming, the five rules that came from real
+render failures. What the agent cannot get today is *which* composables lack one. Give it that, and the
+agent writes the file with the whole project in context: it can read the existing `@Preview` body,
+resolve whether the target is `internal` or `private`, find the fake-state factory that already exists,
+and skip the modal sheets the skill says not to snapshot. A PSI template inside the plugin can do none
+of that.
+
+Precedent worth copying: the `DepHealth` plugin in the same toolchain already serves MCP from an IDE
+plugin over `http://localhost:7890/mcp`, so the transport question has a known-good answer here.
+
+- **Hooks:** `service/PreviewIndexService.kt` (the whole payload already exists), a new server surface
+- **Effort:** M · **Risk:** medium — a new network surface in an IDE plugin, and the first part of this
+  plugin that is not purely local UI
+- **Depends on:** F1 (shipped)
+- **Open:** transport — HTTP like DepHealth, or stdio? Fixed port, configurable, or discovered? Bind to
+  localhost only and stay strictly read-only — the plugin must never become a way to write files from
+  outside the IDE. Does it serve rendered PNG bytes, or only paths? What happens while the index is
+  still building — error, or empty with a "still indexing" flag?
+
 ---
 
-## Suggested order
+## Scope guard for F8
 
-1. **F1** — everything else keys off the preview → snapshot mapping, and it carries no AS-internal risk.
-2. **F3** — automates the manual authoring ritual; independent of F1's outcome.
-3. **F2**, **F7** — small additions once F1 lands.
-4. **Spike**, then **F5** — the highest-value feature, gated on whether `screenshotTest` composables can
-   be rendered live.
-5. **F6**, **F4** — build on F5 and F3 respectively.
+Serving data over a socket is a different posture from a tool window. Two rules, decided here so a
+later design does not have to relitigate them: **read-only**, and **localhost only**. The gallery
+describes what the repository already contains; it does not accept instructions to change it. Anything
+that writes — generating a snapshot file, running a Gradle task — stays behind the IDE's own UI where a
+human is present, and an agent that wants those does the writing itself with its own tools.
 
-## Scope guard
+## Scope guard for the whole roadmap
 
 The plugin spec's non-goal **N6** says Preview Gallery is *not* a snapshot/regression testing tool.
 These features do not change that: the plugin does not render goldens in CI, does not own the
