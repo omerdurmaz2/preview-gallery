@@ -14,6 +14,7 @@ import com.devomer.previewgallery.render.RenderState
 import com.devomer.previewgallery.search.PreviewModuleFilter
 import com.devomer.previewgallery.service.PreviewIndexService
 import com.devomer.previewgallery.service.ReferenceImageLocator
+import com.devomer.previewgallery.service.ReferenceRoots
 import com.devomer.previewgallery.service.SnapshotSourceScanner
 import com.intellij.ide.CommonActionsManager
 import com.intellij.ide.DefaultTreeExpander
@@ -742,7 +743,7 @@ class PreviewGalleryPanel(
      */
     private fun locateReferences(snapshot: PreviewEntry): List<ReferenceImage> {
         val moduleDirectory = SnapshotSourceScanner.moduleDirectory(snapshot.file) ?: return emptyList()
-        return ReferenceImageLocator.locate(snapshot, moduleDirectory)
+        return ReferenceImageLocator.locate(snapshot, ReferenceRoots.of(moduleDirectory))
     }
 
     /** Decodes what [locateReferences] found — deliberately holding no read lock (see [loadReferences]); a

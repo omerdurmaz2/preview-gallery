@@ -9,8 +9,8 @@ class ReferenceImageLocatorTest {
     @Test
     fun `directory mirrors the package and the facade class`() {
         assertEquals(
-            "src/screenshotTestDebug/reference/com/hepsiburada/ui/feature/favorites/component/ComponentsSnapshotsKt",
-            ReferenceImageLocator.relativeDirectory(
+            "com/hepsiburada/ui/feature/favorites/component/ComponentsSnapshotsKt",
+            ReferenceImageLocator.packageDirectory(
                 packageName = "com.hepsiburada.ui.feature.favorites.component",
                 jvmClassName = "com.hepsiburada.ui.feature.favorites.component.ComponentsSnapshotsKt",
             ),
@@ -20,8 +20,8 @@ class ReferenceImageLocatorTest {
     @Test
     fun `a root package yields no package directories`() {
         assertEquals(
-            "src/screenshotTestDebug/reference/SnapshotsKt",
-            ReferenceImageLocator.relativeDirectory(packageName = "", jvmClassName = "SnapshotsKt"),
+            "SnapshotsKt",
+            ReferenceImageLocator.packageDirectory(packageName = "", jvmClassName = "SnapshotsKt"),
         )
     }
 
