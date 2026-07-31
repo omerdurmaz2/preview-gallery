@@ -80,12 +80,15 @@ strategies, and the design must pick one and state what it does with mismatches.
 - **Hooks:** `PreviewPsiScanner`, `PreviewIndex`, `IndexedPreview`, `PreviewTreeCellRenderer`
 - **Effort:** M · **Risk:** low (pure PSI/index work, no AS-internal API)
 - **Depends on:** nothing
-- **Open:** Does the IDE model expose `src/screenshotTest` when the Gradle gate flag is off? **No** —
-  Phase 13's manual gate against `hepsi-android` found the index produced zero rows for that source set
-  (badges, child rows and even the orphan branch were all empty); Phase 14
-  (`docs/superpowers/specs/2026-07-31-snapshot-source-set-fallback-design.md`) reads the source set from the
-  VFS instead. Which matching strategy (naming convention vs. resolving the called composable) survives real
-  code?
+- **Open:** Does the IDE model expose `src/screenshotTest` when the Gradle gate flag is off? **Not
+  answered, and it turned out not to be the question.** Phase 13's manual gate against `hepsi-android`
+  showed no badges, child rows or orphan branch, which that phase read as "the index sees nothing";
+  inspecting the cached module model afterwards showed the holder module's content root *is*
+  `features/favorites/ui`, so those files are in `projectScope` after all. The defect was
+  **attribution** — a module-per-source-set import files the rows under a module that owns no previews.
+  Phase 14 (`docs/superpowers/specs/2026-07-31-snapshot-source-set-fallback-design.md`) reads the source
+  set from the VFS, which fixes attribution and makes the modelling question moot either way. Which
+  matching strategy (naming convention vs. resolving the called composable) survives real code?
 
 #### F2 · "Uncovered previews" filter and coverage report
 
@@ -158,10 +161,11 @@ plugin renders the `screenshotTest` function itself.
   antialiasing noise; what the diff shows when the two images differ in size.
 
 > **Spike required before F5/F6.** The `screenshotTest` source set only enters the AGP model when
-> `-Pandroid.experimental.enableScreenshotTest=true` is set — no longer a hypothetical: F1's manual gate
-> against `hepsi-android` found exactly this, and Phase 14
-> (`docs/superpowers/specs/2026-07-31-snapshot-source-set-fallback-design.md`) had to read
-> `src/screenshotTest` from the VFS because the index could not see it. That fix covers reading and parsing
+> `-Pandroid.experimental.enableScreenshotTest=true` is set, and the reference project is synced without
+> it. Phase 14 (`docs/superpowers/specs/2026-07-31-snapshot-source-set-fallback-design.md`) sidesteps the
+> question by reading `src/screenshotTest` from the VFS rather than from the project model — note that its
+> own evidence section retracts the stronger claim that the index could not see those files. That covers
+> reading and parsing
 > the source; whether the plugin can resolve and render a `@PreviewTest` composable from that source set
 > through `RenderModelResolver` is **still unverified** — rendering through layoutlib is a different,
 > AS-internal question Phase 14 deliberately left untouched. Loading and displaying the reference PNG does

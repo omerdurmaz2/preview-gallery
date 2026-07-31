@@ -499,6 +499,17 @@ Run the sandbox against `hepsi-android` and check:
 - [ ] A "Snapshots without a preview" branch holds `NoResultRenderer_Snapshot`.
 - [ ] A module with no `src/screenshotTest` shows no badges at all.
 
-If badges are still absent everywhere, the content-root probe missed this project's layout — the next
-diagnostic is which content roots the favorites modules actually report, not whether the index sees the
-files.
+If badges are still absent everywhere, **do not** reach for "the probe missed the layout" first. The
+reference project's cached module model was inspected after this plan was written and says the probe
+will hit: the holder module `hepsi-android.features.favorites.ui` has content root
+`features/favorites/ui` (shape 1) and `…ui.main` has `features/favorites/ui/src/main` (shape 2), both
+landing on the same `src/screenshotTest` directory, which `directories()` dedups and attributes to
+`…ui.main`. Check, in order:
+
+1. **The module-filter toggle.** `PreviewGalleryPanel.applyFilter` runs previews *and* the orphan branch
+   through `PreviewModuleFilter`; with the filter on and an editor open in another module, correct rows
+   are simply not on screen.
+2. **Which module node the rows landed under.** Attribution is the whole point of D4 — rows under
+   `…favorites.ui` rather than `…favorites.ui.main` mean `pickOwningModule` did not see the `.main`
+   module for that directory.
+3. Only then, which content roots the favorites modules actually report.

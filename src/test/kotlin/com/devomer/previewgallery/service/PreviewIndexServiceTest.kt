@@ -1,7 +1,12 @@
 package com.devomer.previewgallery.service
 
+import com.devomer.previewgallery.index.PreviewIndex
 import com.devomer.previewgallery.model.SnapshotCoverage
+import com.devomer.previewgallery.withExcludedRoot
+import com.intellij.openapi.vfs.VirtualFile
+import com.intellij.psi.search.GlobalSearchScope
 import com.intellij.testFramework.fixtures.BasePlatformTestCase
+import com.intellij.util.indexing.FileBasedIndex
 
 class PreviewIndexServiceTest : BasePlatformTestCase() {
 
@@ -139,8 +144,7 @@ class PreviewIndexServiceTest : BasePlatformTestCase() {
         assertEquals(1, previews.size)
         assertEquals("WidgetPreview", previews.single().indexed.functionName)
         assertEquals(1, previews.single().snapshots.size)
-        // The corroborated case: a `src/screenshotTest` directory on disk AND indexed `@PreviewTest` rows from
-        // it, so the badge is trustworthy and gets drawn.
+        // A snapshot is a child row of the preview it covers, never a preview row of its own (spec D1/D4).
         assertEquals(SnapshotCoverage.Covered(1), previews.single().coverage)
     }
 
@@ -196,6 +200,51 @@ class PreviewIndexServiceTest : BasePlatformTestCase() {
     }
 
     fun `test a snapshot outside the index still reaches the tree`() {
+        addWidgetPreview()
+        addSnapshot("src/screenshotTest/kotlin/com/example/WidgetSnapshots.kt")
+        val snapshotDirectory = requireNotNull(myFixture.tempDirFixture.getFile("src/screenshotTest"))
+
+        withExcludedRoot(module, snapshotDirectory) {
+            PreviewIndexService.getInstance(project).refresh()
+
+            // The fixture has to be able to fail this: an excluded root really does drop the file out of
+            // `projectScope`, so the index channel now contributes nothing and only the VFS scan can produce the
+            // row. Phase 13's index-only service returned zero snapshots here.
+            assertEquals(emptyList<String>(), indexedSnapshotFunctions())
+
+            val previews = PreviewIndexService.getInstance(project).findAll()
+
+            assertEquals(1, previews.size)
+            assertEquals(1, previews.single().snapshots.size)
+            assertEquals(SnapshotCoverage.Covered(1), previews.single().coverage)
+        }
+    }
+
+    fun `test a snapshot is not counted twice when the index also sees it`() {
+        addSnapshot("src/screenshotTest/kotlin/com/example/WidgetSnapshots.kt")
+        val service = PreviewIndexService.getInstance(project)
+        // No preview shows Widget, so the snapshot is an orphan — and there must be exactly one of it, even
+        // though the fixture's flat layout means the index sees this file too.
+        assertEquals(1, service.findOrphanSnapshots().size)
+    }
+
+    fun `test a layout the probe does not recognise still badges off the index`() {
+        addWidgetPreview()
+        // A custom `screenshotTest.srcDir`: on disk, in the index, and nowhere the content-root probe looks.
+        addSnapshot("custom/screenshotTest/kotlin/com/example/WidgetSnapshots.kt")
+
+        assertEquals(emptyList<Any>(), SnapshotSourceScanner.directories(project))
+        val previews = PreviewIndexService.getInstance(project).findAll()
+
+        // Dropping every index snapshot row as a class would have made this module silent — no rows, no badge —
+        // which is strictly worse than the phase it replaced. The index is the only channel that can see this
+        // file, so its row is kept and the module stays applicable.
+        assertEquals(1, previews.size)
+        assertEquals(1, previews.single().snapshots.size)
+        assertEquals(SnapshotCoverage.Covered(1), previews.single().coverage)
+    }
+
+    private fun addWidgetPreview() {
         myFixture.addFileToProject(
             "src/main/kotlin/com/example/Widgets.kt",
             """
@@ -207,27 +256,11 @@ class PreviewIndexServiceTest : BasePlatformTestCase() {
             fun WidgetPreview() = PreviewComponent { Widget() }
             """.trimIndent(),
         )
-        myFixture.addFileToProject(
-            "src/screenshotTest/kotlin/com/example/WidgetSnapshots.kt",
-            """
-            package com.example
-
-            import com.android.tools.screenshot.PreviewTest
-
-            @PreviewTest
-            fun Widget_Default_Snapshot() = PreviewComponent { Widget() }
-            """.trimIndent(),
-        )
-        val service = PreviewIndexService.getInstance(project)
-        val previews = service.findAll()
-        assertEquals(1, previews.size)
-        assertEquals(1, previews.single().snapshots.size)
-        assertEquals(SnapshotCoverage.Covered(1), previews.single().coverage)
     }
 
-    fun `test a snapshot is not counted twice when the index also sees it`() {
+    private fun addSnapshot(path: String): VirtualFile =
         myFixture.addFileToProject(
-            "src/screenshotTest/kotlin/com/example/WidgetSnapshots.kt",
+            path,
             """
             package com.example
 
@@ -236,10 +269,20 @@ class PreviewIndexServiceTest : BasePlatformTestCase() {
             @PreviewTest
             fun Widget_Default_Snapshot() = PreviewComponent { Widget() }
             """.trimIndent(),
-        )
-        val service = PreviewIndexService.getInstance(project)
-        // No preview shows Widget, so the snapshot is an orphan — and there must be exactly one of it, even
-        // though the fixture's flat layout means the index sees this file too.
-        assertEquals(1, service.findOrphanSnapshots().size)
+        ).virtualFile
+
+    /** What `compute()` sees: every `isSnapshotTest` row the index yields inside `projectScope`. */
+    private fun indexedSnapshotFunctions(): List<String> {
+        val index = FileBasedIndex.getInstance()
+        val scope = GlobalSearchScope.projectScope(project)
+        val functions = mutableListOf<String>()
+        index.processAllKeys(PreviewIndex.NAME, { key ->
+            index.processValues(PreviewIndex.NAME, key, null, { _, values ->
+                values.filter { it.isSnapshotTest }.mapTo(functions) { it.functionName }
+                true
+            }, scope)
+            true
+        }, project)
+        return functions
     }
 }

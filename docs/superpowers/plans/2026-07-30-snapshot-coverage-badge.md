@@ -1906,10 +1906,15 @@ Run the sandbox against `hepsi-android` and check:
 
 **This gate was run against `hepsi-android`, and it failed.** No badges appeared anywhere in
 `features/favorites/ui` — no snapshot child rows, not even the orphan branch; the whole feature was inert
-there. The symptom matched what this note used to predict: the source set was not reaching the index. The
-fix is Phase 14, and it goes further than indexing `src/screenshotTest` files by path — it reads and parses
-them directly from the VFS, bypassing the index for that source set entirely. See
+there. The symptom *looked* like what this note predicted — the source set not reaching the index — and
+Phase 14 was designed on that reading. **It was the wrong reading:** inspecting the module model showed
+the holder module's content root is `features/favorites/ui`, so those files are inside `projectScope`
+and the index almost certainly did produce their rows. The defect was **attribution** under a
+module-per-source-set import: the rows were filed under `…favorites.ui`, which owns no previews, while
+the previews live in `…favorites.ui.main`. Phase 14's fix is still the right one — it discovers the
+directory from the module's content roots and attributes it to the module that owns the previews, which
+also removes any dependence on the source set being modelled. See
 [2026-07-31-snapshot-source-set-fallback-design.md](../specs/2026-07-31-snapshot-source-set-fallback-design.md)
-for the gate's full evidence (including a second, independent module-per-source-set mismatch it also
-uncovered), and [2026-07-31-snapshot-source-set-fallback.md](2026-07-31-snapshot-source-set-fallback.md) for
-the fix's plan and its own manual verification gate, which repeats this same checklist.
+for the corrected evidence, and
+[2026-07-31-snapshot-source-set-fallback.md](2026-07-31-snapshot-source-set-fallback.md) for the fix's
+plan and its own manual verification gate, which repeats this same checklist.

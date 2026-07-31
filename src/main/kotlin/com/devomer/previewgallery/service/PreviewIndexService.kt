@@ -9,6 +9,8 @@ import com.intellij.openapi.project.Project
 import com.intellij.openapi.roots.ProjectFileIndex
 import com.intellij.openapi.util.Key
 import com.intellij.openapi.util.SimpleModificationTracker
+import com.intellij.openapi.vfs.VfsUtilCore
+import com.intellij.openapi.vfs.VirtualFile
 import com.intellij.psi.search.GlobalSearchScope
 import com.intellij.psi.util.CachedValue
 import com.intellij.psi.util.CachedValueProvider
@@ -45,8 +47,11 @@ class PreviewIndexService(private val project: Project) {
             project,
             CACHE_KEY,
             {
+                // Probed once and threaded through both halves: the walk visits every module in the project, and
+                // the reference project has 1371 of them.
+                val sources = SnapshotSourceScanner.directories(project)
                 CachedValueProvider.Result.create(
-                    resolve(sorted(compute() + SnapshotSourceScanner.scan(project))),
+                    resolve(sorted(compute(sources) + SnapshotSourceScanner.scan(project, sources)), sources),
                     PsiModificationTracker.MODIFICATION_COUNT,
                     refreshTracker,
                 )
@@ -57,17 +62,26 @@ class PreviewIndexService(private val project: Project) {
 
     /**
      * Joins coverage onto [entries]. A module is applicable when [SnapshotSourceScanner] found a `screenshotTest`
-     * directory for it — the same walk that produced the snapshot rows, so the two can no longer disagree.
+     * directory for it, **or** when a snapshot row survived [compute] for it — a layout the probe does not
+     * recognise still badges its rows off whatever the index managed to see, which is what Phase 13 did and what
+     * dropping the whole index channel would have taken away.
      */
-    private fun resolve(entries: List<PreviewEntry>): Rows {
-        val modules = SnapshotSourceScanner.directories(project).mapTo(HashSet()) { it.moduleName }
+    private fun resolve(entries: List<PreviewEntry>, sources: List<SnapshotSourceScanner.Source>): Rows {
+        val modules = sources.mapTo(HashSet()) { it.moduleName }
+        entries.forEach { if (it.indexed.isSnapshotTest) modules += it.moduleName }
         val resolved = SnapshotCoverageResolver.resolve(entries, modules) { row, coverage, snapshots ->
             row.copy(coverage = coverage, snapshots = snapshots)
         }
         return Rows(resolved.previews, resolved.orphans)
     }
 
-    private fun compute(): List<PreviewEntry> {
+    /**
+     * The index's own rows. A snapshot row is dropped only when its file is inside a directory
+     * [SnapshotSourceScanner] already walked — there the scanner's copy is the better-attributed one and keeping
+     * both would double every snapshot. Elsewhere the index is the only channel that can see the file at all, so
+     * its row is kept rather than discarded as a class.
+     */
+    private fun compute(sources: List<SnapshotSourceScanner.Source>): List<PreviewEntry> {
         val index = FileBasedIndex.getInstance()
         val fileIndex = ProjectFileIndex.getInstance(project)
         val scope = GlobalSearchScope.projectScope(project)
@@ -77,10 +91,8 @@ class PreviewIndexService(private val project: Project) {
             index.processValues(PreviewIndex.NAME, key, null, { file, values ->
                 val module = fileIndex.getModuleForFile(file)
                 if (module != null) {
-                    // Snapshots come from SnapshotSourceScanner, which sees them whether or not the source set
-                    // reached the project model. Keeping the index's copy too would double every snapshot in a
-                    // project where it did.
-                    values.filterNot { it.isSnapshotTest }
+                    val alreadyScanned = values.any { it.isSnapshotTest } && wasScanned(sources, file)
+                    values.filterNot { it.isSnapshotTest && alreadyScanned }
                         .forEach { entries += PreviewEntry(it, module.name, file) }
                 }
                 true
@@ -90,6 +102,9 @@ class PreviewIndexService(private val project: Project) {
 
         return entries
     }
+
+    private fun wasScanned(sources: List<SnapshotSourceScanner.Source>, file: VirtualFile): Boolean =
+        sources.any { VfsUtilCore.isAncestor(it.directory, file, false) }
 
     private fun sorted(entries: List<PreviewEntry>): List<PreviewEntry> = entries.sortedWith(
         compareBy<PreviewEntry, String>(String.CASE_INSENSITIVE_ORDER) { it.moduleName }

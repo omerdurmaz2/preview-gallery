@@ -35,4 +35,17 @@ class SnapshotOwningModuleTest {
     fun `no modules means no owner`() {
         assertNull(SnapshotSourceScanner.pickOwningModule(emptyList()))
     }
+
+    @Test
+    fun `known limitation - a multiplatform source-set module loses to its holder`() {
+        assertEquals(
+            "app.features.favorites.ui",
+            SnapshotSourceScanner.pickOwningModule(
+                listOf("app.features.favorites.ui", "app.features.favorites.ui.androidMain"),
+            ),
+        )
+        // `androidMain` does not end in `.main`, so the shortest-name rule picks the holder and previews in
+        // `…ui.androidMain` would not match their snapshots. Deliberate: no module in the reference project has
+        // this shape, and this pins the limitation the KDoc states rather than pretending it is not there.
+    }
 }

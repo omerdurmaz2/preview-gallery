@@ -2,8 +2,7 @@ package com.devomer.previewgallery.service
 
 import com.devomer.previewgallery.model.PreviewEntry
 import com.devomer.previewgallery.model.ReferenceImage
-import com.intellij.openapi.module.Module
-import com.intellij.openapi.roots.ModuleRootManager
+import com.intellij.openapi.vfs.VirtualFile
 
 /**
  * Finds the reference PNGs the Compose Preview Screenshot Testing plugin committed for a snapshot function.
@@ -55,14 +54,18 @@ object ReferenceImageLocator {
     }
 
     /**
-     * The committed reference images for [entry], sorted by variant so the strip's left-to-right order is
-     * stable across selections.
+     * The committed reference images for [entry] under [moduleDirectory], sorted by variant so the strip's
+     * left-to-right order is stable across selections.
+     *
+     * [moduleDirectory] is a plain directory rather than a `Module` on purpose: the snapshot rows this is called
+     * for come from [SnapshotSourceScanner], which exists precisely because the project model need not place
+     * those files in a module at all. Asking `ProjectFileIndex` for the module here would reintroduce the
+     * dependency the scanner removed, and its failure would be an empty strip with no explanation.
      */
-    fun locate(entry: PreviewEntry, module: Module): List<ReferenceImage> {
+    fun locate(entry: PreviewEntry, moduleDirectory: VirtualFile): List<ReferenceImage> {
         val relative = relativeDirectory(entry.indexed.packageName, entry.indexed.jvmClassName)
-        return ModuleRootManager.getInstance(module).contentRoots
-            .mapNotNull { it.findFileByRelativePath(relative) }
-            .flatMap { directory -> directory.children.orEmpty().toList() }
+        val directory = moduleDirectory.findFileByRelativePath(relative) ?: return emptyList()
+        return directory.children.orEmpty()
             .mapNotNull { file ->
                 val variant = variantOf(file.name, entry.indexed.functionName) ?: return@mapNotNull null
                 ReferenceImage(variant, file)

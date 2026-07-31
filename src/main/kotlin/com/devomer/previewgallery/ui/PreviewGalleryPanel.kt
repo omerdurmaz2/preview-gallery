@@ -14,6 +14,7 @@ import com.devomer.previewgallery.render.RenderState
 import com.devomer.previewgallery.search.PreviewModuleFilter
 import com.devomer.previewgallery.service.PreviewIndexService
 import com.devomer.previewgallery.service.ReferenceImageLocator
+import com.devomer.previewgallery.service.SnapshotSourceScanner
 import com.intellij.ide.CommonActionsManager
 import com.intellij.ide.DefaultTreeExpander
 import com.intellij.ide.TreeExpander
@@ -28,7 +29,6 @@ import com.intellij.openapi.fileEditor.OpenFileDescriptor
 import com.intellij.openapi.progress.ProcessCanceledException
 import com.intellij.openapi.project.DumbService
 import com.intellij.openapi.project.Project
-import com.intellij.openapi.roots.ProjectFileIndex
 import com.intellij.openapi.util.CheckedDisposable
 import com.intellij.openapi.util.Disposer
 import com.intellij.openapi.vfs.VirtualFile
@@ -687,8 +687,8 @@ class PreviewGalleryPanel(
      * background executor, then hands the result to [publishReferences] on the EDT.
      *
      * The split is the point (`RenderPipeline`'s own class doc calls holding the read lock across long work "a
-     * prime freeze suspect", and PG3-6 removed exactly this pattern from the render path): only
-     * [ProjectFileIndex] and the VFS walk need the read lock, and they are a directory listing. `ImageIO.read`
+     * prime freeze suspect", and PG3-6 removed exactly this pattern from the render path): only the VFS walk
+     * needs the read lock, and it is a directory listing. `ImageIO.read`
      * on two device-resolution PNGs is tens of milliseconds of decode that would otherwise hold the *global*
      * read lock, blocking every write action in the IDE, once per snapshot selection.
      */
@@ -727,17 +727,22 @@ class PreviewGalleryPanel(
     }
 
     /**
-     * Finds [snapshot]'s committed reference images (spec D6). **This** is the half that needs a read action:
-     * [ProjectFileIndex] and the VFS directory listing, and nothing else.
+     * Finds [snapshot]'s committed reference images (spec D6). **This** is the half that needs a read action: the
+     * VFS directory listing, and nothing else.
      *
-     * The module comes from the snapshot's own file via [ProjectFileIndex], the same way
-     * `PreviewIndexService.compute` resolves a preview's — a snapshot's `src/screenshotTest` file belongs to the
-     * module whose reference directory holds its PNGs. No module (a file outside the project model) means no
-     * directory to look in, which is the no-reference state, not an error (spec D10).
+     * The directory to look in is derived from the snapshot's own file path rather than from the module the
+     * project model puts it in (Phase 14 D7). Asking `ProjectFileIndex.getModuleForFile` would put the reference
+     * strip back on exactly the dependency `SnapshotSourceScanner` exists to remove, and its failure mode is the
+     * quiet one: snapshot rows would appear and every one of them would read `NO_REFERENCE`.
+     *
+     * The cost is that a row from the **index fallback** — a snapshot in a layout the probe does not recognise,
+     * so not under `<moduleDir>/src/screenshotTest` — has no directory to derive, and shows the no-reference
+     * state. That is a degraded mode by construction, it is not an error (spec D10), and the row itself, its
+     * badge and its navigation all still work.
      */
     private fun locateReferences(snapshot: PreviewEntry): List<ReferenceImage> {
-        val module = ProjectFileIndex.getInstance(project).getModuleForFile(snapshot.file) ?: return emptyList()
-        return ReferenceImageLocator.locate(snapshot, module)
+        val moduleDirectory = SnapshotSourceScanner.moduleDirectory(snapshot.file) ?: return emptyList()
+        return ReferenceImageLocator.locate(snapshot, moduleDirectory)
     }
 
     /** Decodes what [locateReferences] found — deliberately holding no read lock (see [loadReferences]); a

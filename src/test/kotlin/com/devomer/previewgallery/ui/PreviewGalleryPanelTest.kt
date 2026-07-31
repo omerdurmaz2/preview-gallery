@@ -2,10 +2,16 @@ package com.devomer.previewgallery.ui
 
 import com.devomer.previewgallery.render.RenderState
 import com.devomer.previewgallery.service.PreviewIndexService
+import com.devomer.previewgallery.withExcludedRoot
+import com.intellij.openapi.application.WriteAction
 import com.intellij.openapi.fileEditor.FileEditorManager
 import com.intellij.openapi.util.Disposer
 import com.intellij.testFramework.LightProjectDescriptor
 import com.intellij.testFramework.fixtures.BasePlatformTestCase
+import java.awt.image.BufferedImage
+import java.io.ByteArrayOutputStream
+import java.io.IOException
+import javax.imageio.ImageIO
 
 class PreviewGalleryPanelTest : BasePlatformTestCase() {
 
@@ -445,6 +451,37 @@ class PreviewGalleryPanelTest : BasePlatformTestCase() {
         // The fixture commits no reference PNGs, and a snapshot is never rendered — so neither RENDERING nor
         // FAILED is correct here.
         assertEquals(RenderState.NO_REFERENCE, panel.renderStateForTest)
+    }
+
+    fun `test a snapshot the project model places in no module still shows its references`() {
+        projectWithSnapshot()
+        referencePng(
+            "src/screenshotTestDebug/reference/com/example/WidgetSnapshotsKt",
+            "Widget_Default_Snapshot_phone_eee23ffd_0.png",
+        )
+        val screenshotTest = requireNotNull(myFixture.tempDirFixture.getFile("src/screenshotTest"))
+        val panel = panel()
+
+        withExcludedRoot(module, screenshotTest) {
+            PreviewIndexService.getInstance(project).refresh()
+            panel.reloadSynchronously()
+            panel.selectByLabelPathForTest("WidgetPreview", "Widget_Default_Snapshot")
+
+            // Resolving the strip's directory through `ProjectFileIndex.getModuleForFile` fails exactly here —
+            // an excluded source set belongs to no module — and fails quietly: the row appears and reads
+            // NO_REFERENCE. The directory is derived from the snapshot's own path instead.
+            assertEquals(RenderState.REFERENCE, panel.renderStateForTest)
+        }
+    }
+
+    private fun referencePng(directory: String, name: String) {
+        val image = BufferedImage(2, 2, BufferedImage.TYPE_INT_ARGB)
+        val bytes = ByteArrayOutputStream().use { stream ->
+            ImageIO.write(image, "png", stream)
+            stream.toByteArray()
+        }
+        val file = myFixture.tempDirFixture.createFile("$directory/$name")
+        WriteAction.runAndWait<IOException> { file.setBinaryContent(bytes) }
     }
 
     fun `test selecting a snapshot leaves the preview selection empty`() {
