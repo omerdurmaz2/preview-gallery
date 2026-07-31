@@ -1,5 +1,6 @@
 package com.devomer.previewgallery.service
 
+import com.intellij.openapi.vfs.VfsUtil
 import com.intellij.openapi.vfs.VirtualFile
 
 /**
@@ -30,6 +31,28 @@ object ReferenceRoots {
         /** The label token for this root, used only when more than one root contributes to a strip. */
         val token: String
             get() = variant?.replaceFirstChar { it.lowercaseChar() } ?: sourceSetName
+    }
+
+    /**
+     * Brings [moduleDirectory]'s reference directories up to date with what is actually on disk.
+     *
+     * **Must not run under a read lock** — the platform rejects a synchronous refresh there ("Do not perform a
+     * synchronous refresh under read lock") — so this is its own step between the caller's two read actions,
+     * never inside one.
+     *
+     * Two passes, and one cannot do the job of the other. The shallow pass reloads `src`'s own children, which is
+     * what makes a `screenshotTestGoogleDebug` directory created since the last sync appear at all; the recursive
+     * pass reloads each source set's subtree, which is what makes a PNG added to an already-listed `reference`
+     * directory appear. A single recursive pass over `src` would walk every source file in the module instead of
+     * the snapshot corpus alone.
+     */
+    fun refresh(moduleDirectory: VirtualFile) {
+        val src = moduleDirectory.findChild(SRC)?.takeIf { it.isDirectory } ?: return
+        VfsUtil.markDirtyAndRefresh(false, false, true, src)
+        val sourceSets = src.children.orEmpty()
+            .filter { it.isDirectory && it.name.startsWith(SCREENSHOT_TEST) }
+        if (sourceSets.isEmpty()) return
+        VfsUtil.markDirtyAndRefresh(false, true, true, *sourceSets.toTypedArray())
     }
 
     /**
