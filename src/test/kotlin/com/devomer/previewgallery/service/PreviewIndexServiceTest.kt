@@ -92,6 +92,24 @@ class PreviewIndexServiceTest : BasePlatformTestCase() {
         assertTrue(PreviewIndexService.getInstance(project).findAll().isEmpty())
     }
 
+    fun `test a preview in a module with no screenshotTest directory is not applicable`() {
+        myFixture.addFileToProject(
+            "src/main/kotlin/com/example/Widgets.kt",
+            """
+            package com.example
+
+            import androidx.compose.ui.tooling.preview.Preview
+
+            @Preview
+            fun WidgetPreview() = PreviewComponent { Widget() }
+            """.trimIndent(),
+        )
+
+        val previews = PreviewIndexService.getInstance(project).findAll()
+
+        assertEquals(SnapshotCoverage.NotApplicable, previews.single().coverage)
+    }
+
     fun `test snapshot rows do not appear as previews`() {
         myFixture.addFileToProject(
             "src/main/kotlin/com/example/Widgets.kt",
@@ -126,7 +144,7 @@ class PreviewIndexServiceTest : BasePlatformTestCase() {
         assertEquals(SnapshotCoverage.Covered(1), previews.single().coverage)
     }
 
-    fun `test a screenshotTest directory the index cannot see degrades to NotApplicable`() {
+    fun `test a screenshotTest file with no snapshot function reports its preview as uncovered`() {
         myFixture.addFileToProject(
             "src/main/kotlin/com/example/Widgets.kt",
             """
@@ -138,9 +156,9 @@ class PreviewIndexServiceTest : BasePlatformTestCase() {
             fun WidgetPreview() = PreviewComponent { Widget() }
             """.trimIndent(),
         )
-        // Kotlin under src/screenshotTest that yields no indexed snapshot row — the shape spec Risk 1 produces
-        // when the source set never reaches `projectScope`. Disk says "this module has adopted screenshot
-        // testing", the index says "it has no snapshots"; they disagree, so no badge is drawn at all.
+        // A screenshotTest file that contributes no @PreviewTest function. Phase 13's index-corroboration would
+        // have degraded this to NotApplicable; the scanner-only design has no index to disagree with, so a
+        // screenshotTest directory alone makes the module applicable, and this is Uncovered like an empty one.
         myFixture.addFileToProject(
             "src/screenshotTest/kotlin/com/example/Fixtures.kt",
             """
@@ -153,8 +171,7 @@ class PreviewIndexServiceTest : BasePlatformTestCase() {
         val previews = PreviewIndexService.getInstance(project).findAll()
 
         assertEquals(1, previews.size)
-        // Not Uncovered: `· no snapshot` on every row of an adopted module is the loudest possible wrong signal.
-        assertEquals(SnapshotCoverage.NotApplicable, previews.single().coverage)
+        assertEquals(SnapshotCoverage.Uncovered, previews.single().coverage)
     }
 
     fun `test an empty screenshotTest directory reports its previews as uncovered`() {
@@ -176,5 +193,53 @@ class PreviewIndexServiceTest : BasePlatformTestCase() {
         val previews = PreviewIndexService.getInstance(project).findAll()
 
         assertEquals(SnapshotCoverage.Uncovered, previews.single().coverage)
+    }
+
+    fun `test a snapshot outside the index still reaches the tree`() {
+        myFixture.addFileToProject(
+            "src/main/kotlin/com/example/Widgets.kt",
+            """
+            package com.example
+
+            import androidx.compose.ui.tooling.preview.Preview
+
+            @Preview
+            fun WidgetPreview() = PreviewComponent { Widget() }
+            """.trimIndent(),
+        )
+        myFixture.addFileToProject(
+            "src/screenshotTest/kotlin/com/example/WidgetSnapshots.kt",
+            """
+            package com.example
+
+            import com.android.tools.screenshot.PreviewTest
+
+            @PreviewTest
+            fun Widget_Default_Snapshot() = PreviewComponent { Widget() }
+            """.trimIndent(),
+        )
+        val service = PreviewIndexService.getInstance(project)
+        val previews = service.findAll()
+        assertEquals(1, previews.size)
+        assertEquals(1, previews.single().snapshots.size)
+        assertEquals(SnapshotCoverage.Covered(1), previews.single().coverage)
+    }
+
+    fun `test a snapshot is not counted twice when the index also sees it`() {
+        myFixture.addFileToProject(
+            "src/screenshotTest/kotlin/com/example/WidgetSnapshots.kt",
+            """
+            package com.example
+
+            import com.android.tools.screenshot.PreviewTest
+
+            @PreviewTest
+            fun Widget_Default_Snapshot() = PreviewComponent { Widget() }
+            """.trimIndent(),
+        )
+        val service = PreviewIndexService.getInstance(project)
+        // No preview shows Widget, so the snapshot is an orphan — and there must be exactly one of it, even
+        // though the fixture's flat layout means the index sees this file too.
+        assertEquals(1, service.findOrphanSnapshots().size)
     }
 }

@@ -17,10 +17,11 @@ import com.intellij.psi.util.PsiModificationTracker
 import com.intellij.util.indexing.FileBasedIndex
 
 /**
- * Reads [PreviewIndex] and joins each value with the module and file it belongs to.
+ * Reads [PreviewIndex] for gallery previews and [SnapshotSourceScanner] for snapshot rows, and joins each with
+ * the module and file it belongs to.
  *
  * Callers must invoke [findAll] and [findOrphanSnapshots] under a read action and off the EDT — both share the
- * same cached computation, which touches the index and the project model.
+ * same cached computation, which touches the index, the VFS and the project model.
  */
 @Service(Service.Level.PROJECT)
 class PreviewIndexService(private val project: Project) {
@@ -45,7 +46,7 @@ class PreviewIndexService(private val project: Project) {
             CACHE_KEY,
             {
                 CachedValueProvider.Result.create(
-                    resolve(compute()),
+                    resolve(sorted(compute() + SnapshotSourceScanner.scan(project))),
                     PsiModificationTracker.MODIFICATION_COUNT,
                     refreshTracker,
                 )
@@ -55,19 +56,11 @@ class PreviewIndexService(private val project: Project) {
     }
 
     /**
-     * Detects the screenshot-tested modules and joins their coverage onto [entries] via [SnapshotCoverageResolver].
-     *
-     * The join is where the two independent inputs meet, so it is where they are reconciled: the `src/screenshotTest`
-     * directory comes from the VFS, the snapshot rows from the index, and only a module both agree on gets badged
-     * (see [ScreenshotModuleDetector.applicableModules]). Doing it here rather than inside the detector is what
-     * gives the detector the indexed rows it cannot see for itself.
+     * Joins coverage onto [entries]. A module is applicable when [SnapshotSourceScanner] found a `screenshotTest`
+     * directory for it — the same walk that produced the snapshot rows, so the two can no longer disagree.
      */
     private fun resolve(entries: List<PreviewEntry>): Rows {
-        val indexedSnapshotModules = entries.filter { it.indexed.isSnapshotTest }.mapTo(HashSet()) { it.moduleName }
-        val modules = ScreenshotModuleDetector.applicableModules(
-            ScreenshotModuleDetector.candidates(project),
-            indexedSnapshotModules,
-        )
+        val modules = SnapshotSourceScanner.directories(project).mapTo(HashSet()) { it.moduleName }
         val resolved = SnapshotCoverageResolver.resolve(entries, modules) { row, coverage, snapshots ->
             row.copy(coverage = coverage, snapshots = snapshots)
         }
@@ -84,19 +77,25 @@ class PreviewIndexService(private val project: Project) {
             index.processValues(PreviewIndex.NAME, key, null, { file, values ->
                 val module = fileIndex.getModuleForFile(file)
                 if (module != null) {
-                    values.forEach { entries += PreviewEntry(it, module.name, file) }
+                    // Snapshots come from SnapshotSourceScanner, which sees them whether or not the source set
+                    // reached the project model. Keeping the index's copy too would double every snapshot in a
+                    // project where it did.
+                    values.filterNot { it.isSnapshotTest }
+                        .forEach { entries += PreviewEntry(it, module.name, file) }
                 }
                 true
             }, scope)
             true
         }, project)
 
-        return entries.sortedWith(
-            compareBy<PreviewEntry, String>(String.CASE_INSENSITIVE_ORDER) { it.moduleName }
-                .thenBy(String.CASE_INSENSITIVE_ORDER) { it.indexed.packageName }
-                .thenBy(String.CASE_INSENSITIVE_ORDER) { it.indexed.displayName },
-        )
+        return entries
     }
+
+    private fun sorted(entries: List<PreviewEntry>): List<PreviewEntry> = entries.sortedWith(
+        compareBy<PreviewEntry, String>(String.CASE_INSENSITIVE_ORDER) { it.moduleName }
+            .thenBy(String.CASE_INSENSITIVE_ORDER) { it.indexed.packageName }
+            .thenBy(String.CASE_INSENSITIVE_ORDER) { it.indexed.displayName },
+    )
 
     /** The two halves [SnapshotCoverageResolver] splits a computation into, cached together so one PSI change
      *  recomputes both instead of caching them under separate, possibly-inconsistent keys. */
