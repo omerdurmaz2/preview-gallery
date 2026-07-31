@@ -21,7 +21,7 @@
 - `ReferenceRoots.refresh` **must not** be called while holding a read lock — the platform rejects a synchronous refresh under one ("Do not perform a synchronous refresh under read lock").
 - No `com.android.tools.*` import outside `render/`.
 - Tests needing a project or PSI use `BasePlatformTestCase` with backticked names starting `test `. Pure-logic tests use plain JUnit 4 (`@Test` + `org.junit.Assert`).
-- **Build/test command:** `./gradlew clean test --no-build-cache --rerun-tasks`. The plain `./gradlew test` serves stale cached test bytecode after a signature change and `clean` alone does not fix it. Do **not** run `./gradlew runIde` — the human runs that gate. Never run any Gradle task while a `runIde` sandbox is live.
+- **Build/test command:** `./gradlew clean test --no-build-cache --rerun-tasks --max-workers=1 --no-parallel`. The plain `./gradlew test` serves stale cached test bytecode after a signature change and `clean` alone does not fix it. Do **not** run `./gradlew runIde` — the human runs that gate. Never run any Gradle task while a `runIde` sandbox is live.
 
 ---
 
@@ -190,7 +190,7 @@ class ReferenceRootsTaskNameTest {
 
 - [ ] **Step 2: Run the tests to verify they fail**
 
-Run: `./gradlew clean test --no-build-cache --rerun-tasks --tests "com.devomer.previewgallery.service.ReferenceRoots*"`
+Run: `./gradlew clean test --no-build-cache --rerun-tasks --max-workers=1 --no-parallel --tests "com.devomer.previewgallery.service.ReferenceRoots*"`
 Expected: compilation failure — `Unresolved reference: ReferenceRoots`.
 
 - [ ] **Step 3: Write the implementation**
@@ -261,7 +261,7 @@ object ReferenceRoots {
 
 - [ ] **Step 4: Run the tests to verify they pass**
 
-Run: `./gradlew clean test --no-build-cache --rerun-tasks --tests "com.devomer.previewgallery.service.ReferenceRoots*"`
+Run: `./gradlew clean test --no-build-cache --rerun-tasks --max-workers=1 --no-parallel --tests "com.devomer.previewgallery.service.ReferenceRoots*"`
 Expected: PASS, 9 tests.
 
 - [ ] **Step 5: Commit**
@@ -394,7 +394,7 @@ class ReferenceRootsRefreshTest : BasePlatformTestCase() {
 
 - [ ] **Step 2: Run the tests to verify they fail**
 
-Run: `./gradlew clean test --no-build-cache --rerun-tasks --tests "com.devomer.previewgallery.service.ReferenceRootsRefreshTest"`
+Run: `./gradlew clean test --no-build-cache --rerun-tasks --max-workers=1 --no-parallel --tests "com.devomer.previewgallery.service.ReferenceRootsRefreshTest"`
 Expected: compilation failure — `Unresolved reference: refresh`.
 
 - [ ] **Step 3: Write the implementation**
@@ -427,7 +427,7 @@ Add to `ReferenceRoots`, immediately above `of`, and add `import com.intellij.op
 
 - [ ] **Step 4: Run the tests to verify they pass**
 
-Run: `./gradlew clean test --no-build-cache --rerun-tasks --tests "com.devomer.previewgallery.service.ReferenceRoots*"`
+Run: `./gradlew clean test --no-build-cache --rerun-tasks --max-workers=1 --no-parallel --tests "com.devomer.previewgallery.service.ReferenceRoots*"`
 Expected: PASS, 12 tests.
 
 If `test a PNG written outside the IDE is invisible until the refresh` fails on its **first** assertion (it sees 2 before the refresh), the platform's file watcher picked the write up on its own. Do not weaken the assertion: confirm by re-running the single test, and if it is genuinely flaky, note it in the commit body and keep the post-refresh assertion — that one is the contract.
@@ -642,7 +642,7 @@ class ReferenceImageLocatorLocateTest : BasePlatformTestCase() {
 
 - [ ] **Step 3: Run the tests to verify they fail**
 
-Run: `./gradlew clean test --no-build-cache --rerun-tasks --tests "com.devomer.previewgallery.service.ReferenceImageLocator*"`
+Run: `./gradlew clean test --no-build-cache --rerun-tasks --max-workers=1 --no-parallel --tests "com.devomer.previewgallery.service.ReferenceImageLocator*"`
 Expected: compilation failure — `Unresolved reference: packageDirectory` and a `locate` overload mismatch.
 
 - [ ] **Step 4: Widen the model**
@@ -745,7 +745,7 @@ In `decodeReferences`, the `LabelledImage` construction still reads `reference.v
 
 - [ ] **Step 7: Run the tests to verify they pass**
 
-Run: `./gradlew clean test --no-build-cache --rerun-tasks`
+Run: `./gradlew clean test --no-build-cache --rerun-tasks --max-workers=1 --no-parallel`
 Expected: PASS, the whole suite.
 
 - [ ] **Step 8: Commit**
@@ -838,7 +838,7 @@ class ModuleDirectoryResolverTest : BasePlatformTestCase() {
 
 - [ ] **Step 2: Run the tests to verify they fail**
 
-Run: `./gradlew clean test --no-build-cache --rerun-tasks --tests "com.devomer.previewgallery.service.ModuleDirectoryResolverTest"`
+Run: `./gradlew clean test --no-build-cache --rerun-tasks --max-workers=1 --no-parallel --tests "com.devomer.previewgallery.service.ModuleDirectoryResolverTest"`
 Expected: compilation failure — `Unresolved reference: ModuleDirectoryResolver`.
 
 - [ ] **Step 3: Write the implementation**
@@ -890,7 +890,7 @@ object ModuleDirectoryResolver {
 
 - [ ] **Step 4: Run the tests to verify they pass**
 
-Run: `./gradlew clean test --no-build-cache --rerun-tasks --tests "com.devomer.previewgallery.service.ModuleDirectoryResolverTest"`
+Run: `./gradlew clean test --no-build-cache --rerun-tasks --max-workers=1 --no-parallel --tests "com.devomer.previewgallery.service.ModuleDirectoryResolverTest"`
 Expected: PASS, 3 tests.
 
 - [ ] **Step 5: Commit**
@@ -976,7 +976,7 @@ Add to `src/test/kotlin/com/devomer/previewgallery/ui/PreviewRenderPanelTest.kt`
 
 - [ ] **Step 2: Run the tests to verify they fail**
 
-Run: `./gradlew clean test --no-build-cache --rerun-tasks --tests "com.devomer.previewgallery.ui.PreviewRenderPanelTest"`
+Run: `./gradlew clean test --no-build-cache --rerun-tasks --max-workers=1 --no-parallel --tests "com.devomer.previewgallery.ui.PreviewRenderPanelTest"`
 Expected: compilation failure — `Unresolved reference: messageForTest` and too many arguments for `showReference`.
 
 - [ ] **Step 3: Split the message**
@@ -1058,7 +1058,7 @@ Add `import com.intellij.util.ui.UIUtil` if it is not already imported.
 
 - [ ] **Step 5: Run the tests to verify they pass**
 
-Run: `./gradlew clean test --no-build-cache --rerun-tasks --tests "com.devomer.previewgallery.ui.PreviewRenderPanelTest"`
+Run: `./gradlew clean test --no-build-cache --rerun-tasks --max-workers=1 --no-parallel --tests "com.devomer.previewgallery.ui.PreviewRenderPanelTest"`
 Expected: PASS, the file's existing tests plus the three new ones.
 
 - [ ] **Step 6: Commit**
@@ -1144,7 +1144,7 @@ Add to `src/test/kotlin/com/devomer/previewgallery/ui/PreviewGalleryPanelTest.kt
 
 - [ ] **Step 2: Run the tests to verify they fail**
 
-Run: `./gradlew clean test --no-build-cache --rerun-tasks --tests "com.devomer.previewgallery.ui.PreviewGalleryPanelTest"`
+Run: `./gradlew clean test --no-build-cache --rerun-tasks --max-workers=1 --no-parallel --tests "com.devomer.previewgallery.ui.PreviewGalleryPanelTest"`
 Expected: compilation failure — `Unresolved reference: renderMessageForTest`. Once that seam exists the two flavour tests still fail on `NO_REFERENCE` / the generic message.
 
 - [ ] **Step 3: Split the lookup into three steps**
@@ -1279,7 +1279,7 @@ Add the imports `com.devomer.previewgallery.service.ModuleDirectoryResolver` and
 
 - [ ] **Step 4: Run the full suite**
 
-Run: `./gradlew clean test --no-build-cache --rerun-tasks`
+Run: `./gradlew clean test --no-build-cache --rerun-tasks --max-workers=1 --no-parallel`
 Expected: PASS, the whole suite including `test a snapshot the project model places in no module still shows its references` — that test pins Phase 14's path derivation and must keep passing unchanged.
 
 - [ ] **Step 5: Commit**
