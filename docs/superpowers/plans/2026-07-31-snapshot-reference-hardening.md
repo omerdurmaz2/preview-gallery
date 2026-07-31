@@ -16,7 +16,7 @@
 - **All source, comments, docs and test names in English.**
 - **Do not add explanatory comments to code.** KDoc on new public declarations is expected and is what the existing files carry; line comments inside function bodies are only for a decision a reader would otherwise undo, which is how the current codebase uses them.
 - Commit message pattern: `[PG15-N] - Task name` (this feature's task ids are `PG15-2` … `PG15-7`; `PG15-0` is the design spec and `PG15-1` is this plan).
-- Commit trailer on every commit: `Co-Authored-By: Claude <Opus 5> <noreply@anthropic.com>`.
+- Commit trailer on every commit: `Co-Authored-By: Claude <MODEL> <noreply@anthropic.com>`, where `<MODEL>` is the model named in **your own** system prompt (`Sonnet 5`, `Opus 5`, …). Never copy another task's value — the trailer records who wrote that commit.
 - `SnapshotSourceScanner`, `PreviewIndexService`, `SnapshotCoverageResolver`, `PreviewPsiScanner` and `ReferenceStripView` are **not** modified.
 - `ReferenceRoots.refresh` **must not** be called while holding a read lock — the platform rejects a synchronous refresh under one ("Do not perform a synchronous refresh under read lock").
 - No `com.android.tools.*` import outside `render/`.
@@ -275,7 +275,7 @@ Read src/screenshotTest*/reference off disk instead of assuming the single
 screenshotTestDebug a library module has, and name the update task from the
 variant the directory carries.
 
-Co-Authored-By: Claude <Opus 5> <noreply@anthropic.com>
+Co-Authored-By: Claude <MODEL> <noreply@anthropic.com>
 EOF
 )"
 ```
@@ -444,7 +444,7 @@ panel told the user to run the command they had just run. Two passes: shallow
 over src for a new variant directory, recursive over each source set for a new
 file in an already-listed one.
 
-Co-Authored-By: Claude <Opus 5> <noreply@anthropic.com>
+Co-Authored-By: Claude <MODEL> <noreply@anthropic.com>
 EOF
 )"
 ```
@@ -759,7 +759,7 @@ The reference root was the constant src/screenshotTestDebug, so a flavoured
 module reported no images for every snapshot it has. Every discovered root now
 contributes, and each image carries the source set it came from.
 
-Co-Authored-By: Claude <Opus 5> <noreply@anthropic.com>
+Co-Authored-By: Claude <MODEL> <noreply@anthropic.com>
 EOF
 )"
 ```
@@ -904,7 +904,7 @@ A snapshot outside <moduleDir>/src/screenshotTest could derive no directory
 from its path, so its strip was always empty. The project model answers for
 exactly those rows and for no others.
 
-Co-Authored-By: Claude <Opus 5> <noreply@anthropic.com>
+Co-Authored-By: Claude <MODEL> <noreply@anthropic.com>
 EOF
 )"
 ```
@@ -1072,7 +1072,7 @@ The no-reference message named updateDebugScreenshotTest unconditionally, which
 a flavoured module does not have. It now names the tasks of the variants that
 were found, and names none when it knows none.
 
-Co-Authored-By: Claude <Opus 5> <noreply@anthropic.com>
+Co-Authored-By: Claude <MODEL> <noreply@anthropic.com>
 EOF
 )"
 ```
@@ -1294,7 +1294,7 @@ action, refresh the reference directories without one, then list them under a
 read action again. Labels carry the source set only when a strip spans more
 than one.
 
-Co-Authored-By: Claude <Opus 5> <noreply@anthropic.com>
+Co-Authored-By: Claude <MODEL> <noreply@anthropic.com>
 EOF
 )"
 ```
