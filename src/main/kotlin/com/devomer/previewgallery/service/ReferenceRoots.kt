@@ -48,9 +48,12 @@ object ReferenceRoots {
      *
      * The shallow pass can itself discover that `src` no longer exists at all — a branch switch, a `git clean`,
      * a removed module — which invalidates the very directory this function was asked about. Reading its
-     * children afterwards would then throw `InvalidVirtualFileAccessException` instead of leaving the module
-     * with the empty root list a deletion deserves, so validity is checked right there, before either that read
-     * or the recursive pass depending on it can run.
+     * children afterwards is safe only by accident of which thread calls it: `VirtualDirectoryImpl` throws
+     * `InvalidVirtualFileAccessException` for an invalidated directory only when the caller holds read access,
+     * and silently returns no children otherwise. Left unguarded, a background caller would see an empty `src`
+     * while an EDT caller crashed on that very same deletion; checking validity right here, before either that
+     * read or the recursive pass depending on it can run, makes both paths take the same early return instead of
+     * only one of them.
      */
     fun refresh(moduleDirectory: VirtualFile) {
         val src = moduleDirectory.findChild(SRC)?.takeIf { it.isDirectory } ?: return

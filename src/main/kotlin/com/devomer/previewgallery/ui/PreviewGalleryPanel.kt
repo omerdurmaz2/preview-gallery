@@ -728,15 +728,22 @@ class PreviewGalleryPanel(
      * the lock; `ReferenceRoots.refresh` is a synchronous VFS refresh, which the platform rejects under one; the
      * listing needs it again.
      *
-     * Callable from the EDT as well as a background thread: `executeSynchronously` runs its read action inline
-     * when already on the EDT, and the refresh's own restriction is on holding the read lock, not on which
-     * thread calls it — which is what lets [routeSelection]'s inline branch call this directly instead of
-     * mirroring its steps.
+     * Callable from the EDT as well as a background thread — which is what lets [routeSelection]'s inline branch
+     * call this directly instead of mirroring its steps — but legal on each for a different reason: which thread
+     * calls [ReferenceRoots.refresh] is exactly what decides whether the call is legal, not merely whether a read
+     * lock is held. On the EDT the read lock **is** held, and the refresh runs anyway only because the platform
+     * exempts the EDT from the check that would otherwise reject it; off the EDT it runs only because this call
+     * sits between the two read actions below rather than inside either. Getting either wrong fails silently — a
+     * logged error, no refresh, no exception — so the panel would simply keep showing stale images forever
+     * instead of crashing; that silent failure mode, not a stylistic preference, is why the lookup stays split
+     * into three steps.
      *
-     * Returns empty images and tasks when [snapshot] resolves to no module, or when [disposalCheck] fires
-     * between the two read actions: the panel that would show the result is gone, so the refresh and the second
-     * read action are both work nothing will use. Lets [ProcessCanceledException] propagate rather than
-     * catching it here; only [loadReferences] needs to react to it, and it already does.
+     * Returns empty images and tasks when [snapshot] resolves to no module, when [disposalCheck] fires between
+     * the two read actions, or when the refresh discovers `moduleDirectory` no longer exists on disk: the panel
+     * that would show the result is gone in the first two cases, and the second read action would otherwise
+     * throw `InvalidVirtualFileAccessException` reading an invalidated directory in the third. Lets
+     * [ProcessCanceledException] propagate rather than catching it here; only [loadReferences] needs to react to
+     * it, and it already does.
      */
     private fun resolveReferences(snapshot: PreviewEntry): LocatedReferences {
         val moduleDirectory = ReadAction.nonBlocking<VirtualFile?> {
@@ -747,6 +754,10 @@ class PreviewGalleryPanel(
             ?: return LocatedReferences(emptyList(), emptyList())
         if (disposalCheck.isDisposed) return LocatedReferences(emptyList(), emptyList())
         ReferenceRoots.refresh(moduleDirectory)
+        // The refresh above can discover moduleDirectory itself is gone (see ReferenceRoots.refresh's own KDoc
+        // for the same failure shape on its src guard): unguarded, ReferenceRoots.of below would throw
+        // InvalidVirtualFileAccessException inside this read action instead of finding nothing.
+        if (!moduleDirectory.isValid) return LocatedReferences(emptyList(), emptyList())
         return ReadAction.nonBlocking<LocatedReferences> { locateReferences(snapshot, moduleDirectory) }
             .expireWith(parentDisposable)
             .executeSynchronously()

@@ -1,11 +1,13 @@
 package com.devomer.previewgallery.service
 
 import com.intellij.openapi.util.io.FileUtil
+import com.intellij.openapi.vfs.InvalidVirtualFileAccessException
 import com.intellij.openapi.vfs.LocalFileSystem
 import com.intellij.openapi.vfs.VfsUtilCore
 import com.intellij.openapi.vfs.VirtualFile
 import com.intellij.openapi.vfs.VirtualFileVisitor
 import com.intellij.testFramework.fixtures.BasePlatformTestCase
+import org.junit.Assert.assertThrows
 import java.io.File
 
 /**
@@ -101,5 +103,17 @@ class ReferenceRootsRefreshTest : BasePlatformTestCase() {
         ReferenceRoots.refresh(module)
 
         assertEquals(emptyList<String>(), ReferenceRoots.of(module).map { it.sourceSetName })
+    }
+
+    fun `test of throws when the module directory itself is invalidated`() {
+        fileOnDisk("src/screenshotTestDebug/$facadeDirectory/Widget_Default_Snapshot_phone_eee23ffd_0.png")
+        val module = moduleVirtualFile()
+        loadEveryChild(module)
+
+        FileUtil.delete(moduleDirectory)
+        module.refresh(false, true)
+        assertFalse(module.isValid)
+
+        assertThrows(InvalidVirtualFileAccessException::class.java) { ReferenceRoots.of(module) }
     }
 }
