@@ -636,9 +636,11 @@ class PreviewGalleryPanel(
      * cancellation semantics then cannot drift from the preview-to-preview switch's.
      *
      * [deferReferenceLookup] is false only for [selectByLabelPathForTest], which needs the routing to have
-     * finished by the time it returns — so it runs the two halves inline, in the same order [loadReferences]
-     * runs them. Production always defers, keeping the VFS lookup and the PNG decode off the EDT and behind the
-     * selection debounce.
+     * finished by the time it returns — so it calls [resolveReferences] and [decodeReferences] directly, on
+     * whatever thread the test runs on, instead of going through [loadReferences]'s background hop and debounce.
+     * Both paths now run the very same [resolveReferences] rather than each keeping their own copy of its three
+     * steps in sync by hand. Production always defers, keeping the lookup and the PNG decode off the EDT and
+     * behind the selection debounce.
      */
     private fun routeSelection(deferReferenceLookup: Boolean) {
         val snapshot = selectedSnapshotEntry()
@@ -648,13 +650,7 @@ class PreviewGalleryPanel(
             if (deferReferenceLookup) {
                 showReferenceImages(snapshot)
             } else {
-                val moduleDirectory = ModuleDirectoryResolver.resolve(project, snapshot.file)
-                val located = if (moduleDirectory == null) {
-                    LocatedReferences(emptyList(), emptyList())
-                } else {
-                    ReferenceRoots.refresh(moduleDirectory)
-                    locateReferences(snapshot, moduleDirectory)
-                }
+                val located = resolveReferences(snapshot)
                 publishReferences(snapshot, decodeReferences(located.images), located.tasks)
             }
             return
@@ -696,33 +692,18 @@ class PreviewGalleryPanel(
     }
 
     /**
-     * Resolves [snapshot]'s module directory and locates its reference images under read actions, refreshes the
-     * reference directories **between** them without one, and decodes the PNGs after the last one — all on the
-     * same background executor, then hands the result to [publishReferences] on the EDT.
+     * Runs [resolveReferences] and decodes its images, both on the same background executor, then hands the
+     * result to [publishReferences] on the EDT.
      *
-     * The three-way split is forced, not stylistic. `ModuleDirectoryResolver` reads the project model and needs
-     * the lock; `ReferenceRoots.refresh` is a synchronous VFS refresh, which the platform rejects under one; the
-     * listing needs it again. Decoding stays outside for the reason it always has (`RenderPipeline`'s own class
-     * doc calls holding the read lock across long work "a prime freeze suspect"): `ImageIO.read` on two
+     * Decoding stays outside every read action for the reason it always has (`RenderPipeline`'s own class doc
+     * calls holding the read lock across long work "a prime freeze suspect"): `ImageIO.read` on two
      * device-resolution PNGs is tens of milliseconds that would otherwise block every write action in the IDE.
      */
     private fun loadReferences(snapshot: PreviewEntry) {
         val modality = ModalityState.defaultModalityState()
         AppExecutorUtil.getAppExecutorService().execute {
             val located = try {
-                val moduleDirectory = ReadAction.nonBlocking<VirtualFile?> {
-                    ModuleDirectoryResolver.resolve(project, snapshot.file)
-                }
-                    .expireWith(parentDisposable)
-                    .executeSynchronously()
-                if (moduleDirectory == null) {
-                    LocatedReferences(emptyList(), emptyList())
-                } else {
-                    ReferenceRoots.refresh(moduleDirectory)
-                    ReadAction.nonBlocking<LocatedReferences> { locateReferences(snapshot, moduleDirectory) }
-                        .expireWith(parentDisposable)
-                        .executeSynchronously()
-                }
+                resolveReferences(snapshot)
             } catch (e: ProcessCanceledException) {
                 // The panel is gone, or a write action preempted the lookup. Nothing to publish and nothing to
                 // retry: the selection that would want this result is gone with it.
@@ -737,6 +718,38 @@ class PreviewGalleryPanel(
                 modality,
             )
         }
+    }
+
+    /**
+     * Resolves [snapshot]'s module directory and locates its reference images under read actions, refreshing the
+     * reference directories **between** them without one.
+     *
+     * The three-way split is forced, not stylistic. `ModuleDirectoryResolver` reads the project model and needs
+     * the lock; `ReferenceRoots.refresh` is a synchronous VFS refresh, which the platform rejects under one; the
+     * listing needs it again.
+     *
+     * Callable from the EDT as well as a background thread: `executeSynchronously` runs its read action inline
+     * when already on the EDT, and the refresh's own restriction is on holding the read lock, not on which
+     * thread calls it — which is what lets [routeSelection]'s inline branch call this directly instead of
+     * mirroring its steps.
+     *
+     * Returns empty images and tasks when [snapshot] resolves to no module, or when [disposalCheck] fires
+     * between the two read actions: the panel that would show the result is gone, so the refresh and the second
+     * read action are both work nothing will use. Lets [ProcessCanceledException] propagate rather than
+     * catching it here; only [loadReferences] needs to react to it, and it already does.
+     */
+    private fun resolveReferences(snapshot: PreviewEntry): LocatedReferences {
+        val moduleDirectory = ReadAction.nonBlocking<VirtualFile?> {
+            ModuleDirectoryResolver.resolve(project, snapshot.file)
+        }
+            .expireWith(parentDisposable)
+            .executeSynchronously()
+            ?: return LocatedReferences(emptyList(), emptyList())
+        if (disposalCheck.isDisposed) return LocatedReferences(emptyList(), emptyList())
+        ReferenceRoots.refresh(moduleDirectory)
+        return ReadAction.nonBlocking<LocatedReferences> { locateReferences(snapshot, moduleDirectory) }
+            .expireWith(parentDisposable)
+            .executeSynchronously()
     }
 
     /** What one lookup produced: the images to show, and the Gradle tasks to name when there are none. */
@@ -774,8 +787,7 @@ class PreviewGalleryPanel(
     /** Decodes what [locateReferences] found — deliberately holding no read lock (see [loadReferences]); a
      *  `VirtualFile`'s bytes are readable without one, and this is the slow half.
      *
-     *  The label carries its source set only when the strip spans more than one: with a single root the variant
-     *  alone is unambiguous, and prefixing it would add noise to every module that has no flavours. */
+     *  Labels come from [ReferenceImageLocator.labels], whose own KDoc states when one carries its source set. */
     private fun decodeReferences(references: List<ReferenceImage>): DecodedReferences {
         val images = mutableListOf<ReferenceStripView.LabelledImage>()
         val skipped = mutableListOf<String>()

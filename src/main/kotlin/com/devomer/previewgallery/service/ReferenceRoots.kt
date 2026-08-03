@@ -45,10 +45,17 @@ object ReferenceRoots {
      * pass reloads each source set's subtree, which is what makes a PNG added to an already-listed `reference`
      * directory appear. A single recursive pass over `src` would walk every source file in the module instead of
      * the snapshot corpus alone.
+     *
+     * The shallow pass can itself discover that `src` no longer exists at all — a branch switch, a `git clean`,
+     * a removed module — which invalidates the very directory this function was asked about. Reading its
+     * children afterwards would then throw `InvalidVirtualFileAccessException` instead of leaving the module
+     * with the empty root list a deletion deserves, so validity is checked right there, before either that read
+     * or the recursive pass depending on it can run.
      */
     fun refresh(moduleDirectory: VirtualFile) {
         val src = moduleDirectory.findChild(SRC)?.takeIf { it.isDirectory } ?: return
         VfsUtil.markDirtyAndRefresh(false, false, true, src)
+        if (!src.isValid) return
         val sourceSets = src.children.orEmpty()
             .filter { it.isDirectory && it.name.startsWith(SCREENSHOT_TEST) }
         if (sourceSets.isEmpty()) return

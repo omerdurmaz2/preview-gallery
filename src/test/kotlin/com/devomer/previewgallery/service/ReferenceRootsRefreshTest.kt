@@ -90,4 +90,16 @@ class ReferenceRootsRefreshTest : BasePlatformTestCase() {
 
         assertEquals(emptyList<String>(), ReferenceRoots.of(module).map { it.sourceSetName })
     }
+
+    fun `test a src tree deleted outside the IDE survives the refresh`() {
+        fileOnDisk("src/screenshotTestDebug/$facadeDirectory/Widget_Default_Snapshot_phone_eee23ffd_0.png")
+        val module = moduleVirtualFile()
+        loadEveryChild(module)
+
+        FileUtil.delete(File(moduleDirectory, "src"))
+
+        ReferenceRoots.refresh(module)
+
+        assertEquals(emptyList<String>(), ReferenceRoots.of(module).map { it.sourceSetName })
+    }
 }
