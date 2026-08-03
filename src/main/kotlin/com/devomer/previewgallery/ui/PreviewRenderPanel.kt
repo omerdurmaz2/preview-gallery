@@ -155,6 +155,10 @@ class PreviewRenderPanel(private val project: Project) : JBPanel<PreviewRenderPa
     internal var activeState: RenderState = RenderState.IDLE
         private set
 
+    /** The Gradle tasks that would generate the missing references, for [noReference]. Owned by the snapshot
+     *  path alone: the two-argument [show] clears it, so a live render can never inherit a snapshot's advice. */
+    private var referenceTasks: List<String> = emptyList()
+
     /**
      * Whether the entry on screen is a snapshot (spec D8) — the question every "this control ends in a render"
      * gate has to ask, and which [referenceStrip] cannot answer: [RenderState.NO_REFERENCE] is a snapshot with
@@ -173,6 +177,10 @@ class PreviewRenderPanel(private val project: Project) : JBPanel<PreviewRenderPa
     @TestOnly
     internal fun actionTitlesForTest(): List<String> =
         lastActionGroup.childActionsOrStubs.mapNotNull { it.templatePresentation.text }
+
+    @TestOnly
+    internal fun messageForTest(): String? =
+        UIUtil.findComponentOfType(centerPanel, JBLabel::class.java)?.text
 
     init {
         border = JBUI.Borders.empty(8)
@@ -210,6 +218,7 @@ class PreviewRenderPanel(private val project: Project) : JBPanel<PreviewRenderPa
 
     /** The render pipeline's entry point: shows one published [RenderResultView]. */
     fun show(view: RenderResultView, entry: PreviewEntry?) {
+        referenceTasks = emptyList()
         show(view, entry, strip = null)
     }
 
@@ -223,7 +232,13 @@ class PreviewRenderPanel(private val project: Project) : JBPanel<PreviewRenderPa
      * the variants that did decode still show (spec's error-handling table). An empty [images] is
      * [RenderState.NO_REFERENCE] — whether because nothing is committed yet or because every variant failed.
      */
-    fun showReference(entry: PreviewEntry, images: List<ReferenceStripView.LabelledImage>, skipped: List<String>) {
+    fun showReference(
+        entry: PreviewEntry,
+        images: List<ReferenceStripView.LabelledImage>,
+        skipped: List<String>,
+        tasks: List<String> = emptyList(),
+    ) {
+        referenceTasks = tasks
         if (images.isEmpty()) {
             show(RenderResultView(RenderState.NO_REFERENCE, null, entry.moduleName), entry, strip = null)
             return
@@ -824,12 +839,18 @@ class PreviewRenderPanel(private val project: Project) : JBPanel<PreviewRenderPa
 
     /**
      * A snapshot with nothing committed to show (spec D10): the message names the Gradle task that generates the
-     * references, since "no images" without the fix is not actionable. Offers Open file, and deliberately **not**
-     * Render the way [failed] does — a snapshot is never rendered at all (spec D8), so a Render button here would
-     * be a control that cannot do what it says.
+     * references, since "no images" without the fix is not actionable — and names the task of the variants that
+     * were actually found, since a flavoured module does not have `updateDebugScreenshotTest`. Offers Open file,
+     * and deliberately **not** Render the way [failed] does — a snapshot is never rendered at all (spec D8), so a
+     * Render button here would be a control that cannot do what it says.
      */
     private fun noReference(entry: PreviewEntry?): JBPanel<*> = JBPanel<JBPanel<*>>(BorderLayout()).apply {
-        add(JBLabel(PreviewGalleryBundle.message("render.noReference")), BorderLayout.NORTH)
+        val message = if (referenceTasks.isEmpty()) {
+            PreviewGalleryBundle.message("render.noReference")
+        } else {
+            PreviewGalleryBundle.message("render.noReference.task", referenceTasks.joinToString(", "))
+        }
+        add(JBLabel(message), BorderLayout.NORTH)
         if (entry != null) add(ActionLink(PreviewGalleryBundle.message("detail.openFile")) { onOpenFile(entry) }, BorderLayout.SOUTH)
     }
 

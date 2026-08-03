@@ -81,4 +81,50 @@ class PreviewRenderPanelTest : BasePlatformTestCase() {
 
         assertTrue(panel.actionTitlesForTest().toString(), panel.actionTitlesForTest().contains("Properties"))
     }
+
+    fun `test a snapshot with no reference images names the tasks that generate them`() {
+        val panel = panel()
+
+        panel.showReference(
+            entry("Widget_Default_Snapshot", isSnapshotTest = true),
+            emptyList(),
+            emptyList(),
+            listOf("updateGoogleDebugScreenshotTest", "updateHuaweiDebugScreenshotTest"),
+        )
+
+        assertEquals(
+            "No reference images — run updateGoogleDebugScreenshotTest, updateHuaweiDebugScreenshotTest.",
+            panel.messageForTest(),
+        )
+    }
+
+    fun `test a snapshot whose variant cannot be read names no task`() {
+        val panel = panel()
+
+        panel.showReference(entry("Widget_Default_Snapshot", isSnapshotTest = true), emptyList(), emptyList())
+
+        // Naming updateDebugScreenshotTest here is what the hardcoded root used to do, and it sent a flavoured
+        // module's user to a task that module does not have.
+        assertEquals(
+            "No reference images — run the update…ScreenshotTest task for this module.",
+            panel.messageForTest(),
+        )
+    }
+
+    fun `test a later render clears the task names a snapshot left behind`() {
+        val panel = panel()
+        panel.showReference(
+            entry("Widget_Default_Snapshot", isSnapshotTest = true),
+            emptyList(),
+            emptyList(),
+            listOf("updateDebugScreenshotTest"),
+        )
+
+        panel.show(RenderResultView(RenderState.NO_REFERENCE, null, "app"), entry("Other_Snapshot", true))
+
+        assertEquals(
+            "No reference images — run the update…ScreenshotTest task for this module.",
+            panel.messageForTest(),
+        )
+    }
 }
