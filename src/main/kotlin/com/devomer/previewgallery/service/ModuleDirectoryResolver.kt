@@ -24,17 +24,27 @@ object ModuleDirectoryResolver {
 
     private const val SRC = "src"
 
+    /**
+     * [file]'s module directory: [SnapshotSourceScanner.moduleDirectory]'s path derivation first, the project
+     * model only when that returns null — see the class doc for why. Callers must be under a read action.
+     */
     fun resolve(project: Project, file: VirtualFile): VirtualFile? =
         SnapshotSourceScanner.moduleDirectory(file) ?: fromModel(project, file)
 
-    /**
-     * The first content root holding a `src` directory, rather than the first content root outright: a
-     * module-per-source-set import gives the holder module several roots, and only the module directory itself
-     * has the `src` the reference layout is expressed against.
-     */
     private fun fromModel(project: Project, file: VirtualFile): VirtualFile? {
         val module = ModuleUtilCore.findModuleForFile(file, project) ?: return null
-        return ModuleRootManager.getInstance(module).contentRoots
-            .firstOrNull { it.findChild(SRC)?.isDirectory == true }
+        return firstContentRootWithSrc(ModuleRootManager.getInstance(module).contentRoots)
     }
+
+    /**
+     * The first content root holding a `src` directory, rather than the first content root outright: a
+     * module-per-source-set import gives the holder module several content roots, and only the module directory
+     * itself carries the `src` the reference layout is expressed against.
+     *
+     * `internal`, not `private`: `BasePlatformTestCase`'s light fixture gives every module exactly one content
+     * root, so nothing reachable through [resolve] can drive this rule past a single root, and it would
+     * otherwise rest on reasoning alone.
+     */
+    internal fun firstContentRootWithSrc(contentRoots: Array<VirtualFile>): VirtualFile? =
+        contentRoots.firstOrNull { it.findChild(SRC)?.isDirectory == true }
 }
