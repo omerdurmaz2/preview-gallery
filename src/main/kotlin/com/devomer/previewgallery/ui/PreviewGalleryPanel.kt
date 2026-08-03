@@ -12,10 +12,10 @@ import com.devomer.previewgallery.render.RenderApiProbe
 import com.devomer.previewgallery.render.RenderPipeline
 import com.devomer.previewgallery.render.RenderState
 import com.devomer.previewgallery.search.PreviewModuleFilter
+import com.devomer.previewgallery.service.ModuleDirectoryResolver
 import com.devomer.previewgallery.service.PreviewIndexService
 import com.devomer.previewgallery.service.ReferenceImageLocator
 import com.devomer.previewgallery.service.ReferenceRoots
-import com.devomer.previewgallery.service.SnapshotSourceScanner
 import com.intellij.ide.CommonActionsManager
 import com.intellij.ide.DefaultTreeExpander
 import com.intellij.ide.TreeExpander
@@ -389,6 +389,11 @@ class PreviewGalleryPanel(
     @get:TestOnly
     val renderStateForTest: RenderState get() = renderPanel.activeState
 
+    /** The no-reference message currently on screen, so its task name can be asserted without a live render. */
+    @get:TestOnly
+    internal val renderMessageForTest: String?
+        get() = renderPanel.messageForTest()
+
     /** What double-click and Enter do to the current selection, without a mouse or a key event. */
     @TestOnly
     fun navigateToSelectionForTest(): Boolean = navigateToSelection()
@@ -643,7 +648,14 @@ class PreviewGalleryPanel(
             if (deferReferenceLookup) {
                 showReferenceImages(snapshot)
             } else {
-                publishReferences(snapshot, decodeReferences(locateReferences(snapshot)))
+                val moduleDirectory = ModuleDirectoryResolver.resolve(project, snapshot.file)
+                val located = if (moduleDirectory == null) {
+                    LocatedReferences(emptyList(), emptyList())
+                } else {
+                    ReferenceRoots.refresh(moduleDirectory)
+                    locateReferences(snapshot, moduleDirectory)
+                }
+                publishReferences(snapshot, decodeReferences(located.images), located.tasks)
             }
             return
         }
@@ -684,79 +696,95 @@ class PreviewGalleryPanel(
     }
 
     /**
-     * Locates [snapshot]'s reference images under a read action and decodes them **outside** it, both on the same
-     * background executor, then hands the result to [publishReferences] on the EDT.
+     * Resolves [snapshot]'s module directory and locates its reference images under read actions, refreshes the
+     * reference directories **between** them without one, and decodes the PNGs after the last one — all on the
+     * same background executor, then hands the result to [publishReferences] on the EDT.
      *
-     * The split is the point (`RenderPipeline`'s own class doc calls holding the read lock across long work "a
-     * prime freeze suspect", and PG3-6 removed exactly this pattern from the render path): only the VFS walk
-     * needs the read lock, and it is a directory listing. `ImageIO.read`
-     * on two device-resolution PNGs is tens of milliseconds of decode that would otherwise hold the *global*
-     * read lock, blocking every write action in the IDE, once per snapshot selection.
+     * The three-way split is forced, not stylistic. `ModuleDirectoryResolver` reads the project model and needs
+     * the lock; `ReferenceRoots.refresh` is a synchronous VFS refresh, which the platform rejects under one; the
+     * listing needs it again. Decoding stays outside for the reason it always has (`RenderPipeline`'s own class
+     * doc calls holding the read lock across long work "a prime freeze suspect"): `ImageIO.read` on two
+     * device-resolution PNGs is tens of milliseconds that would otherwise block every write action in the IDE.
      */
     private fun loadReferences(snapshot: PreviewEntry) {
         val modality = ModalityState.defaultModalityState()
         AppExecutorUtil.getAppExecutorService().execute {
-            val references = try {
-                ReadAction.nonBlocking<List<ReferenceImage>> { locateReferences(snapshot) }
+            val located = try {
+                val moduleDirectory = ReadAction.nonBlocking<VirtualFile?> {
+                    ModuleDirectoryResolver.resolve(project, snapshot.file)
+                }
                     .expireWith(parentDisposable)
                     .executeSynchronously()
+                if (moduleDirectory == null) {
+                    LocatedReferences(emptyList(), emptyList())
+                } else {
+                    ReferenceRoots.refresh(moduleDirectory)
+                    ReadAction.nonBlocking<LocatedReferences> { locateReferences(snapshot, moduleDirectory) }
+                        .expireWith(parentDisposable)
+                        .executeSynchronously()
+                }
             } catch (e: ProcessCanceledException) {
                 // The panel is gone, or a write action preempted the lookup. Nothing to publish and nothing to
                 // retry: the selection that would want this result is gone with it.
                 return@execute
             }
-            val decoded = decodeReferences(references)
+            val decoded = decodeReferences(located.images)
             ApplicationManager.getApplication().invokeLater(
                 {
                     if (disposalCheck.isDisposed) return@invokeLater
-                    publishReferences(snapshot, decoded)
+                    publishReferences(snapshot, decoded, located.tasks)
                 },
                 modality,
             )
         }
     }
 
+    /** What one lookup produced: the images to show, and the Gradle tasks to name when there are none. */
+    private data class LocatedReferences(val images: List<ReferenceImage>, val tasks: List<String>)
+
     /**
      * EDT half of [showReferenceImages]. Dropped unless [snapshot] is *still* the selected row: arrow-keying down
      * a preview's snapshot children starts one decode per row, and a slower earlier one must not land on top of a
      * later selection — nor on top of a live render, if the user has moved back to a preview meanwhile. Re-reading
-     * the tree's own selection is the whole guard; no separate generation counter can disagree with it.
+     * the tree's own selection is the whole guard; no separate generation counter can disagree with it. [tasks]
+     * passes straight through to [PreviewRenderPanel.showReference] — it is assembled in [locateReferences], the
+     * one place that already knows which roots exist.
      */
-    private fun publishReferences(snapshot: PreviewEntry, decoded: DecodedReferences) {
+    private fun publishReferences(snapshot: PreviewEntry, decoded: DecodedReferences, tasks: List<String>) {
         if (selectedSnapshotEntry()?.id != snapshot.id) return
-        renderPanel.showReference(snapshot, decoded.images, decoded.skipped)
+        renderPanel.showReference(snapshot, decoded.images, decoded.skipped, tasks)
     }
 
     /**
-     * Finds [snapshot]'s committed reference images (spec D6). **This** is the half that needs a read action: the
-     * VFS directory listing, and nothing else.
+     * Finds [snapshot]'s committed reference images under [moduleDirectory] (spec D6). **This** is the half that
+     * needs a read action: the VFS directory listing, and nothing else.
      *
-     * The directory to look in is derived from the snapshot's own file path rather than from the module the
-     * project model puts it in (Phase 14 D7). Asking `ProjectFileIndex.getModuleForFile` would put the reference
-     * strip back on exactly the dependency `SnapshotSourceScanner` exists to remove, and its failure mode is the
-     * quiet one: snapshot rows would appear and every one of them would read `NO_REFERENCE`.
-     *
-     * The cost is that a row from the **index fallback** — a snapshot in a layout the probe does not recognise,
-     * so not under `<moduleDir>/src/screenshotTest` — has no directory to derive, and shows the no-reference
-     * state. That is a degraded mode by construction, it is not an error (spec D10), and the row itself, its
-     * badge and its navigation all still work.
+     * Every discovered root contributes, and the tasks that would regenerate them are collected here rather than
+     * in the panel, because this is where the roots are known — the message has to name the module's own
+     * variants, not the `Debug` a library module happens to have.
      */
-    private fun locateReferences(snapshot: PreviewEntry): List<ReferenceImage> {
-        val moduleDirectory = SnapshotSourceScanner.moduleDirectory(snapshot.file) ?: return emptyList()
-        return ReferenceImageLocator.locate(snapshot, ReferenceRoots.of(moduleDirectory))
+    private fun locateReferences(snapshot: PreviewEntry, moduleDirectory: VirtualFile): LocatedReferences {
+        val roots = ReferenceRoots.of(moduleDirectory)
+        return LocatedReferences(
+            images = ReferenceImageLocator.locate(snapshot, roots),
+            tasks = roots.mapNotNull { ReferenceRoots.updateTask(it.variant) }.distinct().sorted(),
+        )
     }
 
     /** Decodes what [locateReferences] found — deliberately holding no read lock (see [loadReferences]); a
-     *  `VirtualFile`'s bytes are readable without one, and this is the slow half. */
+     *  `VirtualFile`'s bytes are readable without one, and this is the slow half.
+     *
+     *  The label carries its source set only when the strip spans more than one: with a single root the variant
+     *  alone is unambiguous, and prefixing it would add noise to every module that has no flavours. */
     private fun decodeReferences(references: List<ReferenceImage>): DecodedReferences {
         val images = mutableListOf<ReferenceStripView.LabelledImage>()
         val skipped = mutableListOf<String>()
-        for (reference in references) {
+        for ((reference, label) in references.zip(ReferenceImageLocator.labels(references))) {
             val image = readImage(reference.file)
             if (image == null) {
-                skipped += reference.variant
+                skipped += label
             } else {
-                images += ReferenceStripView.LabelledImage(reference.variant, image)
+                images += ReferenceStripView.LabelledImage(label, image)
             }
         }
         return DecodedReferences(images, skipped)

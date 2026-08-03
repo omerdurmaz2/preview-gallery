@@ -474,6 +474,53 @@ class PreviewGalleryPanelTest : BasePlatformTestCase() {
         }
     }
 
+    fun `test a flavoured module shows the references committed under its own variant`() {
+        projectWithSnapshot()
+        referencePng(
+            "src/screenshotTestGoogleDebug/reference/com/example/WidgetSnapshotsKt",
+            "Widget_Default_Snapshot_phone_eee23ffd_0.png",
+        )
+        val panel = panel()
+        panel.reloadSynchronously()
+
+        panel.selectByLabelPathForTest("WidgetPreview", "Widget_Default_Snapshot")
+
+        // The root used to be the constant src/screenshotTestDebug/reference, so every row of a flavoured
+        // module read NO_REFERENCE while its goldens sat on disk.
+        assertEquals(RenderState.REFERENCE, panel.renderStateForTest)
+    }
+
+    fun `test a flavoured module with nothing committed for this function names its own task`() {
+        projectWithSnapshot()
+        referencePng(
+            "src/screenshotTestGoogleDebug/reference/com/example/OtherSnapshotsKt",
+            "Other_Default_Snapshot_phone_eee23ffd_0.png",
+        )
+        val panel = panel()
+        panel.reloadSynchronously()
+
+        panel.selectByLabelPathForTest("WidgetPreview", "Widget_Default_Snapshot")
+
+        assertEquals(RenderState.NO_REFERENCE, panel.renderStateForTest)
+        assertEquals(
+            "No reference images — run updateGoogleDebugScreenshotTest.",
+            panel.renderMessageForTest,
+        )
+    }
+
+    fun `test a module with no reference directory at all names no task`() {
+        projectWithSnapshot()
+        val panel = panel()
+        panel.reloadSynchronously()
+
+        panel.selectByLabelPathForTest("WidgetPreview", "Widget_Default_Snapshot")
+
+        assertEquals(
+            "No reference images — run the update…ScreenshotTest task for this module.",
+            panel.renderMessageForTest,
+        )
+    }
+
     private fun referencePng(directory: String, name: String) {
         val image = BufferedImage(2, 2, BufferedImage.TYPE_INT_ARGB)
         val bytes = ByteArrayOutputStream().use { stream ->
