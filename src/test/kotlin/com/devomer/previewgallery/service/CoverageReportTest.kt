@@ -15,7 +15,6 @@ class CoverageReportTest {
 
     private fun uncovered(name: String, module: String = "app.main") =
         testRow(displayName = name, functionName = name, moduleName = module)
-            .copy(coverage = SnapshotCoverage.Uncovered)
 
     @Test
     fun `one module reports its totals and its uncovered rows`() {
@@ -58,15 +57,15 @@ class CoverageReportTest {
     }
 
     @Test
-    fun `a module that never adopted screenshot testing is left out of the body and the totals`() {
+    fun `a module that never adopted screenshot testing reads as zero covered`() {
         val markdown = CoverageReport.markdown(
-            listOf(covered("APreview"), testRow(displayName = "CPreview", moduleName = "legacy.main")),
+            listOf(covered("APreview"), uncovered("CPreview", module = "legacy.main")),
         )
 
-        // NotApplicable modules would otherwise pin the percentage near zero forever: the reference project
-        // has 1371 modules and one of them has adopted screenshot testing (spec D6).
-        assertTrue(markdown, markdown.contains("**1/1 covered** across 1 module"))
-        assertFalse(markdown, markdown.contains("legacy.main"))
+        // The module has no src/screenshotTest, so none of its previews is snapshotted — which is the work the
+        // report exists to expose, not a module it should be blind to.
+        assertTrue(markdown, markdown.contains("**1/2 covered** across 2 modules"))
+        assertTrue(markdown, markdown.contains("## legacy.main — 0/1"))
     }
 
     @Test
@@ -78,15 +77,10 @@ class CoverageReportTest {
     }
 
     @Test
-    fun `a project with no applicable module says so instead of emitting an empty report`() {
-        val markdown = CoverageReport.markdown(listOf(testRow(displayName = "APreview")))
+    fun `a project with no preview at all says so instead of emitting an empty report`() {
+        val markdown = CoverageReport.markdown(emptyList())
 
-        assertTrue(markdown, markdown.contains("No module in this project has a `src/screenshotTest` source set."))
+        assertTrue(markdown, markdown.contains("No preview was found in this project."))
         assertFalse(markdown, markdown.contains("##"))
-    }
-
-    @Test
-    fun `no rows at all is the same as no applicable module`() {
-        assertEquals(CoverageReport.markdown(emptyList()), CoverageReport.markdown(listOf(testRow())))
     }
 }

@@ -84,7 +84,13 @@ class PreviewTreeCellRendererTest {
         val renderer = render(PreviewNode.PreviewLeaf(row))
 
         assertEquals(AllIcons.Nodes.Function, renderer.icon)
-        assertEquals(listOf("BarPreview" to SimpleTextAttributes.REGULAR_ATTRIBUTES), fragments(renderer))
+        assertEquals(
+            listOf(
+                "BarPreview" to SimpleTextAttributes.REGULAR_ATTRIBUTES,
+                "  · no snapshot" to SimpleTextAttributes.GRAYED_SMALL_ATTRIBUTES,
+            ),
+            fragments(renderer),
+        )
         assertEquals(row.indexed.composableFqn, renderer.toolTipText)
     }
 
@@ -98,19 +104,26 @@ class PreviewTreeCellRendererTest {
             listOf(
                 "Dark tab" to SimpleTextAttributes.REGULAR_ATTRIBUTES,
                 "  TabsPreview" to SimpleTextAttributes.GRAYED_ATTRIBUTES,
+                "  · no snapshot" to SimpleTextAttributes.GRAYED_SMALL_ATTRIBUTES,
             ),
             fragments(renderer),
         )
     }
 
     @Test
-    fun `an unsupported preview leaf is greyed out with a disabled icon and no text badge`() {
+    fun `an unsupported preview leaf is greyed out with a disabled icon and no reason badge`() {
         val row = testRow().let { it.copy(indexed = it.indexed.copy(unsupportedReason = "declared inside a class")) }
 
         val renderer = render(PreviewNode.PreviewLeaf(row))
 
         assertNotSame(AllIcons.Nodes.Function, renderer.icon)
-        assertEquals(listOf("BarPreview" to SimpleTextAttributes.GRAYED_ITALIC_ATTRIBUTES), fragments(renderer))
+        assertEquals(
+            listOf(
+                "BarPreview" to SimpleTextAttributes.GRAYED_ITALIC_ATTRIBUTES,
+                "  · no snapshot" to SimpleTextAttributes.GRAYED_SMALL_ATTRIBUTES,
+            ),
+            fragments(renderer),
+        )
     }
 
     @Test
@@ -119,7 +132,7 @@ class PreviewTreeCellRendererTest {
 
         val renderer = render(PreviewNode.PreviewLeaf(row))
 
-        val badge = fragments(renderer).last()
+        val badge = fragments(renderer)[1]
         assertEquals("  private · @PreviewParameter", badge.first)
         assertEquals(SimpleTextAttributes.GRAYED_SMALL_ATTRIBUTES, badge.second)
     }
@@ -144,9 +157,9 @@ class PreviewTreeCellRendererTest {
     }
 
     @Test
-    fun `a module without screenshot testing gets no badge`() {
-        val rendered = text(PreviewNode.PreviewLeaf(rowWith(SnapshotCoverage.NotApplicable)))
-        assertFalse(rendered, rendered.contains("snapshot"))
+    fun `a preview in a module without screenshot testing is badged like any other uncovered one`() {
+        val rendered = text(PreviewNode.PreviewLeaf(testRow()))
+        assertTrue(rendered, rendered.contains("· no snapshot"))
     }
 
     @Test

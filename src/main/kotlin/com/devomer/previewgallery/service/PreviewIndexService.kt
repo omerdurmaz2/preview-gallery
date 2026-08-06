@@ -51,7 +51,7 @@ class PreviewIndexService(private val project: Project) {
                 // the reference project has 1371 of them.
                 val sources = SnapshotSourceScanner.directories(project)
                 CachedValueProvider.Result.create(
-                    resolve(sorted(compute(sources) + SnapshotSourceScanner.scan(project, sources)), sources),
+                    resolve(sorted(compute(sources) + SnapshotSourceScanner.scan(project, sources))),
                     PsiModificationTracker.MODIFICATION_COUNT,
                     refreshTracker,
                 )
@@ -60,16 +60,9 @@ class PreviewIndexService(private val project: Project) {
         )
     }
 
-    /**
-     * Joins coverage onto [entries]. A module is applicable when [SnapshotSourceScanner] found a `screenshotTest`
-     * directory for it, **or** when a snapshot row survived [compute] for it — a layout the probe does not
-     * recognise still badges its rows off whatever the index managed to see, which is what Phase 13 did and what
-     * dropping the whole index channel would have taken away.
-     */
-    private fun resolve(entries: List<PreviewEntry>, sources: List<SnapshotSourceScanner.Source>): Rows {
-        val modules = sources.mapTo(HashSet()) { it.moduleName }
-        entries.forEach { if (it.indexed.isSnapshotTest) modules += it.moduleName }
-        val resolved = SnapshotCoverageResolver.resolve(entries, modules) { row, coverage, snapshots ->
+    /** Joins coverage onto [entries]. */
+    private fun resolve(entries: List<PreviewEntry>): Rows {
+        val resolved = SnapshotCoverageResolver.resolve(entries) { row, coverage, snapshots ->
             row.copy(coverage = coverage, snapshots = snapshots)
         }
         return Rows(resolved.previews, resolved.orphans)

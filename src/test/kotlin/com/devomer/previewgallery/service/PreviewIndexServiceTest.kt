@@ -97,7 +97,7 @@ class PreviewIndexServiceTest : BasePlatformTestCase() {
         assertTrue(PreviewIndexService.getInstance(project).findAll().isEmpty())
     }
 
-    fun `test a preview in a module with no screenshotTest directory is not applicable`() {
+    fun `test a preview in a module with no screenshotTest directory is uncovered`() {
         myFixture.addFileToProject(
             "src/main/kotlin/com/example/Widgets.kt",
             """
@@ -112,7 +112,7 @@ class PreviewIndexServiceTest : BasePlatformTestCase() {
 
         val previews = PreviewIndexService.getInstance(project).findAll()
 
-        assertEquals(SnapshotCoverage.NotApplicable, previews.single().coverage)
+        assertEquals(SnapshotCoverage.Uncovered, previews.single().coverage)
     }
 
     fun `test snapshot rows do not appear as previews`() {
@@ -160,9 +160,8 @@ class PreviewIndexServiceTest : BasePlatformTestCase() {
             fun WidgetPreview() = PreviewComponent { Widget() }
             """.trimIndent(),
         )
-        // A screenshotTest file that contributes no @PreviewTest function. Phase 13's index-corroboration would
-        // have degraded this to NotApplicable; the scanner-only design has no index to disagree with, so a
-        // screenshotTest directory alone makes the module applicable, and this is Uncovered like an empty one.
+        // A screenshotTest file that contributes no @PreviewTest function: nothing here can match the preview,
+        // so it is uncovered, the same answer a module with no screenshotTest directory at all gets.
         myFixture.addFileToProject(
             "src/screenshotTest/kotlin/com/example/Fixtures.kt",
             """

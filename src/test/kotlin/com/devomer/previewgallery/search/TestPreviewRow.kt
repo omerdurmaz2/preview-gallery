@@ -9,7 +9,7 @@ import com.devomer.previewgallery.model.SnapshotCoverage
 data class TestPreviewRow(
     override val indexed: IndexedPreview,
     override val moduleName: String,
-    override val coverage: SnapshotCoverage = SnapshotCoverage.NotApplicable,
+    override val coverage: SnapshotCoverage = SnapshotCoverage.Uncovered,
     override val snapshots: List<TestPreviewRow> = emptyList(),
 ) : PreviewRow
 

@@ -9,7 +9,7 @@ interface PreviewRow {
     val moduleName: String
 
     /** Resolved at query time, not indexed: it is a cross-file relation. */
-    val coverage: SnapshotCoverage get() = SnapshotCoverage.NotApplicable
+    val coverage: SnapshotCoverage get() = SnapshotCoverage.Uncovered
 
     /** The snapshot rows that show the same composable as this preview. */
     val snapshots: List<PreviewRow> get() = emptyList()

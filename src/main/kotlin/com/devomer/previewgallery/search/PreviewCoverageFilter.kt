@@ -7,10 +7,8 @@ import com.devomer.previewgallery.model.SnapshotCoverage
  * Restricts rows to the previews whose composable has no snapshot test — the work queue the coverage badge
  * provokes and cannot itself answer.
  *
- * [SnapshotCoverage.NotApplicable] is dropped alongside [SnapshotCoverage.Covered] (spec D2). It is not
- * "uncovered": it means the module has no `src/screenshotTest` at all, so the question has no answer there,
- * and a queue holding every module that never adopted screenshot testing is one nobody reads. That is the
- * same reasoning that leaves those rows unbadged.
+ * A module with no `src/screenshotTest` is in that queue like any other: it has written no snapshot for any of
+ * its previews, so every one of them is work to do.
  */
 object PreviewCoverageFilter {
 

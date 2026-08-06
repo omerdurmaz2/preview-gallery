@@ -7,7 +7,7 @@ data class PreviewEntry(
     override val indexed: IndexedPreview,
     override val moduleName: String,
     val file: VirtualFile,
-    override val coverage: SnapshotCoverage = SnapshotCoverage.NotApplicable,
+    override val coverage: SnapshotCoverage = SnapshotCoverage.Uncovered,
     override val snapshots: List<PreviewEntry> = emptyList(),
 ) : PreviewRow {
 

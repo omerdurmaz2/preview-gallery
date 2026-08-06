@@ -7,10 +7,9 @@ import org.junit.Test
 class PreviewCoverageFilterTest {
 
     private val covered = testRow(displayName = "CoveredPreview").copy(coverage = SnapshotCoverage.Covered(2))
-    private val uncovered = testRow(displayName = "UncoveredPreview").copy(coverage = SnapshotCoverage.Uncovered)
-    private val notApplicable = testRow(displayName = "OtherModulePreview")
+    private val uncovered = testRow(displayName = "UncoveredPreview")
 
-    private val rows = listOf(covered, uncovered, notApplicable)
+    private val rows = listOf(covered, uncovered)
 
     @Test
     fun `disabled passes every row through unchanged`() {
@@ -23,10 +22,13 @@ class PreviewCoverageFilterTest {
     }
 
     @Test
-    fun `a module that never adopted screenshot testing is not work to do`() {
-        // NotApplicable means the module has no src/screenshotTest at all, so the question has no answer for
-        // it — a work queue holding every such module is one nobody reads (spec D2).
-        assertEquals(emptyList<Any>(), PreviewCoverageFilter.apply(listOf(notApplicable), enabled = true))
+    fun `a preview in a module that never adopted screenshot testing is work to do`() {
+        val noScreenshotTestModule = testRow(displayName = "OtherModulePreview", moduleName = "legacy.main")
+
+        assertEquals(
+            listOf(noScreenshotTestModule),
+            PreviewCoverageFilter.apply(listOf(noScreenshotTestModule), enabled = true),
+        )
     }
 
     @Test

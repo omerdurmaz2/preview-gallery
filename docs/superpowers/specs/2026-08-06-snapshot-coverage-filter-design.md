@@ -33,11 +33,11 @@ already drawn by `PreviewTreeCellRenderer`. This phase only filters on it and fo
 | # | Decision | Rationale |
 |---|----------|-----------|
 | D1 | The filter is a **two-state** `ToggleAction` in the tool window toolbar: off shows everything, on shows only rows whose coverage is `Uncovered`. It persists per project in `PropertiesComponent`, exactly as the module filter does. | The pattern is already in the toolbar next to it, so the control needs no explanation. A three-state control would need a dropdown, which is a new UI concept in this window for a direction nobody has asked for yet (see Non-Goals). |
-| D2 | `NotApplicable` rows are **hidden** by the filter, not shown. | `NotApplicable` means the module has no `src/screenshotTest` at all, so "is this covered?" has no answer for it. Showing those rows in a list of work would fill it with modules that have not adopted screenshot testing, which is the same reasoning that keeps them unbadged. |
+| D2 | There is no `NotApplicable` state. A module with no `src/screenshotTest` has every preview `Uncovered`, so the filter shows them and the badge reads `no snapshot`. | *Revised after the PG16 gate: the first pass hid these rows and the toggle then surfaced exactly one module out of 1371, which read as the filter being broken.* A module that never adopted screenshot testing has written no snapshot for any of its previews — that is what "uncovered" means, and it is the work the filter exists to surface. Keeping a third state would have to be special-cased in the filter, the report and the renderer to say the same thing three times. |
 | D3 | The orphan branch stays **visible** while the filter is on. | An orphan is a snapshot that matches no preview — the mirror of what the filter selects for, and the same kind of defect: usually a renamed composable or a dead snapshot. Hiding it would make "show me what is wrong with coverage" tell half the truth. It is also the one place the filter's own subject matter cannot appear, since an orphan has no `coverage` to be `Uncovered`. |
 | D4 | The filter composes with the search box and the module filter rather than replacing either. It is a third stage in `applyFilter`'s existing chain. | They are independent axes — *which module*, *matching what text*, *covered or not* — and `applyFilter` already threads two of them. One more `filter` call is the whole change. |
 | D5 | The report reads the panel's unfiltered `entries` — the list `PreviewIndexService.findAll()` produced at the last reload — and **ignores** the filter, the module filter and the search box. | A report titled "snapshot coverage" that silently described a filtered subset is a footgun: the number lands in a ticket and nobody remembers a search box was open. Coverage is a property of the project, so the report describes the project. Reading `entries` rather than calling `findAll()` again keeps the action off a read action it would have to take on the EDT, and makes the report exactly as fresh as the tree the user is looking at. |
-| D6 | The report counts and lists **applicable modules only** — a module with no `src/screenshotTest` contributes to neither the totals nor the body. | The reference project has 1371 modules and one of them has adopted screenshot testing. A percentage computed over all of them would read as ~0% forever and would be discarded as noise. |
+| D6 | The report counts and lists **every module holding a preview**; one with no `src/screenshotTest` reads as `0/N`. | *Revised with D2.* The reference project has 1371 modules and one of them has adopted screenshot testing — a report that omitted the other 1370 would describe the one module already known to be fine and stay silent about all the work. A number near zero is the honest answer, and the per-module headings say where it comes from. |
 | D7 | Uncovered previews are listed by **composable FQN**, sorted by module then FQN. | `displayName` collides across packages, and the FQN is what a reader pastes into Search Everywhere. A deterministic order makes two reports of the same project diff cleanly. |
 | D8 | `ModuleFilterToggleAction`'s body — read a `PropertiesComponent` boolean, write it, call back — moves to a small `PersistentToggleAction` base that both toggles extend. | The second toggle differs from the first only in its storage key, its text and its icon. A base class plus two ten-line subclasses is less code than two twenty-five-line near-copies, and it means a change to how the toggles persist cannot apply to only one of them. |
 | D9 | The report is written to a file chosen in a save dialog, reusing the `FileSaverDescriptor` / `createSaveFileDialog` pair already used to export a PNG. | The existing idiom is three lines and the user already knows the dialog from this window. Nothing is remembered between invocations. |
@@ -117,7 +117,7 @@ bullets is the signal, and dropping the module entirely would make a reader wond
 | The filter is on with the module filter, and the active module has no uncovered rows | Empty for the same reason. The two filters compose; neither overrides the other. |
 | The filter is on while the index is still building | Same as today: `applyFilter` runs on whatever `entries` holds, and the indexing tracker reloads when indexing finishes. |
 | No module in the project has `src/screenshotTest` | The report is a single sentence saying no module has adopted screenshot testing, not an empty file with a heading. |
-| Every applicable module is fully covered | A normal report: totals, per-module headings, no bullets. |
+| Every module is fully covered | A normal report: totals, per-module headings, no bullets. |
 | The user cancels the save dialog | Nothing is written and nothing is reported. |
 | The write fails | The existing `notify` path reports it; the report is not retried. |
 | The report is taken while a filter is on | Unaffected — the report never reads the filtered view (D5). |
@@ -126,12 +126,11 @@ bullets is the signal, and dropping the module entirely would make a reader wond
 
 Plain JUnit 4 (both units are pure):
 
-- `PreviewCoverageFilterTest` — disabled passes every row through unchanged; enabled keeps `Uncovered`,
-  drops `Covered`, and drops `NotApplicable` (D2).
+- `PreviewCoverageFilterTest` — disabled passes every row through unchanged; enabled keeps `Uncovered` and
+  drops `Covered`; a preview in a module with no `src/screenshotTest` is kept (D2).
 - `CoverageReportTest` — the totals line; a module heading with its `X/Y`; uncovered rows listed by FQN and
-  sorted by module then FQN (D7); a `NotApplicable` module contributing to neither the body nor the totals
-  (D6); a fully covered module keeping its heading and losing its bullets; the no-applicable-module
-  sentence.
+  sorted by module then FQN (D7); a module with no `src/screenshotTest` reading as `0/N` (D6); a fully
+  covered module keeping its heading and losing its bullets; the empty-project sentence.
 
 `BasePlatformTestCase`:
 
@@ -151,4 +150,4 @@ The save dialog is not tested: it is platform plumbing with no logic of its own.
 | Two toolbar toggles with the same `AllIcons.General.Filter` icon are indistinguishable. | The coverage toggle takes a different icon, so the two are told apart by icon and tooltip rather than by position. Which icon is pinned by the implementation plan, after checking it exists in this SDK — this project has been bitten before by assuming a platform symbol is present. |
 | Extracting `PersistentToggleAction` breaks the shipped module filter. | Its existing test covers the persisted-state behaviour and must pass unchanged; the extraction is a move, not a rewrite. |
 | An empty tree reads as a bug rather than as "nothing to do". | The toggle is a pressed toolbar button, which is the standard way this window already communicates the module filter's identical failure mode. Accepted rather than adding an empty-state panel. |
-| The report grows unreadable on a project that adopts screenshot testing widely. | Bounded by D6: only applicable modules appear. If that ever stops bounding it, the fix is a per-module report, which this format nests under already. |
+| The report grows unreadable on a large project. | Accepted with D6: only uncovered previews get a bullet, so the body shrinks as the project improves. The reference project's first report is long by design — that length is the finding. If it ever needs bounding, the fix is a per-module report, which this format nests under already. |

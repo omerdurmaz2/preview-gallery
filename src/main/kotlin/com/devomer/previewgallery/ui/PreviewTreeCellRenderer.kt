@@ -69,10 +69,7 @@ class PreviewTreeCellRenderer : ColoredTreeCellRenderer() {
                 if (badges.isNotEmpty()) {
                     append("  ${badges.joinToString(" · ")}", SimpleTextAttributes.GRAYED_SMALL_ATTRIBUTES)
                 }
-                val coverage = coverageText(node.row.coverage)
-                if (coverage != null) {
-                    append("  $coverage", SimpleTextAttributes.GRAYED_SMALL_ATTRIBUTES)
-                }
+                append("  ${coverageText(node.row.coverage)}", SimpleTextAttributes.GRAYED_SMALL_ATTRIBUTES)
             }
 
             is PreviewNode.SnapshotLeaf -> {
@@ -88,16 +85,11 @@ class PreviewTreeCellRenderer : ColoredTreeCellRenderer() {
         }
     }
 
-    /**
-     * Text, not an icon alone: a first-time user of the plugin cannot be expected to decode a glyph. Null for
-     * [SnapshotCoverage.NotApplicable] — the module has no `src/screenshotTest`, so the row renders as it did
-     * before this feature existed.
-     */
-    private fun coverageText(coverage: SnapshotCoverage): String? = when (coverage) {
+    /** Text, not an icon alone: a first-time user of the plugin cannot be expected to decode a glyph. */
+    private fun coverageText(coverage: SnapshotCoverage): String = when (coverage) {
         is SnapshotCoverage.Covered ->
             if (coverage.count == 1) "· 1 snapshot" else "· ${coverage.count} snapshots"
         SnapshotCoverage.Uncovered -> "· no snapshot"
-        SnapshotCoverage.NotApplicable -> null
     }
 
     companion object {

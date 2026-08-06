@@ -35,8 +35,8 @@ class SnapshotCoverageResolverTest {
         targets = targets,
     )
 
-    private fun resolve(rows: List<TestPreviewRow>, modules: Set<String> = setOf("app")) =
-        SnapshotCoverageResolver.resolve(rows, modules) { row, coverage, snapshots ->
+    private fun resolve(rows: List<TestPreviewRow>) =
+        SnapshotCoverageResolver.resolve(rows) { row, coverage, snapshots ->
             row.copy(coverage = coverage, snapshots = snapshots)
         }
 
@@ -74,7 +74,6 @@ class SnapshotCoverageResolverTest {
                 preview("ErrorRetryRowPreview", listOf("ErrorRetryRow"), module = "app"),
                 snapshot("ErrorRetryRow_Default_Snapshot", listOf("ErrorRetryRow"), module = "other"),
             ),
-            modules = setOf("app", "other"),
         )
         assertEquals(SnapshotCoverage.Uncovered, resolved.previews.single().coverage)
         assertEquals(1, resolved.orphans.size)
@@ -93,12 +92,10 @@ class SnapshotCoverageResolverTest {
     }
 
     @Test
-    fun `a module without screenshot testing reports not applicable`() {
-        val resolved = resolve(
-            listOf(preview("ErrorRetryRowPreview", listOf("ErrorRetryRow"))),
-            modules = emptySet(),
-        )
-        assertEquals(SnapshotCoverage.NotApplicable, resolved.previews.single().coverage)
+    fun `a module without a single snapshot reports every preview as uncovered`() {
+        val resolved = resolve(listOf(preview("ErrorRetryRowPreview", listOf("ErrorRetryRow"))))
+
+        assertEquals(SnapshotCoverage.Uncovered, resolved.previews.single().coverage)
     }
 
     @Test

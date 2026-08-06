@@ -11,6 +11,9 @@ import com.devomer.previewgallery.model.SnapshotCoverage
  * scoped to the module — package equality is too strict, since a module's SDUI renderer snapshots sit in a
  * different package from the composables they render.
  *
+ * A preview whose module has no snapshot at all is [SnapshotCoverage.Uncovered] like any other unmatched one:
+ * the module's build setup is not a reason to leave the question unanswered.
+ *
  * [attach] is supplied by the caller so this stays free of any concrete row type: production passes a
  * `PreviewEntry.copy`, tests pass a test row's.
  */
@@ -20,16 +23,12 @@ object SnapshotCoverageResolver {
 
     fun <T : PreviewRow> resolve(
         rows: List<T>,
-        modulesWithSnapshots: Set<String>,
         attach: (row: T, coverage: SnapshotCoverage, snapshots: List<T>) -> T,
     ): Resolved<T> {
         val (snapshots, previews) = rows.partition { it.indexed.isSnapshotTest }
         val matchedSnapshots = HashSet<T>()
 
         val resolvedPreviews = previews.map { preview ->
-            if (preview.moduleName !in modulesWithSnapshots) {
-                return@map attach(preview, SnapshotCoverage.NotApplicable, emptyList())
-            }
             val targets = preview.indexed.targets.toSet()
             val matching = if (targets.isEmpty()) {
                 emptyList()
