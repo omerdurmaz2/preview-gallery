@@ -57,7 +57,7 @@ for them is a defect once the recovery costs one fallback branch.
 | D1 | The reference directories are **refreshed from disk before** the lookup, synchronously, on the background thread that already runs it, and **outside** any read action. | A synchronous refresh under a read lock is rejected by the platform ("Do not perform a synchronous refresh under read lock"), so the refresh cannot live inside today's single read action — it has to become its own step. Doing it before every lookup rather than only when the lookup comes back empty leaves no staleness hole: a variant added to a directory that already holds two images would never trigger a refresh-on-empty. |
 | D2 | The refresh is **two steps**: a shallow refresh of `<moduleDir>/src` with `reloadChildren`, then a recursive refresh of every `src/screenshotTest*` child it now shows. | One step cannot do it. A shallow refresh of `src` reveals a `screenshotTestGoogleDebug` directory created since the last sync but not its grandchildren, so the `reference` subtree of a first-ever task run stays invisible; a recursive refresh of `src` alone would walk every source file in the module. Two steps are bounded by the snapshot source set and the reference images, and reach both new directories and new files. |
 | D3 | The reference root is **discovered**, not hardcoded: every child of `<moduleDir>/src` whose name starts with `screenshotTest` and that has a `reference` child is a root. The variant is the name's remainder (`screenshotTestGoogleDebug` → `GoogleDebug`); an empty remainder means the variant is unknown. | Derivation from what is on disk needs no build model and no configuration, and it is the same posture Phase 14 took for the source set. Requiring the `reference` child is what keeps `src/screenshotTest` — the *source* directory, which matches the same prefix — from being mistaken for a root. |
-| D4 | **Every** matching root contributes to one strip. A variant label carries its source set (`googleDebug · phone`) only when more than one root contributed; with a single root the label stays the bare variant it is today. The source-set token is the root's variant with its first letter lowercased (`GoogleDebug` → `googleDebug`), falling back to the directory name when the variant is unknown. | Picking one root would reintroduce defect 2 in a quieter form: a golden committed only for Huawei would be hidden with no indication. Showing both is honest, and when the two flavours differ the difference is the thing worth seeing. Labelling only on collision keeps the common single-variant case visually unchanged. |
+| D4 | **Every** matching root contributes to one strip. A variant label carries its source set (`googleDebug · phone`) only when more than one root contributed; with a single root the label stays the bare variant it is today. The source-set token is the root's build variant with its first letter lowercased (`GoogleDebug` → `googleDebug`), falling back to the directory name when the build variant is unknown. | Picking one root would reintroduce defect 2 in a quieter form: a golden committed only for Huawei would be hidden with no indication. Showing both is honest, and when the two flavours differ the difference is the thing worth seeing. Labelling only on collision keeps the common single-variant case visually unchanged. |
 | D5 | The no-reference message names the task derived from the **matched** variants (`updateGoogleDebugScreenshotTest`); when no root matched, or none yields a variant, it falls back to a message that names no specific task. | Naming a task the module does not have is worse than naming none: it sends the user to a command that fails. Two bundle keys rather than one interpolated string, so the generic form reads as a sentence rather than as a template with a hole. |
 | D6 | The snapshot's module directory is resolved by a new `ModuleDirectoryResolver`: Phase 14's path derivation **first**, then `ProjectFileIndex.getModuleForFile` and its content roots as a **fallback**. The first content root with a `src` child wins. | Strictly additive. The fallback runs only where the primary derivation already returned null — rows that show nothing today — so Phase 14's D7 keeps owning every path it owns now, and the failure mode when the model has no answer either is unchanged. Confining the model lookup to one small object keeps `SnapshotSourceScanner` model-free, which is what D7 was protecting. |
 | D7 | `ReferenceImage` gains a `sourceSet` field holding D4's token; results are sorted by `(sourceSet, variant)`, both case-insensitive. | The label is composed at the panel boundary, where the whole result set is visible and D4's "more than one root" test can be applied. Sorting by source set first keeps one flavour's images contiguous instead of interleaving two full sets by variant name. |
@@ -80,11 +80,11 @@ ui/
 `ReferenceRoots`'s surface, and the lock contract each half carries:
 
 ```kotlin
-data class Root(val sourceSetName: String, val variant: String?, val directory: VirtualFile)
+data class Root(val sourceSetName: String, val buildVariant: String?, val directory: VirtualFile)
 
 fun refresh(moduleDirectory: VirtualFile)          // MUST NOT hold the read lock; blocking IO
 fun of(moduleDirectory: VirtualFile): List<Root>   // read action
-fun updateTask(variant: String?): String?          // pure; null when variant is null
+fun updateTask(buildVariant: String?): String?     // pure; null when buildVariant is null
 ```
 
 `Root.directory` is the `reference` directory itself, not the source set that holds it, so
@@ -144,9 +144,9 @@ known gap.
 
 `BasePlatformTestCase` (real VFS, real project fixture):
 
-- `ReferenceRootsTest` — a single `screenshotTestDebug/reference` yields one root with variant `Debug`;
-  two flavour directories yield two roots in a deterministic order; `src/screenshotTest` with no
-  `reference` child is not a root; `src/screenshotTest/reference` is a root with a null variant; a
+- `ReferenceRootsTest` — a single `screenshotTestDebug/reference` yields one root with build variant
+  `Debug`; two flavour directories yield two roots in a deterministic order; `src/screenshotTest` with no
+  `reference` child is not a root; `src/screenshotTest/reference` is a root with a null build variant; a
   module with no `src` yields none.
 - `ReferenceRootsRefreshTest` — **the proof of defect 1.** PNGs written with `java.io.File`, bypassing
   the VFS: `of`/`locate` see nothing before `refresh` and see them after. A second case creates the
@@ -164,7 +164,7 @@ known gap.
 Plain JUnit 4:
 
 - `ReferenceRoots.updateTask` — `GoogleDebug` → `updateGoogleDebugScreenshotTest`, `Debug` →
-  `updateDebugScreenshotTest`, null variant → null.
+  `updateDebugScreenshotTest`, null build variant → null.
 - `ReferenceImageLocatorTest`'s two `relativeDirectory` cases move to `packageDirectory` and lose the
   `src/screenshotTestDebug/reference/` prefix from their expected value. Its `variantOf` cases are
   untouched — that signature does not change.

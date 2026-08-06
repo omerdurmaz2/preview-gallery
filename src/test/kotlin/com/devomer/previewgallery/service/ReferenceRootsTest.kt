@@ -34,6 +34,12 @@ class ReferenceRootsTest : BasePlatformTestCase() {
         FileUtil.createDirectory(File(moduleDirectory, relativePath))
     }
 
+    private fun fileOnDisk(relativePath: String) {
+        val file = File(moduleDirectory, relativePath)
+        FileUtil.createParentDirs(file)
+        file.writeText("")
+    }
+
     private fun moduleVirtualFile(): VirtualFile = requireNotNull(
         LocalFileSystem.getInstance().refreshAndFindFileByIoFile(moduleDirectory),
     ) { "The temp module directory must be visible in the VFS" }
@@ -44,7 +50,7 @@ class ReferenceRootsTest : BasePlatformTestCase() {
         val roots = ReferenceRoots.of(moduleVirtualFile())
 
         assertEquals(listOf("screenshotTestDebug"), roots.map { it.sourceSetName })
-        assertEquals(listOf("Debug"), roots.map { it.variant })
+        assertEquals(listOf("Debug"), roots.map { it.buildVariant })
         assertEquals("reference", roots.single().directory.name)
     }
 
@@ -72,7 +78,7 @@ class ReferenceRootsTest : BasePlatformTestCase() {
 
         val root = ReferenceRoots.of(moduleVirtualFile()).single()
 
-        assertNull(root.variant)
+        assertNull(root.buildVariant)
         assertEquals("screenshotTest", root.token)
     }
 
@@ -84,5 +90,27 @@ class ReferenceRootsTest : BasePlatformTestCase() {
         directoryOnDisk("src/main/reference")
 
         assertEquals(emptyList<String>(), ReferenceRoots.of(moduleVirtualFile()).map { it.sourceSetName })
+    }
+
+    fun `test a screenshotTest entry that is a file rather than a directory is not a root`() {
+        fileOnDisk("src/screenshotTestDebug")
+
+        assertEquals(emptyList<String>(), ReferenceRoots.of(moduleVirtualFile()).map { it.sourceSetName })
+    }
+
+    fun `test a reference entry that is a file rather than a directory is not a root`() {
+        fileOnDisk("src/screenshotTestDebug/reference")
+
+        assertEquals(emptyList<String>(), ReferenceRoots.of(moduleVirtualFile()).map { it.sourceSetName })
+    }
+
+    fun `test a module directory invalidated on disk yields nothing`() {
+        val module = moduleVirtualFile()
+
+        FileUtil.delete(moduleDirectory)
+        module.refresh(false, true)
+        assertFalse(module.isValid)
+
+        assertEquals(emptyList<String>(), ReferenceRoots.of(module).map { it.sourceSetName })
     }
 }

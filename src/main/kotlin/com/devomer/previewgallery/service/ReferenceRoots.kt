@@ -23,14 +23,14 @@ object ReferenceRoots {
 
     /**
      * One committed-reference directory. [directory] is the `reference` directory itself, so a caller resolves a
-     * package path against it directly; [variant] is null when the source-set name carries no suffix to read one
-     * from, which is the only case that yields no Gradle task name.
+     * package path against it directly; [buildVariant] is null when the source-set name carries no suffix to read
+     * one from, which is the only case that yields no Gradle task name.
      */
-    data class Root(val sourceSetName: String, val variant: String?, val directory: VirtualFile) {
+    data class Root(val sourceSetName: String, val buildVariant: String?, val directory: VirtualFile) {
 
         /** The label token for this root, used only when more than one root contributes to a strip. */
         val token: String
-            get() = variant?.replaceFirstChar { it.lowercaseChar() } ?: sourceSetName
+            get() = buildVariant?.replaceFirstChar { it.lowercaseChar() } ?: sourceSetName
     }
 
     /**
@@ -59,8 +59,7 @@ object ReferenceRoots {
         val src = moduleDirectory.findChild(SRC)?.takeIf { it.isDirectory } ?: return
         VfsUtil.markDirtyAndRefresh(false, false, true, src)
         if (!src.isValid) return
-        val sourceSets = src.children.orEmpty()
-            .filter { it.isDirectory && it.name.startsWith(SCREENSHOT_TEST) }
+        val sourceSets = sourceSetDirectories(moduleDirectory)
         if (sourceSets.isEmpty()) return
         VfsUtil.markDirtyAndRefresh(false, true, true, *sourceSets.toTypedArray())
     }
@@ -70,23 +69,32 @@ object ReferenceRoots {
      * order is stable across selections.
      *
      * Reads the VFS as it stands; call [refresh] first if the answer must include what another process just
-     * wrote.
+     * wrote. [moduleDirectory] is checked for validity first because that same [refresh] call is exactly what
+     * can discover it was deleted, and reading a deleted directory under read access throws
+     * `InvalidVirtualFileAccessException` rather than returning the empty list a deletion deserves.
      */
     fun of(moduleDirectory: VirtualFile): List<Root> {
-        val src = moduleDirectory.findChild(SRC)?.takeIf { it.isDirectory } ?: return emptyList()
-        return src.children.orEmpty()
-            .filter { it.isDirectory && it.name.startsWith(SCREENSHOT_TEST) }
+        if (!moduleDirectory.isValid) return emptyList()
+        return sourceSetDirectories(moduleDirectory)
             .mapNotNull { sourceSet ->
                 val reference = sourceSet.findChild(REFERENCE)?.takeIf { it.isDirectory } ?: return@mapNotNull null
                 Root(
                     sourceSetName = sourceSet.name,
-                    variant = sourceSet.name.removePrefix(SCREENSHOT_TEST).ifEmpty { null },
+                    buildVariant = sourceSet.name.removePrefix(SCREENSHOT_TEST).ifEmpty { null },
                     directory = reference,
                 )
             }
             .sortedWith(compareBy(String.CASE_INSENSITIVE_ORDER) { it.sourceSetName })
     }
 
-    /** The Gradle task that regenerates [variant]'s references, or null when the variant could not be read. */
-    fun updateTask(variant: String?): String? = variant?.let { "update${it}ScreenshotTest" }
+    /** The `screenshotTest*` source-set directories under [moduleDirectory]'s `src`, or empty when it has none —
+     *  the walk [refresh] and [of] both need, kept in one place so their filters cannot drift apart. */
+    private fun sourceSetDirectories(moduleDirectory: VirtualFile): List<VirtualFile> {
+        val src = moduleDirectory.findChild(SRC)?.takeIf { it.isDirectory } ?: return emptyList()
+        return src.children.orEmpty().filter { it.isDirectory && it.name.startsWith(SCREENSHOT_TEST) }
+    }
+
+    /** The Gradle task that regenerates [buildVariant]'s references, or null when the build variant could not be
+     *  read. */
+    fun updateTask(buildVariant: String?): String? = buildVariant?.let { "update${it}ScreenshotTest" }
 }

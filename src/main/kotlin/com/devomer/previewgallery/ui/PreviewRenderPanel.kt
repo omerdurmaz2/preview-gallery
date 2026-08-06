@@ -223,10 +223,10 @@ class PreviewRenderPanel(private val project: Project) : JBPanel<PreviewRenderPa
     }
 
     /**
-     * Shows [entry]'s committed reference PNGs (spec D6/D7) — the snapshot path, which never goes through
-     * [com.devomer.previewgallery.render.RenderPipeline] at all (spec D8), so it is its own entry point rather
-     * than a state the pipeline publishes. [images] must already be decoded: this runs on the EDT, and reading
-     * PNGs off disk does not belong there (the caller decodes off the EDT).
+     * Shows [entry]'s committed reference PNGs (PG15 spec D3, PG13 spec D7) — the snapshot path, which never goes
+     * through [com.devomer.previewgallery.render.RenderPipeline] at all (PG13 spec D8), so it is its own entry
+     * point rather than a state the pipeline publishes. [images] must already be decoded: this runs on the EDT,
+     * and reading PNGs off disk does not belong there (the caller decodes off the EDT).
      *
      * [skipped] names the variants whose PNG could not be decoded; they are reported in the strip's tooltip and
      * the variants that did decode still show (spec's error-handling table). An empty [images] is
@@ -838,11 +838,11 @@ class PreviewRenderPanel(private val project: Project) : JBPanel<PreviewRenderPa
     }
 
     /**
-     * A snapshot with nothing committed to show (spec D10): the message names the Gradle task that generates the
-     * references, since "no images" without the fix is not actionable — and names the task of the variants that
-     * were actually found, since a flavoured module does not have `updateDebugScreenshotTest`. Offers Open file,
-     * and deliberately **not** Render the way [failed] does — a snapshot is never rendered at all (spec D8), so a
-     * Render button here would be a control that cannot do what it says.
+     * A snapshot with nothing committed to show (PG15 spec D5): the message names the Gradle task that generates
+     * the references, since "no images" without the fix is not actionable — and names the task of the variants
+     * that were actually found, since a flavoured module does not have `updateDebugScreenshotTest`. Offers Open
+     * file, and deliberately **not** Render the way [failed] does — a snapshot is never rendered at all (PG13
+     * spec D8), so a Render button here would be a control that cannot do what it says.
      */
     private fun noReference(entry: PreviewEntry?): JBPanel<*> = JBPanel<JBPanel<*>>(BorderLayout()).apply {
         val message = if (referenceTasks.isEmpty()) {

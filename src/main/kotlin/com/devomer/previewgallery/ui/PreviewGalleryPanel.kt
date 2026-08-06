@@ -672,7 +672,8 @@ class PreviewGalleryPanel(
     }
 
     /**
-     * Shows [snapshot]'s committed reference PNGs (spec D6/D7), debounced exactly as a preview selection is.
+     * Shows [snapshot]'s committed reference PNGs (PG15 spec D3, PG13 spec D7), debounced exactly as a preview
+     * selection is.
      *
      * The debounce is the whole point of this method: arrow-keying down a preview's snapshot children fires one
      * selection per row, and locating plus decoding device-resolution PNGs (~1080x2340, ~10 MB decoded, once per
@@ -738,12 +739,13 @@ class PreviewGalleryPanel(
      * instead of crashing; that silent failure mode, not a stylistic preference, is why the lookup stays split
      * into three steps.
      *
-     * Returns empty images and tasks when [snapshot] resolves to no module, when [disposalCheck] fires between
-     * the two read actions, or when the refresh discovers `moduleDirectory` no longer exists on disk: the panel
-     * that would show the result is gone in the first two cases, and the second read action would otherwise
-     * throw `InvalidVirtualFileAccessException` reading an invalidated directory in the third. Lets
-     * [ProcessCanceledException] propagate rather than catching it here; only [loadReferences] needs to react to
-     * it, and it already does.
+     * Returns empty images and tasks when [snapshot] resolves to no module, or when [disposalCheck] fires
+     * between the two read actions: the panel that would show the result is gone, so the refresh and the second
+     * read action are both work nothing will use. Lets [ProcessCanceledException] propagate rather than
+     * catching it here; only [loadReferences] needs to react to it, and it already does.
+     *
+     * Deleting the [ReferenceRoots.refresh] call below breaks no automated test — steps 2-3 of the phase's
+     * manual gate are what actually cover it.
      */
     private fun resolveReferences(snapshot: PreviewEntry): LocatedReferences {
         val moduleDirectory = ReadAction.nonBlocking<VirtualFile?> {
@@ -754,10 +756,6 @@ class PreviewGalleryPanel(
             ?: return LocatedReferences(emptyList(), emptyList())
         if (disposalCheck.isDisposed) return LocatedReferences(emptyList(), emptyList())
         ReferenceRoots.refresh(moduleDirectory)
-        // The refresh above can discover moduleDirectory itself is gone (see ReferenceRoots.refresh's own KDoc
-        // for the same failure shape on its src guard): unguarded, ReferenceRoots.of below would throw
-        // InvalidVirtualFileAccessException inside this read action instead of finding nothing.
-        if (!moduleDirectory.isValid) return LocatedReferences(emptyList(), emptyList())
         return ReadAction.nonBlocking<LocatedReferences> { locateReferences(snapshot, moduleDirectory) }
             .expireWith(parentDisposable)
             .executeSynchronously()
@@ -780,8 +778,8 @@ class PreviewGalleryPanel(
     }
 
     /**
-     * Finds [snapshot]'s committed reference images under [moduleDirectory] (spec D6). **This** is the half that
-     * needs a read action: the VFS directory listing, and nothing else.
+     * Finds [snapshot]'s committed reference images under [moduleDirectory] (PG15 spec D3). **This** is the half
+     * that needs a read action: the VFS directory listing, and nothing else.
      *
      * Every discovered root contributes, and the tasks that would regenerate them are collected here rather than
      * in the panel, because this is where the roots are known — the message has to name the module's own
@@ -791,7 +789,7 @@ class PreviewGalleryPanel(
         val roots = ReferenceRoots.of(moduleDirectory)
         return LocatedReferences(
             images = ReferenceImageLocator.locate(snapshot, roots),
-            tasks = roots.mapNotNull { ReferenceRoots.updateTask(it.variant) }.distinct().sorted(),
+            tasks = roots.mapNotNull { ReferenceRoots.updateTask(it.buildVariant) }.distinct().sorted(),
         )
     }
 
