@@ -36,7 +36,7 @@ already drawn by `PreviewTreeCellRenderer`. This phase only filters on it and fo
 | D2 | `NotApplicable` rows are **hidden** by the filter, not shown. | `NotApplicable` means the module has no `src/screenshotTest` at all, so "is this covered?" has no answer for it. Showing those rows in a list of work would fill it with modules that have not adopted screenshot testing, which is the same reasoning that keeps them unbadged. |
 | D3 | The orphan branch stays **visible** while the filter is on. | An orphan is a snapshot that matches no preview — the mirror of what the filter selects for, and the same kind of defect: usually a renamed composable or a dead snapshot. Hiding it would make "show me what is wrong with coverage" tell half the truth. It is also the one place the filter's own subject matter cannot appear, since an orphan has no `coverage` to be `Uncovered`. |
 | D4 | The filter composes with the search box and the module filter rather than replacing either. It is a third stage in `applyFilter`'s existing chain. | They are independent axes — *which module*, *matching what text*, *covered or not* — and `applyFilter` already threads two of them. One more `filter` call is the whole change. |
-| D5 | The report reads `PreviewIndexService.findAll()` directly and **ignores** the filter, the module filter and the search box. | A report titled "snapshot coverage" that silently described a filtered subset is a footgun: the number lands in a ticket and nobody remembers a search box was open. Coverage is a property of the project, so the report describes the project. |
+| D5 | The report reads the panel's unfiltered `entries` — the list `PreviewIndexService.findAll()` produced at the last reload — and **ignores** the filter, the module filter and the search box. | A report titled "snapshot coverage" that silently described a filtered subset is a footgun: the number lands in a ticket and nobody remembers a search box was open. Coverage is a property of the project, so the report describes the project. Reading `entries` rather than calling `findAll()` again keeps the action off a read action it would have to take on the EDT, and makes the report exactly as fresh as the tree the user is looking at. |
 | D6 | The report counts and lists **applicable modules only** — a module with no `src/screenshotTest` contributes to neither the totals nor the body. | The reference project has 1371 modules and one of them has adopted screenshot testing. A percentage computed over all of them would read as ~0% forever and would be discarded as noise. |
 | D7 | Uncovered previews are listed by **composable FQN**, sorted by module then FQN. | `displayName` collides across packages, and the FQN is what a reader pastes into Search Everywhere. A deterministic order makes two reports of the same project diff cleanly. |
 | D8 | `ModuleFilterToggleAction`'s body — read a `PropertiesComponent` boolean, write it, call back — moves to a small `PersistentToggleAction` base that both toggles extend. | The second toggle differs from the first only in its storage key, its text and its icon. A base class plus two ten-line subclasses is less code than two twenty-five-line near-copies, and it means a change to how the toggles persist cannot apply to only one of them. |
@@ -84,9 +84,10 @@ orphanSnapshots → PreviewModuleFilter → PreviewTreeModelBuilder(query)     �
 Toggling the action calls `applyFilter`, exactly as the module filter does. Nothing is re-indexed; the rows
 already carry their coverage.
 
-**The report.** `CoverageReportAction` reads `PreviewIndexService.findAll()` under a read action, hands the
-rows to `CoverageReport.markdown`, opens the save dialog, and writes the string. The formatting half is pure
-and takes no `Project`, so it is tested without a fixture.
+**The report.** `CoverageReportAction` takes a `() -> List<PreviewRow>` supplier, which the panel satisfies
+with its own `entries`. It hands those rows to `CoverageReport.markdown`, opens the save dialog, and writes
+the string. The formatting half is pure and takes no `Project`, so it is tested without a fixture; the action
+itself holds no logic beyond the dialog.
 
 The report's shape:
 
@@ -137,8 +138,9 @@ Plain JUnit 4 (both units are pure):
 - `PreviewGalleryPanelTest` — with the toggle on, an uncovered preview is in the tree and a covered one is
   not; the orphan branch is still there (D3); the coverage filter and the module filter compose rather than
   one winning (D4).
-- `ModuleFilterToggleActionTest` (existing) must keep passing unchanged through D8's extraction — it is the
-  evidence that moving the body changed no behaviour.
+- `PersistentToggleActionTest` — the toggle writes its key to `PropertiesComponent`, reads it back, and two
+  toggles with different keys do not see each other's state. `ModuleFilterToggleAction` has no test today, so
+  D8's extraction is covered by writing one for the base rather than by an existing one passing unchanged.
 
 The save dialog is not tested: it is platform plumbing with no logic of its own.
 
