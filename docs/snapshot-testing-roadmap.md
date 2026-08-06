@@ -1,12 +1,14 @@
 # Snapshot Testing — Feature Roadmap
 
-> **Status:** **F1 shipped** — Phase 13 (badge, snapshot rows, reference strip) and Phase 14 (read the
-> source set from the VFS, fix attribution). The manual gate against `hepsi-android` passes: snapshots
-> are listed and hang under the previews they belong to. Everything else below is still backlog.
+> **Status:** **F1 and H1 shipped** — Phase 13 (badge, snapshot rows, reference strip), Phase 14 (read the
+> source set from the VFS, fix attribution) and Phase 15 (refresh before the lookup, discover every build
+> variant's reference root, recover the index-fallback rows). The manual gate against `hepsi-android`
+> passes: snapshots are listed, they hang under the previews they belong to, and a reference directory
+> changed from a terminal is picked up without pressing Refresh. Everything else below is still backlog.
 >
 > Each remaining entry becomes its own session: brainstorm → design spec in `docs/superpowers/specs/`
-> → plan in `docs/superpowers/plans/` → implementation. Commit prefixes (`PG15-N`, …) are assigned when
-> a feature is planned, continuing from the last used phase (`PG14`).
+> → plan in `docs/superpowers/plans/` → implementation. Commit prefixes (`PG16-N`, …) are assigned when
+> a feature is planned, continuing from the last used phase (`PG15`).
 
 ## Priority order
 
@@ -14,14 +16,13 @@ Ranked for what to build next, not by theme. Effort is a rough order of magnitud
 
 | # | Item | Why it is here | Effort |
 |---|---|---|---|
-| 1 | **H1 · Hardening the shipped feature** | Both defects sit on the flow that just went live, and each one silently produces a wrong or missing image. Trust in a new feature is cheapest to keep, most expensive to win back. | XS |
-| 2 | **F2 · Coverage filter and report** | The badge provokes exactly one question — "so what is uncovered?" — and today the only way to answer it is to scroll. Smallest change with a daily payoff, and it needs no new data. | S |
-| 3 | **F8 · MCP server over the index** | The consuming project already has a `snapshot-testing` skill that tells an agent *how* to write a snapshot. What the agent cannot get is *which* composables lack one. This closes that loop — and it may make F3 unnecessary, see below. | M |
-| 4 | **F3 · "Create snapshot test" action** | The action the filter's answer demands. Worth building **only if** F8 plus the existing skill turns out not to cover it — an agent with project context writes a better fake `UiState` than a PSI template can. | L |
-| 5 | **Spike, then F5 · Reference vs. live diff** | Highest ceiling of anything here, still gated on an unanswered AS-internal question. Run the spike early, decide after. | L |
-| 6 | **F7 · Degenerate golden detector** | Small, and it protects the value of every snapshot F3/F8 produces. | S |
-| 7 | **F6 · Gradle task runner** | Depends on F5's diff view to be worth the wiring. | L |
-| 8 | **F4 · Promote a comparison view to a variant** | Depends on F3's writer. Nice, not load-bearing. | M |
+| 1 | **F2 · Coverage filter and report** | The badge provokes exactly one question — "so what is uncovered?" — and today the only way to answer it is to scroll. Smallest change with a daily payoff, and it needs no new data. | S |
+| 2 | **F8 · MCP server over the index** | The consuming project already has a `snapshot-testing` skill that tells an agent *how* to write a snapshot. What the agent cannot get is *which* composables lack one. This closes that loop — and it may make F3 unnecessary, see below. | M |
+| 3 | **F3 · "Create snapshot test" action** | The action the filter's answer demands. Worth building **only if** F8 plus the existing skill turns out not to cover it — an agent with project context writes a better fake `UiState` than a PSI template can. | L |
+| 4 | **Spike, then F5 · Reference vs. live diff** | Highest ceiling of anything here, still gated on an unanswered AS-internal question. Run the spike early, decide after. | L |
+| 5 | **F7 · Degenerate golden detector** | Small, and it protects the value of every snapshot F3/F8 produces. | S |
+| 6 | **F6 · Gradle task runner** | Depends on F5's diff view to be worth the wiring. | L |
+| 7 | **F4 · Promote a comparison view to a variant** | Depends on F3's writer. Nice, not load-bearing. | M |
 
 **The F3-versus-F8 tension is worth deciding deliberately.** F3 generates snapshot files from inside the
 plugin with a PSI writer; F8 hands an agent the coverage data and lets it write them with the project's
@@ -92,30 +93,34 @@ Effort is a rough order of magnitude for a single feature session, not a commitm
 
 ### Theme 0 — Hardening what shipped
 
-#### H1 · Close the gaps the gate did not exercise
+#### H1 · Close the gaps the gate did not exercise — **shipped (PG15)**
 
 **Goal:** stop the shipped feature from silently showing the wrong thing on paths nobody walked yet.
 
-Three known defects, all on the flow that is now live:
+Three defects, all closed by Phase 15
+(`docs/superpowers/specs/2026-07-31-snapshot-reference-hardening-design.md`):
 
-- **No VFS refresh before reading the reference directory.** `ReferenceImageLocator` reads
-  `directory.children` straight from the VFS. A PNG that `updateDebugScreenshotTest` just wrote from a
-  terminal may not be there yet, and the panel then shows *"No reference images — run
-  `updateDebugScreenshotTest`"* — telling the user to run the command they just ran. Refresh the
-  directory before the glob, or refresh on window activation.
-- **Only one build variant is understood.** The reference path hardcodes `src/screenshotTestDebug`. A
-  flavoured module's references live under `src/screenshotTest<Flavor>Debug/reference`, so every
-  snapshot in such a module reports no images, and the message names the wrong Gradle task as well. The
-  pilot module is a library, which is why this has not bitten yet; the consuming project does ship
-  Google and Huawei flavours. Glob `src/screenshotTest*/reference/…` and derive the task name from the
-  variant that matched.
-- **Index-fallback rows have no reference images.** A snapshot row that came from Phase 14's index
-  fallback (a layout the content-root probe does not recognise) cannot yield a module directory from its
-  own path, so it always shows `NO_REFERENCE`. Documented in Phase 14's review; recovering it means
-  re-introducing a `getModuleForFile` fallback for exactly those rows.
+- **No VFS refresh before reading the reference directory** — a PNG that `updateDebugScreenshotTest` just
+  wrote from a terminal was not in the VFS yet, so the panel told the user to run the command they had
+  just run. `ReferenceRoots.refresh` now runs before every lookup, in two passes (shallow over `src` for a
+  new variant directory, recursive over each source set for a new file in an already-listed one), and
+  **outside** any read action — the platform silently skips a synchronous refresh held under a read lock.
+  This forced the lookup apart into three steps: resolve the module directory, refresh, then list.
+- **Only one build variant was understood** — the root was the constant `src/screenshotTestDebug`. Roots
+  are now discovered on disk, every one of them contributes to the strip, a label carries its source set
+  only when more than one contributed, and the no-reference message names the matched variants' own
+  `update<Variant>ScreenshotTest` (or names none rather than naming a task the module lacks).
+- **Index-fallback rows had no reference images** — `ModuleDirectoryResolver` keeps Phase 14's path
+  derivation as the primary answer and adds `getModuleForFile` behind it, for exactly the rows whose path
+  yields nothing.
 
-- **Hooks:** `service/ReferenceImageLocator.kt`, `ui/PreviewRenderPanel.kt`
-- **Effort:** XS · **Risk:** low
+**Verified by the manual gate:** the refresh and the message. **Not reproducible in `hepsi-android` and
+therefore covered by unit tests only:** the flavoured-module path (the pilot module is a library with no
+flavours) and the index-fallback path (no module there has a layout the probe fails on).
+
+- **Hooks:** `service/ReferenceRoots.kt`, `service/ModuleDirectoryResolver.kt`,
+  `service/ReferenceImageLocator.kt`, `ui/PreviewGalleryPanel.kt`, `ui/PreviewRenderPanel.kt`
+- **Effort:** XS (actual: six tasks, 352 → 384 tests) · **Risk:** low
 - **Depends on:** nothing
 
 ### Theme 1 — Visibility
