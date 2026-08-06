@@ -11,6 +11,7 @@ import com.devomer.previewgallery.render.PreviewPickerBridge
 import com.devomer.previewgallery.render.RenderApiProbe
 import com.devomer.previewgallery.render.RenderPipeline
 import com.devomer.previewgallery.render.RenderState
+import com.devomer.previewgallery.search.PreviewCoverageFilter
 import com.devomer.previewgallery.search.PreviewModuleFilter
 import com.devomer.previewgallery.service.ModuleDirectoryResolver
 import com.devomer.previewgallery.service.PreviewIndexService
@@ -213,6 +214,7 @@ class PreviewGalleryPanel(
             // module's `src/screenshotTest` directory appearing or disappearing (PG13) is exactly such an input.
             RefreshAction(project) { reload() },
             ModuleFilterToggleAction(project) { applyFilter() },
+            CoverageFilterToggleAction(project) { applyFilter() },
             commonActions.createExpandAllAction(treeExpander, this),
             commonActions.createCollapseAllAction(treeExpander, this),
         )
@@ -412,14 +414,18 @@ class PreviewGalleryPanel(
         val previousSelectionId = selectedEntry()?.id
 
         val moduleFilterOn = ModuleFilterToggleAction.isEnabled(project)
-        val visible = PreviewModuleFilter.apply(
+        val moduleFiltered = PreviewModuleFilter.apply(
             entries,
             moduleTracker.activeModuleName,
             moduleFilterOn,
         )
+        val visible = PreviewCoverageFilter.apply(moduleFiltered, CoverageFilterToggleAction.isEnabled(project))
         // The orphan branch goes through the same module filter as the previews: "show only the active editor's
         // module" that still showed another module's snapshots would not be that filter at all. The query is
-        // applied to the two independently, inside the builder (spec D11).
+        // applied to the two independently, inside the builder (PG13 spec D11). It deliberately does NOT go
+        // through the coverage filter: an orphan is a snapshot matching no preview, which is the mirror of what
+        // that filter selects for and the same kind of defect, so hiding it would make the filter tell half the
+        // truth (PG16 spec D3).
         val visibleOrphans = PreviewModuleFilter.apply(
             orphanSnapshots,
             moduleTracker.activeModuleName,

@@ -15,6 +15,14 @@ import javax.imageio.ImageIO
 
 class PreviewGalleryPanelTest : BasePlatformTestCase() {
 
+    override fun tearDown() {
+        try {
+            resetFilterToggles(project)
+        } finally {
+            super.tearDown()
+        }
+    }
+
     private fun panel(): PreviewGalleryPanel {
         val disposable = Disposer.newDisposable()
         Disposer.register(testRootDisposable, disposable)
@@ -587,5 +595,78 @@ class PreviewGalleryPanelTest : BasePlatformTestCase() {
         assertEquals(PreviewGalleryPanel.State.LOADED, panel.state)
         val labels = panel.visibleRowLabelsForTest()
         assertTrue(labels.toString(), labels.contains(PreviewTreeCellRenderer.ORPHAN_BRANCH_LABEL))
+    }
+
+    fun `test the coverage filter hides the previews that already have a snapshot`() {
+        projectWithSnapshot()
+        val panel = panel()
+        panel.reloadSynchronously()
+        // A plain load expands the module level only, so a preview row is in the tree without being a visible
+        // row. Opening everything is also what gives the assertion below its teeth: the expansion is remembered
+        // across the rebuild, so a coverage filter that dropped nothing would leave WidgetPreview on screen.
+        panel.treeExpanderForTest().expandAll()
+        assertTrue(panel.visibleRowLabelsForTest().toString(), panel.visibleRowLabelsForTest().contains("WidgetPreview"))
+
+        CoverageFilterToggleAction(project) {}.setSelected(
+            com.intellij.testFramework.TestActionEvent.createTestEvent(),
+            true,
+        )
+        panel.applyQueryForTest("")
+
+        // WidgetPreview has Widget_Default_Snapshot, so it is covered and drops out of the work queue.
+        assertFalse(panel.visibleRowLabelsForTest().toString(), panel.visibleRowLabelsForTest().contains("WidgetPreview"))
+    }
+
+    fun `test the coverage filter leaves an uncovered preview in place`() {
+        projectWithSnapshot()
+        myFixture.addFileToProject(
+            "src/main/kotlin/com/example/Lonely.kt",
+            """
+            package com.example
+
+            import androidx.compose.ui.tooling.preview.Preview
+
+            @Preview
+            fun LonelyPreview() = PreviewComponent { Lonely() }
+            """.trimIndent(),
+        )
+        val panel = panel()
+        panel.reloadSynchronously()
+
+        CoverageFilterToggleAction(project) {}.setSelected(
+            com.intellij.testFramework.TestActionEvent.createTestEvent(),
+            true,
+        )
+        panel.applyQueryForTest("")
+        panel.treeExpanderForTest().expandAll()
+
+        assertTrue(panel.visibleRowLabelsForTest().toString(), panel.visibleRowLabelsForTest().contains("LonelyPreview"))
+    }
+
+    fun `test the coverage filter and the module filter compose`() {
+        projectWithSnapshot()
+        val panel = panel()
+        panel.reloadSynchronously()
+        // ActiveModuleTracker reads the selected editor, and with none open PreviewModuleFilter keeps nothing at
+        // all — which would empty the tree whatever the coverage filter did, passing the assertion below for the
+        // wrong reason. With the preview's own file open, the module filter keeps WidgetPreview.
+        myFixture.openFileInEditor(
+            requireNotNull(myFixture.tempDirFixture.getFile("src/main/kotlin/com/example/Widgets.kt")),
+        )
+
+        // Both on: the module filter alone would keep WidgetPreview (it is in the fixture's only module) and
+        // the coverage filter alone would drop it. Neither may win outright (spec D4).
+        ModuleFilterToggleAction(project) {}.setSelected(
+            com.intellij.testFramework.TestActionEvent.createTestEvent(),
+            true,
+        )
+        CoverageFilterToggleAction(project) {}.setSelected(
+            com.intellij.testFramework.TestActionEvent.createTestEvent(),
+            true,
+        )
+        panel.applyQueryForTest("")
+        panel.treeExpanderForTest().expandAll()
+
+        assertFalse(panel.visibleRowLabelsForTest().toString(), panel.visibleRowLabelsForTest().contains("WidgetPreview"))
     }
 }
