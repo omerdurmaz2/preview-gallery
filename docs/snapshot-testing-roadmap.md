@@ -19,11 +19,12 @@ Ranked for what to build next, not by theme. Effort is a rough order of magnitud
 
 | # | Item | Why it is here | Effort |
 |---|---|---|---|
-| 1 | **F3 · "Create snapshot test" action** | The action the filter's answer demands — but F8 shipped, so the question it was waiting on is now answerable by use rather than argument: write a few snapshots with an agent against the live server, and build this only if that turns out to be the worse route. | L |
+| 1 | **F7 · Degenerate golden detector** | Small, and it now has a real specimen: a preview in `favorites` carries a component's name while its body reconstructs the component's insides instead of calling it, so neither it nor its snapshot tests the thing they are named after. Whatever F8 serves an agent is only as good as this. | S |
 | 2 | **Spike, then F5 · Reference vs. live diff** | Highest ceiling of anything here, still gated on an unanswered AS-internal question. Run the spike early, decide after. | L |
-| 3 | **F7 · Degenerate golden detector** | Small, and it protects the value of every snapshot F3/F8 produces. | S |
-| 4 | **F6 · Gradle task runner** | Depends on F5's diff view to be worth the wiring. | L |
-| 5 | **F4 · Promote a comparison view to a variant** | Depends on F3's writer. Nice, not load-bearing. | M |
+| 3 | **F6 · Gradle task runner** | Depends on F5's diff view to be worth the wiring. | L |
+
+**Deferred:** F3 (the agent route supersedes it until proven otherwise) and F4 (waits on F3's writer). Both
+keep their sections below with the reasoning.
 
 **The F3-versus-F8 tension is worth deciding deliberately.** F3 generates snapshot files from inside the
 plugin with a PSI writer; F8 hands an agent the coverage data and lets it write them with the project's
@@ -181,7 +182,18 @@ describes the whole project — never the filtered tree.
 
 ### Theme 2 — Authoring
 
-#### F3 · "Create snapshot test" action
+#### F3 · "Create snapshot test" action — **deferred (2026-08-07)**
+
+**Deferred in favour of the agent route, not cancelled.** F8 shipped, so the thing this action would
+generate can now be written by an agent that holds the index: it reads the real `@Preview` body, resolves
+whether the target is `internal` or `private`, finds the fake-state factory that already exists in the
+module, and follows the consuming project's own `snapshot-testing` skill. A PSI template inside the plugin
+does none of that, and the template would have to be made configurable per project on top.
+
+Revisit this only if writing snapshots that way turns out to be worse in practice. What would bring it
+back: the agent route needing the same manual correction every time, in a way a template could have got
+right. Until someone has written a batch of snapshots against the live MCP server and hit that, building a
+PSI writer is guessing.
 
 **Goal:** generate the snapshot file that the skill currently asks a developer to write by hand.
 
@@ -203,7 +215,9 @@ template must be configurable rather than hardcoded to `hepsi-android`.
   detection? Does the ported body compile when it references `private` preview-data factories (skill
   rule 3 says inline a local copy)?
 
-#### F4 · Promote a comparison view to a snapshot variant
+#### F4 · Promote a comparison view to a snapshot variant — **blocked by F3's deferral**
+
+It needs F3's PSI writer, which is deferred above, so this one waits with it rather than on its own merits.
 
 **Goal:** turn an ad-hoc comparison view into a committed test variant.
 
