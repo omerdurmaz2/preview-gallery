@@ -12,6 +12,7 @@ class ToolRegistryTest {
     private val preview = PreviewFacts(
         composableFqn = "com.example.FooKt.FooPreview",
         displayName = "FooPreview",
+        functionName = "FooPreview",
         moduleName = "app.main",
         packageName = "com.example",
         file = "/src/Foo.kt",
@@ -24,14 +25,14 @@ class ToolRegistryTest {
     private val ready = ProjectSnapshot("demo", "/src", indexing = false, previews = listOf(preview))
     private val building = ProjectSnapshot("busy", "/busy", indexing = true)
 
-    private fun registry(vararg snapshots: ProjectSnapshot) = ToolRegistry { snapshots.toList() }
+    private fun registry(vararg snapshots: ProjectSnapshot) = ToolRegistry({ snapshots.toList() }, { emptyList() })
 
     @Test
     fun `every tool is advertised with a schema`() {
         val descriptors = registry(ready).descriptors()
 
         assertEquals(
-            listOf("list_projects", "list_previews", "list_snapshots", "coverage_report"),
+            listOf("list_projects", "list_previews", "list_snapshots", "coverage_report", "snapshot_health"),
             descriptors.map { it.name },
         )
         assertTrue(descriptors.all { it.description.isNotBlank() })

@@ -6,7 +6,7 @@ import org.junit.Test
 
 class McpDispatcherTest {
 
-    private val dispatcher = McpDispatcher("preview-gallery", "0.0.1", ToolRegistry { emptyList() })
+    private val dispatcher = McpDispatcher("preview-gallery", "0.0.1", ToolRegistry({ emptyList() }, { emptyList() }))
 
     private fun body(request: String): String =
         (dispatcher.handle(request) as DispatchResult.Json).body
@@ -31,10 +31,16 @@ class McpDispatcherTest {
     }
 
     @Test
-    fun `tools_list names all four tools`() {
+    fun `tools_list names all five tools`() {
         val response = body("""{"jsonrpc":"2.0","id":2,"method":"tools/list"}""")
 
-        listOf("list_projects", "list_previews", "list_snapshots", "coverage_report").forEach {
+        listOf(
+            "list_projects",
+            "list_previews",
+            "list_snapshots",
+            "coverage_report",
+            "snapshot_health",
+        ).forEach {
             assertTrue(response, response.contains(it))
         }
     }

@@ -14,6 +14,7 @@ class ToolsTest {
     private val covered = PreviewFacts(
         composableFqn = "com.example.FooKt.CoveredPreview",
         displayName = "CoveredPreview",
+        functionName = "CoveredPreview",
         moduleName = "app.main",
         packageName = "com.example",
         file = "/src/Foo.kt",
@@ -28,6 +29,7 @@ class ToolsTest {
     private val uncovered = covered.copy(
         composableFqn = "com.example.deep.BarKt.UncoveredPreview",
         displayName = "UncoveredPreview",
+        functionName = "UncoveredPreview",
         packageName = "com.example.deep",
         covered = false,
         snapshots = emptyList(),
