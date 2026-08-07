@@ -1,7 +1,12 @@
 package com.devomer.previewgallery.service
 
+import com.intellij.openapi.application.WriteAction
 import com.intellij.openapi.vfs.VfsUtilCore
 import com.intellij.testFramework.fixtures.BasePlatformTestCase
+import java.awt.image.BufferedImage
+import java.io.ByteArrayOutputStream
+import java.io.IOException
+import javax.imageio.ImageIO
 
 /**
  * The mapping from the IDE's live index onto the flat snapshot the protocol serves — the one part of this
@@ -140,6 +145,54 @@ class McpServerServiceTest : BasePlatformTestCase() {
         val preview = ownSnapshot().previews.single()
 
         assertEquals(10, preview.line)
+    }
+
+    // Regression for PG18-9 finding 1: SnapshotCoverageResolver.resolve legitimately attaches one snapshot to
+    // every preview whose targets intersect it, so a snapshot covering two previews must still report its
+    // blank golden exactly once rather than once per covering preview.
+    fun `test a snapshot covering two previews reports its blank golden only once`() {
+        myFixture.addFileToProject(
+            "src/main/kotlin/com/example/Widgets.kt",
+            """
+            package com.example
+
+            import androidx.compose.ui.tooling.preview.Preview
+
+            @Preview
+            fun WidgetPreviewOne() = PreviewComponent { Widget() }
+
+            @Preview
+            fun WidgetPreviewTwo() = PreviewComponent { Widget() }
+            """.trimIndent(),
+        )
+        myFixture.addFileToProject(
+            "src/screenshotTest/kotlin/com/example/WidgetSnapshots.kt",
+            """
+            package com.example
+
+            import com.android.tools.screenshot.PreviewTest
+
+            @PreviewTest
+            fun Widget_Default_Snapshot() = PreviewComponent { Widget() }
+            """.trimIndent(),
+        )
+        val flat = BufferedImage(10, 10, BufferedImage.TYPE_INT_ARGB)
+        for (y in 0 until 10) for (x in 0 until 10) flat.setRGB(x, y, 0xFF112233.toInt())
+        val bytes = ByteArrayOutputStream().also { ImageIO.write(flat, "png", it) }.toByteArray()
+        val referenceFile = myFixture.tempDirFixture.createFile(
+            "src/screenshotTestDebug/reference/com/example/WidgetSnapshotsKt/" +
+                "Widget_Default_Snapshot_phone_eee23ffd_0.png",
+        )
+        WriteAction.runAndWait<IOException> { referenceFile.setBinaryContent(bytes) }
+
+        val snapshot = ownSnapshot()
+        assertEquals(2, snapshot.previews.count { it.covered })
+        assertEquals(1, snapshot.snapshots.size)
+
+        val blanks = McpServerService.getInstance().blankGoldens(project.name)
+
+        assertEquals(1, blanks.size)
+        assertEquals("com.example.WidgetSnapshotsKt.Widget_Default_Snapshot", blanks.single().composableFqn)
     }
 
     // Light fixture projects can share a display name across test classes; the base path is the one field

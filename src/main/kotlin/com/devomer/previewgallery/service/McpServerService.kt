@@ -232,7 +232,8 @@ class McpServerService : Disposable {
         val candidates = ReadAction.compute<List<GoldenInspector.Candidate>, RuntimeException> {
             if (DumbService.isDumb(project)) return@compute emptyList()
             val index = PreviewIndexService.getInstance(project)
-            val snapshots = index.findAll().flatMap { it.snapshots } + index.findOrphanSnapshots()
+            val covering = index.findAll().flatMap { it.snapshots }.distinctBy { it.indexed.composableFqn }
+            val snapshots = covering + index.findOrphanSnapshots()
             snapshots.flatMap { snapshot ->
                 val moduleDirectory = ModuleDirectoryResolver.resolve(project, snapshot.file)
                     ?: return@flatMap emptyList()

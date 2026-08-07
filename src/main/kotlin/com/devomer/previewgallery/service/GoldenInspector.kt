@@ -3,7 +3,7 @@ package com.devomer.previewgallery.service
 import com.devomer.previewgallery.model.ReferenceImage
 import com.devomer.previewgallery.render.RenderedImageInspector
 import com.intellij.openapi.diagnostic.thisLogger
-import java.io.IOException
+import com.intellij.openapi.progress.ProcessCanceledException
 import javax.imageio.ImageIO
 
 /**
@@ -57,7 +57,9 @@ object GoldenInspector {
     private fun read(candidate: Candidate) =
         try {
             candidate.image.file.inputStream.use { ImageIO.read(it) }
-        } catch (e: IOException) {
+        } catch (e: ProcessCanceledException) {
+            throw e // Never swallow cancellation — the platform relies on it propagating.
+        } catch (e: Exception) {
             thisLogger().warn("Could not read reference image ${candidate.image.file.path}", e)
             null
         }

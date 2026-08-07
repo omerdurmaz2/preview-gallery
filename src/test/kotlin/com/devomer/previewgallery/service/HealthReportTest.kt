@@ -34,13 +34,19 @@ class HealthReportTest {
     }
 
     @Test
-    fun `a clean project says so rather than going silent`() {
+    fun `a clean project says so rather than going silent, with the skipped count present at zero`() {
         val markdown = HealthReport.markdown(
             SnapshotHealth.Result(emptyList(), skipped = 0),
             GoldenInspector.Result(emptyList(), unreadable = 0),
         )
 
-        assertTrue(markdown, markdown.contains("No blank goldens, and every row shows what it is named after."))
+        assertTrue(
+            markdown,
+            markdown.contains(
+                "No blank goldens, and every row shows what it is named after. " +
+                    "0 rows skipped (no call targets resolved).",
+            ),
+        )
         assertTrue(markdown, !markdown.contains("###"))
     }
 

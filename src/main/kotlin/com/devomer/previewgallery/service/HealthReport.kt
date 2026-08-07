@@ -40,18 +40,17 @@ object HealthReport {
 
     private fun summary(names: SnapshotHealth.Result, goldens: GoldenInspector.Result): String {
         val notes = buildList {
-            if (names.skipped > 0) add("${names.skipped} rows skipped (no call targets resolved)")
+            add("${names.skipped} rows skipped (no call targets resolved)")
             if (goldens.unreadable > 0) add("${goldens.unreadable} reference images could not be read")
         }
-        val suffix = if (notes.isEmpty()) "" else " · ${notes.joinToString(" · ")}"
         if (goldens.findings.isEmpty() && names.findings.isEmpty()) {
-            return "No blank goldens, and every row shows what it is named after.$suffix"
+            return "No blank goldens, and every row shows what it is named after. ${notes.joinToString(" · ")}."
         }
         val counts = buildList {
             if (goldens.findings.isNotEmpty()) add("${goldens.findings.size} ${blankWord(goldens.findings.size)}")
             if (names.findings.isNotEmpty()) add("${names.findings.size} ${namedWord(names.findings.size)}")
         }
-        return "**${counts.joinToString(" · ")}**$suffix"
+        return "**${counts.joinToString(" · ")}** · ${notes.joinToString(" · ")}"
     }
 
     private fun blankWord(count: Int): String = if (count == 1) "blank golden" else "blank goldens"

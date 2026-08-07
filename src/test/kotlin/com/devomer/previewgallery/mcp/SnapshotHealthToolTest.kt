@@ -2,7 +2,6 @@ package com.devomer.previewgallery.mcp
 
 import com.devomer.previewgallery.mcp.tools.SnapshotHealthTool
 import com.devomer.previewgallery.service.GoldenInspector
-import org.junit.Assert.assertFalse
 import org.junit.Assert.assertTrue
 import org.junit.Test
 
@@ -40,6 +39,21 @@ class SnapshotHealthToolTest {
         targets = listOf("Sheet"),
     )
 
+    private val unresolved = PreviewFacts(
+        composableFqn = "com.example.OtherKt.OtherPreview",
+        displayName = "OtherPreview",
+        functionName = "OtherPreview",
+        moduleName = "app.main",
+        packageName = "com.example",
+        file = "/src/Other.kt",
+        line = 5,
+        isPrivate = false,
+        hasPreviewParameter = false,
+        unsupportedReason = null,
+        covered = false,
+        targets = emptyList(),
+    )
+
     private val goldens = listOf(
         GoldenInspector.BlankFinding(
             composableFqn = "com.example.SheetSnapshotsKt.Sheet_Collapsed_Snapshot",
@@ -53,7 +67,7 @@ class SnapshotHealthToolTest {
         name = "demo",
         path = "/src",
         indexing = false,
-        previews = listOf(misnamed),
+        previews = listOf(misnamed, unresolved),
         snapshots = listOf(honest, blankGolden),
     )
 
@@ -84,7 +98,6 @@ class SnapshotHealthToolTest {
     fun `the skipped count reaches the agent`() {
         val json = SnapshotHealthTool.execute(project, module = null, blankGoldens = goldens)
 
-        assertFalse(json, json.contains("\"skippedRows\":null"))
-        assertTrue(json, json.contains("\"skippedRows\":"))
+        assertTrue(json, json.contains("\"skippedRows\":1"))
     }
 }

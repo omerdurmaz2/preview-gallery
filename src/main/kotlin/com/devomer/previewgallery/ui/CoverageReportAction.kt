@@ -73,9 +73,9 @@ class CoverageReportAction(
     }
 
     private fun buildDocument(previews: List<PreviewEntry>, orphanRows: List<PreviewEntry>): String {
-        val all = previews + previews.flatMap { it.snapshots } + orphanRows
-        val names = SnapshotHealth.check(all)
-        val goldens = GoldenInspector.inspect(candidates(previews.flatMap { it.snapshots } + orphanRows))
+        val covering = previews.flatMap { it.snapshots }.distinctBy { it.indexed.composableFqn }
+        val names = SnapshotHealth.check(previews + covering + orphanRows)
+        val goldens = GoldenInspector.inspect(candidates(covering + orphanRows))
         return CoverageReport.markdown(previews) + "\n" + HealthReport.markdown(names, goldens)
     }
 
