@@ -645,6 +645,17 @@ class PreviewGalleryPanelTest : BasePlatformTestCase() {
 
     fun `test the coverage filter and the module filter compose`() {
         projectWithSnapshot()
+        myFixture.addFileToProject(
+            "src/main/kotlin/com/example/Lonely.kt",
+            """
+            package com.example
+
+            import androidx.compose.ui.tooling.preview.Preview
+
+            @Preview
+            fun LonelyPreview() = PreviewComponent { Lonely() }
+            """.trimIndent(),
+        )
         val panel = panel()
         panel.reloadSynchronously()
         // ActiveModuleTracker reads the selected editor, and with none open PreviewModuleFilter keeps nothing at
@@ -667,6 +678,48 @@ class PreviewGalleryPanelTest : BasePlatformTestCase() {
         panel.applyQueryForTest("")
         panel.treeExpanderForTest().expandAll()
 
+        // Both directions, or the assertion would also pass if the module filter had swallowed everything:
+        // LonelyPreview is in the active module and uncovered, so both filters must keep it.
         assertFalse(panel.visibleRowLabelsForTest().toString(), panel.visibleRowLabelsForTest().contains("WidgetPreview"))
+        assertTrue(panel.visibleRowLabelsForTest().toString(), panel.visibleRowLabelsForTest().contains("LonelyPreview"))
+    }
+
+    fun `test an empty coverage filter says so rather than blaming an empty query`() {
+        projectWithSnapshot()
+        val panel = panel()
+        panel.reloadSynchronously()
+
+        CoverageFilterToggleAction(project) {}.setSelected(
+            com.intellij.testFramework.TestActionEvent.createTestEvent(),
+            true,
+        )
+        panel.applyQueryForTest("")
+
+        // Every preview in the fixture is covered, so the tree is empty with no query typed. NO_MATCH would
+        // render as "No preview matches ''".
+        assertEquals(PreviewGalleryPanel.State.NO_UNCOVERED, panel.state)
+    }
+
+    fun `test the coverage filter emptying the active module is not reported as no active module`() {
+        projectWithSnapshot()
+        val panel = panel()
+        panel.reloadSynchronously()
+        myFixture.openFileInEditor(
+            requireNotNull(myFixture.tempDirFixture.getFile("src/main/kotlin/com/example/Widgets.kt")),
+        )
+
+        ModuleFilterToggleAction(project) {}.setSelected(
+            com.intellij.testFramework.TestActionEvent.createTestEvent(),
+            true,
+        )
+        CoverageFilterToggleAction(project) {}.setSelected(
+            com.intellij.testFramework.TestActionEvent.createTestEvent(),
+            true,
+        )
+        panel.applyQueryForTest("")
+
+        // The active module does have a preview; the coverage filter is what emptied the tree. NO_ACTIVE_MODULE
+        // would say the module has none.
+        assertEquals(PreviewGalleryPanel.State.NO_UNCOVERED, panel.state)
     }
 }

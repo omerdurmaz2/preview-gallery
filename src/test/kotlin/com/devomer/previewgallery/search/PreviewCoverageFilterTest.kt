@@ -22,16 +22,6 @@ class PreviewCoverageFilterTest {
     }
 
     @Test
-    fun `a preview in a module that never adopted screenshot testing is work to do`() {
-        val noScreenshotTestModule = testRow(displayName = "OtherModulePreview", moduleName = "legacy.main")
-
-        assertEquals(
-            listOf(noScreenshotTestModule),
-            PreviewCoverageFilter.apply(listOf(noScreenshotTestModule), enabled = true),
-        )
-    }
-
-    @Test
     fun `an empty input yields an empty result either way`() {
         assertEquals(emptyList<Any>(), PreviewCoverageFilter.apply(emptyList<TestPreviewRow>(), enabled = true))
         assertEquals(emptyList<Any>(), PreviewCoverageFilter.apply(emptyList<TestPreviewRow>(), enabled = false))

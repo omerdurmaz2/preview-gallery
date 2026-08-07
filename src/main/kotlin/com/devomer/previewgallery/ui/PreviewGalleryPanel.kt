@@ -67,7 +67,7 @@ class PreviewGalleryPanel(
     private val parentDisposable: Disposable,
 ) : JBPanel<PreviewGalleryPanel>(BorderLayout()) {
 
-    enum class State { INDEXING, NO_PREVIEWS, NO_MATCH, NO_ACTIVE_MODULE, LOADED }
+    enum class State { INDEXING, NO_PREVIEWS, NO_MATCH, NO_ACTIVE_MODULE, NO_UNCOVERED, LOADED }
 
     var state: State = State.INDEXING
         private set
@@ -420,7 +420,8 @@ class PreviewGalleryPanel(
             moduleTracker.activeModuleName,
             moduleFilterOn,
         )
-        val visible = PreviewCoverageFilter.apply(moduleFiltered, CoverageFilterToggleAction.isEnabled(project))
+        val coverageFilterOn = CoverageFilterToggleAction.isEnabled(project)
+        val visible = PreviewCoverageFilter.apply(moduleFiltered, coverageFilterOn)
         // The orphan branch goes through the same module filter as the previews: "show only the active editor's
         // module" that still showed another module's snapshots would not be that filter at all. The query is
         // applied to the two independently, inside the builder (PG13 spec D11). It deliberately does NOT go
@@ -492,7 +493,10 @@ class PreviewGalleryPanel(
         setState(
             when {
                 entries.isEmpty() && orphanSnapshots.isEmpty() -> State.NO_PREVIEWS
-                moduleFilterOn && visible.isEmpty() && visibleOrphans.isEmpty() -> State.NO_ACTIVE_MODULE
+                // moduleFiltered, not visible: the coverage filter emptying the active module's previews is not
+                // that module being empty, and NO_ACTIVE_MODULE would say it was.
+                moduleFilterOn && moduleFiltered.isEmpty() && visibleOrphans.isEmpty() -> State.NO_ACTIVE_MODULE
+                coverageFilterOn && modules.isEmpty() && !isQueryActive() -> State.NO_UNCOVERED
                 modules.isEmpty() -> State.NO_MATCH
                 else -> State.LOADED
             },
@@ -622,6 +626,7 @@ class PreviewGalleryPanel(
             State.NO_PREVIEWS -> PreviewGalleryBundle.message("state.noPreviews")
             State.NO_MATCH -> PreviewGalleryBundle.message("state.noMatch", searchField.text)
             State.NO_ACTIVE_MODULE -> PreviewGalleryBundle.message("state.noActiveModule")
+            State.NO_UNCOVERED -> PreviewGalleryBundle.message("state.noUncovered")
             State.LOADED -> ""
         }
         statusLabel.isVisible = newState != State.LOADED

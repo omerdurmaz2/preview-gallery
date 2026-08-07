@@ -34,7 +34,7 @@ already drawn by `PreviewTreeCellRenderer`. This phase only filters on it and fo
 |---|----------|-----------|
 | D1 | The filter is a **two-state** `ToggleAction` in the tool window toolbar: off shows everything, on shows only rows whose coverage is `Uncovered`. It persists per project in `PropertiesComponent`, exactly as the module filter does. | The pattern is already in the toolbar next to it, so the control needs no explanation. A three-state control would need a dropdown, which is a new UI concept in this window for a direction nobody has asked for yet (see Non-Goals). |
 | D2 | There is no `NotApplicable` state. A module with no `src/screenshotTest` has every preview `Uncovered`, so the filter shows them and the badge reads `no snapshot`. | *Revised after the PG16 gate: the first pass hid these rows and the toggle then surfaced exactly one module out of 1371, which read as the filter being broken.* A module that never adopted screenshot testing has written no snapshot for any of its previews — that is what "uncovered" means, and it is the work the filter exists to surface. Keeping a third state would have to be special-cased in the filter, the report and the renderer to say the same thing three times. |
-| D3 | The orphan branch stays **visible** while the filter is on. | An orphan is a snapshot that matches no preview — the mirror of what the filter selects for, and the same kind of defect: usually a renamed composable or a dead snapshot. Hiding it would make "show me what is wrong with coverage" tell half the truth. It is also the one place the filter's own subject matter cannot appear, since an orphan has no `coverage` to be `Uncovered`. |
+| D3 | The orphan branch stays **visible** while the filter is on. | An orphan is a snapshot that matches no preview — the mirror of what the filter selects for, and the same kind of defect: usually a renamed composable or a dead snapshot. Hiding it would make "show me what is wrong with coverage" tell half the truth. Note that the carve-out is load-bearing rather than incidental: since D2 removed `NotApplicable`, an orphan row carries the `Uncovered` default like any other row, so routing orphans through the filter would silently keep every one of them. |
 | D4 | The filter composes with the search box and the module filter rather than replacing either. It is a third stage in `applyFilter`'s existing chain. | They are independent axes — *which module*, *matching what text*, *covered or not* — and `applyFilter` already threads two of them. One more `filter` call is the whole change. |
 | D5 | The report reads the panel's unfiltered `entries` — the list `PreviewIndexService.findAll()` produced at the last reload — and **ignores** the filter, the module filter and the search box. | A report titled "snapshot coverage" that silently described a filtered subset is a footgun: the number lands in a ticket and nobody remembers a search box was open. Coverage is a property of the project, so the report describes the project. Reading `entries` rather than calling `findAll()` again keeps the action off a read action it would have to take on the EDT, and makes the report exactly as fresh as the tree the user is looking at. |
 | D6 | The report counts and lists **every module holding a preview**; one with no `src/screenshotTest` reads as `0/N`. | *Revised with D2.* The reference project has 1371 modules and one of them has adopted screenshot testing — a report that omitted the other 1370 would describe the one module already known to be fine and stay silent about all the work. A number near zero is the honest answer, and the per-module headings say where it comes from. |
@@ -57,8 +57,9 @@ ui/
   PreviewGalleryPanel      applyFilter gains one stage; the toolbar gains two actions
 ```
 
-Unchanged: `SnapshotCoverage`, `SnapshotCoverageResolver`, `PreviewIndexService`, `PreviewTreeModelBuilder`,
-`PreviewTreeCellRenderer`, every rendering component.
+Unchanged: `PreviewTreeModelBuilder`, every rendering component. `SnapshotCoverage`, `SnapshotCoverageResolver`,
+`PreviewIndexService` and `PreviewTreeCellRenderer` were untouched by the first pass and then changed by the D2
+reversal, which deleted the `NotApplicable` state they all carried.
 
 `PreviewCoverageFilter` mirrors `PreviewModuleFilter` deliberately — same package, same shape, same
 `enabled` parameter — so a reader who has seen one has seen both:
@@ -113,10 +114,11 @@ bullets is the signal, and dropping the module entirely would make a reader wond
 
 | Situation | Behaviour |
 |---|---|
-| The filter is on and every row in view is covered | An empty tree. Correct: it means there is no work, and the toggle in the toolbar says why the tree is empty. |
+| The filter is on and every row in view is covered | An empty tree with the `state.noUncovered` label, which names the coverage filter as the reason. The `No preview matches ''` label the empty-query path would otherwise show is wrong on both counts. |
 | The filter is on with the module filter, and the active module has no uncovered rows | Empty for the same reason. The two filters compose; neither overrides the other. |
 | The filter is on while the index is still building | Same as today: `applyFilter` runs on whatever `entries` holds, and the indexing tracker reloads when indexing finishes. |
-| No module in the project has `src/screenshotTest` | The report is a single sentence saying no module has adopted screenshot testing, not an empty file with a heading. |
+| No module in the project has `src/screenshotTest` | A normal report reading `0/N covered`, with every module listed and every preview bulleted (D6). |
+| The panel holds no rows at all | A single sentence saying no preview was found, not an empty file with a heading. Reachable only if the index is empty: the action is not `DumbAware`, so it is disabled while indexing. |
 | Every module is fully covered | A normal report: totals, per-module headings, no bullets. |
 | The user cancels the save dialog | Nothing is written and nothing is reported. |
 | The write fails | The existing `notify` path reports it; the report is not retried. |

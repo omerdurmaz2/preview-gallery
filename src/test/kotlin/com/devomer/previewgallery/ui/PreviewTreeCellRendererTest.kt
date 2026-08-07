@@ -157,12 +157,6 @@ class PreviewTreeCellRendererTest {
     }
 
     @Test
-    fun `a preview in a module without screenshot testing is badged like any other uncovered one`() {
-        val rendered = text(PreviewNode.PreviewLeaf(testRow()))
-        assertTrue(rendered, rendered.contains("· no snapshot"))
-    }
-
-    @Test
     fun `a snapshot row shows its function name`() {
         val row = testRow(displayName = "Widget_Default_Snapshot", functionName = "Widget_Default_Snapshot")
         val rendered = text(PreviewNode.SnapshotLeaf(row))

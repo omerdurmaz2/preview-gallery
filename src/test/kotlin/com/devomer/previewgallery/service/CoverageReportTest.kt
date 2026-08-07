@@ -46,6 +46,8 @@ class CoverageReportTest {
         )
 
         assertTrue(markdown, markdown.contains("**1/3 covered** across 2 modules"))
+        // zeta.main reads 0/1 rather than being left out: a module with no src/screenshotTest is the work the
+        // report exists to expose (D6).
         assertTrue(markdown, markdown.indexOf("## alpha.main — 1/2") < markdown.indexOf("## zeta.main — 0/1"))
     }
 
@@ -54,18 +56,6 @@ class CoverageReportTest {
         val markdown = CoverageReport.markdown(listOf(uncovered("ZPreview"), uncovered("APreview")))
 
         assertTrue(markdown, markdown.indexOf("`com.example.FooKt.APreview`") < markdown.indexOf("`com.example.FooKt.ZPreview`"))
-    }
-
-    @Test
-    fun `a module that never adopted screenshot testing reads as zero covered`() {
-        val markdown = CoverageReport.markdown(
-            listOf(covered("APreview"), uncovered("CPreview", module = "legacy.main")),
-        )
-
-        // The module has no src/screenshotTest, so none of its previews is snapshotted — which is the work the
-        // report exists to expose, not a module it should be blind to.
-        assertTrue(markdown, markdown.contains("**1/2 covered** across 2 modules"))
-        assertTrue(markdown, markdown.contains("## legacy.main — 0/1"))
     }
 
     @Test
