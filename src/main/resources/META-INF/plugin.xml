@@ -26,6 +26,7 @@
         <searchEverywhereContributor
             implementation="com.devomer.previewgallery.searcheverywhere.PreviewSearchEverywhereContributorFactory"/>
         <notificationGroup id="Compose Preview Gallery" displayType="BALLOON"/>
+        <postStartupActivity implementation="com.devomer.previewgallery.service.McpServerStartup"/>
     </extensions>
 
     <!--
