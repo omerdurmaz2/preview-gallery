@@ -1,11 +1,13 @@
 # Snapshot Testing — Feature Roadmap
 
-> **Status:** **F1, H1 and F2 shipped** — Phase 13 (badge, snapshot rows, reference strip), Phase 14 (read the
+> **Status:** **F1, H1, F2 and F8 shipped** — Phase 13 (badge, snapshot rows, reference strip), Phase 14 (read the
 > source set from the VFS, fix attribution), Phase 15 (refresh before the lookup, discover every build
 > variant's reference root, recover the index-fallback rows) and Phase 16 (the uncovered-only toggle and the
-> markdown report). The manual gate against `hepsi-android` passes: snapshots are listed, they hang under the
-> previews they belong to, a reference directory changed from a terminal is picked up without pressing Refresh,
-> and the toggle leaves the work queue on screen. Everything else below is still backlog.
+> markdown report) and Phase 17 (the index served read-only over MCP). The manual gate against `hepsi-android`
+> passes: snapshots are listed, they hang under the previews they belong to, a reference directory changed from
+> a terminal is picked up without pressing Refresh, the toggle leaves the work queue on screen, and an agent
+> asking `list_previews` gets the same 854 uncovered composables the tree shows. Everything else below is still
+> backlog.
 >
 > Each remaining entry becomes its own session: brainstorm → design spec in `docs/superpowers/specs/`
 > → plan in `docs/superpowers/plans/` → implementation. Commit prefixes (`PG16-N`, …) are assigned when
@@ -17,12 +19,11 @@ Ranked for what to build next, not by theme. Effort is a rough order of magnitud
 
 | # | Item | Why it is here | Effort |
 |---|---|---|---|
-| 1 | **F8 · MCP server over the index** | The consuming project already has a `snapshot-testing` skill that tells an agent *how* to write a snapshot. What the agent cannot get is *which* composables lack one. This closes that loop — and it may make F3 unnecessary, see below. | M |
-| 2 | **F3 · "Create snapshot test" action** | The action the filter's answer demands. Worth building **only if** F8 plus the existing skill turns out not to cover it — an agent with project context writes a better fake `UiState` than a PSI template can. | L |
-| 3 | **Spike, then F5 · Reference vs. live diff** | Highest ceiling of anything here, still gated on an unanswered AS-internal question. Run the spike early, decide after. | L |
-| 4 | **F7 · Degenerate golden detector** | Small, and it protects the value of every snapshot F3/F8 produces. | S |
-| 5 | **F6 · Gradle task runner** | Depends on F5's diff view to be worth the wiring. | L |
-| 6 | **F4 · Promote a comparison view to a variant** | Depends on F3's writer. Nice, not load-bearing. | M |
+| 1 | **F3 · "Create snapshot test" action** | The action the filter's answer demands — but F8 shipped, so the question it was waiting on is now answerable by use rather than argument: write a few snapshots with an agent against the live server, and build this only if that turns out to be the worse route. | L |
+| 2 | **Spike, then F5 · Reference vs. live diff** | Highest ceiling of anything here, still gated on an unanswered AS-internal question. Run the spike early, decide after. | L |
+| 3 | **F7 · Degenerate golden detector** | Small, and it protects the value of every snapshot F3/F8 produces. | S |
+| 4 | **F6 · Gradle task runner** | Depends on F5's diff view to be worth the wiring. | L |
+| 5 | **F4 · Promote a comparison view to a variant** | Depends on F3's writer. Nice, not load-bearing. | M |
 
 **The F3-versus-F8 tension is worth deciding deliberately.** F3 generates snapshot files from inside the
 plugin with a PSI writer; F8 hands an agent the coverage data and lets it write them with the project's
@@ -278,43 +279,46 @@ renders and over committed reference PNGs, and warn on blank or single-colour re
 
 ### Theme 4 — Agents
 
-#### F8 · Serve the preview and snapshot index over MCP
+#### F8 · Serve the preview and snapshot index over MCP — **shipped (PG17)**
 
 **Goal:** let an agent ask the plugin what the project contains, instead of re-deriving it by grepping.
 
-The gallery already holds, per composable: which module and package it lives in, whether it has a
-snapshot, which snapshot functions cover it, which reference PNGs are committed for each, and which
-snapshots match no preview. That is precisely the data an agent needs and cannot cheaply reconstruct —
-matching a preview to its snapshot took a call-site heuristic and two phases to get right.
+Four tools rather than the five sketched here: `list_projects`, `list_previews`, `list_snapshots` and
+`coverage_report`. `reference_images` was folded into `list_snapshots` — a row carrying its own PNG paths
+is one call instead of N — and `coverage` became `coverage_report`, which returns the byte-identical
+markdown the toolbar's export writes, so a number an agent quotes and a number pasted from the IDE cannot
+disagree.
 
-Expose it read-only over MCP. Candidate tools:
+Every open question this entry left is answered in the spec:
 
-| Tool | Returns |
-|---|---|
-| `list_previews(module?, package?)` | Composable FQN, module, file, `isPrivate`, `hasPreviewParameter`, coverage |
-| `list_snapshots(module?)` | Snapshot function FQN, the composable it shows, its variants |
-| `coverage(module?)` | Covered / uncovered counts plus the uncovered composables themselves |
-| `reference_images(snapshotFqn)` | Variant name and absolute path per committed PNG |
+- **Transport** — HTTP, but on the JDK's own `com.sun.net.httpserver` rather than `DepHealth`'s Ktor. Two
+  endpoints do not earn four artifacts and a second Netty class-loader tree inside the IDE.
+- **Port** — fixed at 7891, one application-level server, with an optional `project` argument on every tool
+  and `list_projects` to discover the names. This workflow runs two IDEs at once, and a project-level server
+  would make the second fight for the port.
+- **Bytes or paths** — paths. Every client here reads files already; base64 in a JSON-RPC response spends a
+  context window doing it worse.
+- **While indexing** — `list_projects` says `indexing: true` and every other tool refuses, as an `isError`
+  result rather than a protocol error, so the message reaches the model instead of being rejected by the
+  client. An agent handed `[]` concludes the project has no previews and acts on it.
+- **Read-only** — held. No tool creates, edits or runs anything, and the scope guard below still governs.
 
-**Why this may replace F3.** The consuming project already carries a `snapshot-testing` skill that tells
-an agent exactly how to write a snapshot — the wrapper, the naming, the five rules that came from real
-render failures. What the agent cannot get today is *which* composables lack one. Give it that, and the
-agent writes the file with the whole project in context: it can read the existing `@Preview` body,
-resolve whether the target is `internal` or `private`, find the fake-state factory that already exists,
-and skip the modal sheets the skill says not to snapshot. A PSI template inside the plugin can do none
-of that.
+Two things the reviews caught that no plan would have: reference PNGs live nested under
+`reference/<package>/<FacadeKt>/`, so the obvious flat scan returns nothing on every real project
+(`ReferenceImageLocator` already solved it); and `HttpURLConnection` silently drops the `Origin` header, so
+the browser-guard test could never have passed as first written.
 
-Precedent worth copying: the `DepHealth` plugin in the same toolchain already serves MCP from an IDE
-plugin over `http://localhost:7890/mcp`, so the transport question has a known-good answer here.
+Against `hepsi-android` the server reports 880 previews, 50 snapshots, **24 orphans** and 854 uncovered
+across 92 modules. That orphan count is a finding in its own right — half the snapshots match no preview —
+and belongs to whoever picks up the matching heuristic next, not to this feature.
 
-- **Hooks:** `service/PreviewIndexService.kt` (the whole payload already exists), a new server surface
-- **Effort:** M · **Risk:** medium — a new network surface in an IDE plugin, and the first part of this
-  plugin that is not purely local UI
-- **Depends on:** F1 (shipped)
-- **Open:** transport — HTTP like DepHealth, or stdio? Fixed port, configurable, or discovered? Bind to
-  localhost only and stay strictly read-only — the plugin must never become a way to write files from
-  outside the IDE. Does it serve rendered PNG bytes, or only paths? What happens while the index is
-  still building — error, or empty with a "still indexing" flag?
+- **Built:** `mcp/` (pure: `ProjectSnapshot`, `ProjectSelector`, four tools, `ToolRegistry`, `McpDispatcher`,
+  `McpHttpServer`), `service/McpServerService.kt`, `service/McpServerStartup.kt`, `ui/McpServerAction.kt`,
+  `ui/McpServerDialog.kt`, `ui/McpClientConfig.kt`
+- **Spec:** `docs/superpowers/specs/2026-08-07-mcp-index-server-design.md`
+- **Does it replace F3?** Not answered yet, and now answerable the honest way: use it. The claim was that an
+  agent with the whole project in context writes a better fake `UiState` than a PSI template can. Write a few
+  snapshots that way against the live server before committing to F3's writer.
 
 ---
 
