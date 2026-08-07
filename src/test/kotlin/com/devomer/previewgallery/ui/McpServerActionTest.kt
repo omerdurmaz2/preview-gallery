@@ -37,10 +37,9 @@ class McpServerActionTest : BasePlatformTestCase() {
         action.update(event)
 
         assertSame(AllIcons.General.Web, event.presentation.icon)
-        assertEquals(
-            PreviewGalleryBundle.message("action.mcpServer.text"),
-            event.presentation.description,
-        )
+        // Text as well as description: the toolbar's tooltip leads with the text and may show nothing else.
+        assertEquals(PreviewGalleryBundle.message("action.mcpServer.text"), event.presentation.text)
+        assertEquals(PreviewGalleryBundle.message("action.mcpServer.text"), event.presentation.description)
     }
 
     fun `test the running tooltip carries the address an agent connects to`() {

@@ -31,12 +31,16 @@ class McpServerAction(private val project: Project) : DumbAwareAction(
     override fun update(event: AnActionEvent) {
         val service = McpServerService.getInstance()
         val running = service.isRunning
-        event.presentation.icon = iconFor(running)
-        event.presentation.description = if (running) {
+        val label = if (running) {
             PreviewGalleryBundle.message("action.mcpServer.running", service.port.toString())
         } else {
             PreviewGalleryBundle.message("action.mcpServer.text")
         }
+        event.presentation.icon = iconFor(running)
+        // Both, not just the description: a toolbar button's tooltip leads with the text and treats the
+        // description as secondary detail it may not show at all.
+        event.presentation.text = label
+        event.presentation.description = label
     }
 
     override fun actionPerformed(event: AnActionEvent) {
