@@ -38,8 +38,8 @@ class McpHttpServer(
     /** @throws IOException when [port] is already bound — the caller surfaces it, rather than a silent no-op. */
     fun start() {
         if (server != null) return
-        val pool = Executors.newFixedThreadPool(2)
         val started = HttpServer.create(InetSocketAddress(InetAddress.getLoopbackAddress(), port), 0)
+        val pool = Executors.newFixedThreadPool(2)
         started.createContext("/health") { exchange -> exchange.use { respond(exchange, 200, "ok", TEXT) } }
         started.createContext("/mcp") { exchange -> mcp(exchange) }
         started.executor = pool
