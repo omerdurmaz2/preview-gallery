@@ -15,10 +15,11 @@ import kotlinx.serialization.json.put
 /** One entry of the `tools/list` response. */
 data class ToolDescriptor(val name: String, val description: String, val inputSchema: JsonObject)
 
-/** What a tool call produced. A [Failure] becomes a JSON-RPC error, not an empty result. */
+/** What a tool call produced. */
 sealed interface ToolOutcome {
     data class Text(val text: String) : ToolOutcome
     data class Failure(val message: String) : ToolOutcome
+    data class UnknownTool(val name: String) : ToolOutcome
 }
 
 /**
@@ -84,7 +85,7 @@ class ToolRegistry(private val snapshots: () -> List<ProjectSnapshot>) {
                 ListSnapshotsTool.execute(project, module, boolean(arguments, "orphansOnly")),
             )
             CoverageReportTool.NAME -> ToolOutcome.Text(CoverageReportTool.execute(project, module))
-            else -> ToolOutcome.Failure("Unknown tool: $name")
+            else -> ToolOutcome.UnknownTool(name)
         }
     }
 

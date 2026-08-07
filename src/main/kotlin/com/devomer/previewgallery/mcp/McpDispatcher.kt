@@ -95,25 +95,25 @@ class McpDispatcher(
             ?: return error(id, INVALID_PARAMS, "Invalid params: missing tool name")
         val arguments = (params["arguments"] as? JsonObject) ?: JsonObject(emptyMap())
         return when (val outcome = tools.call(name, arguments)) {
-            is ToolOutcome.Failure -> error(id, TOOL_ERROR, outcome.message)
-            is ToolOutcome.Text -> ok(
-                id,
-                buildJsonObject {
-                    put(
-                        "content",
-                        buildJsonArray {
-                            add(
-                                buildJsonObject {
-                                    put("type", "text")
-                                    put("text", outcome.text)
-                                },
-                            )
-                        },
-                    )
-                    put("isError", false)
-                },
-            )
+            is ToolOutcome.UnknownTool -> error(id, INVALID_PARAMS, "Unknown tool: ${outcome.name}")
+            is ToolOutcome.Failure -> ok(id, toolResult(outcome.message, isError = true))
+            is ToolOutcome.Text -> ok(id, toolResult(outcome.text, isError = false))
         }
+    }
+
+    private fun toolResult(text: String, isError: Boolean): JsonObject = buildJsonObject {
+        put(
+            "content",
+            buildJsonArray {
+                add(
+                    buildJsonObject {
+                        put("type", "text")
+                        put("text", text)
+                    },
+                )
+            },
+        )
+        put("isError", isError)
     }
 
     private fun ok(id: JsonElement, result: JsonObject) = DispatchResult.Json(
@@ -139,14 +139,11 @@ class McpDispatcher(
     )
 
     private companion object {
-        val SUPPORTED_VERSIONS = setOf("2025-06-18", "2025-03-26", "2024-11-05")
+        val SUPPORTED_VERSIONS = setOf("2025-06-18")
         const val DEFAULT_VERSION = "2025-06-18"
         const val PARSE_ERROR = -32700
         const val INVALID_REQUEST = -32600
         const val METHOD_NOT_FOUND = -32601
         const val INVALID_PARAMS = -32602
-
-        /** Server-defined range: the call was well-formed, the server could not answer it. */
-        const val TOOL_ERROR = -32000
     }
 }
