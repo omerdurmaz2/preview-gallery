@@ -38,6 +38,7 @@ class McpServerService {
 
     val port: Int = PORT
 
+    @Volatile
     private var server: McpHttpServer? = null
 
     val isRunning: Boolean get() = server?.isRunning == true
@@ -61,11 +62,25 @@ class McpServerService {
         server = null
     }
 
-    /** One entry per open project, each read under its own read action. */
+    /**
+     * One entry per open project, each read under its own read action.
+     *
+     * A project can be disposed in the gap between [Project.isDisposed] and the read action below — closing a
+     * project while a call is in flight is expected, not a bug. [snapshotOrNull] isolates that failure to its own
+     * project so the response still answers for every project that is fine, instead of a single straggler
+     * turning the whole call into a 500.
+     */
     fun snapshots(): List<ProjectSnapshot> =
         ProjectManager.getInstance().openProjects
             .filterNot { it.isDisposed }
-            .map { project -> ReadAction.compute<ProjectSnapshot, RuntimeException> { snapshot(project) } }
+            .mapNotNull(::snapshotOrNull)
+
+    private fun snapshotOrNull(project: Project): ProjectSnapshot? =
+        runCatching { ReadAction.compute<ProjectSnapshot, RuntimeException> { snapshot(project) } }
+            .onFailure {
+                thisLogger().warn("Dropping project \"${project.name}\" from the MCP response: its snapshot failed", it)
+            }
+            .getOrNull()
 
     private fun snapshot(project: Project): ProjectSnapshot {
         val name = project.name
@@ -121,6 +136,11 @@ class McpServerService {
     /**
      * Reference PNGs as absolute paths (spec D7). A missing directory is an empty list, not an error: a
      * snapshot whose `update…ScreenshotTest` has never run is a real state an agent should be able to see.
+     *
+     * Does not call [ReferenceRoots.refresh] first, so a PNG written by an `update…ScreenshotTest` run moments
+     * ago can stay invisible here until something else refreshes the VFS — indistinguishable from the test
+     * never having run. [ReferenceRoots.refresh] must not run under a read lock, and this whole method does; a
+     * synchronous VFS refresh from inside the read action this runs under is not something to add casually.
      */
     private fun referenceImages(project: Project, file: VirtualFile): List<ReferenceImage> {
         val moduleDirectory = ModuleDirectoryResolver.resolve(project, file) ?: return emptyList()
