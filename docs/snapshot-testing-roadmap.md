@@ -1,10 +1,11 @@
 # Snapshot Testing — Feature Roadmap
 
-> **Status:** **F1 and H1 shipped** — Phase 13 (badge, snapshot rows, reference strip), Phase 14 (read the
-> source set from the VFS, fix attribution) and Phase 15 (refresh before the lookup, discover every build
-> variant's reference root, recover the index-fallback rows). The manual gate against `hepsi-android`
-> passes: snapshots are listed, they hang under the previews they belong to, and a reference directory
-> changed from a terminal is picked up without pressing Refresh. Everything else below is still backlog.
+> **Status:** **F1, H1 and F2 shipped** — Phase 13 (badge, snapshot rows, reference strip), Phase 14 (read the
+> source set from the VFS, fix attribution), Phase 15 (refresh before the lookup, discover every build
+> variant's reference root, recover the index-fallback rows) and Phase 16 (the uncovered-only toggle and the
+> markdown report). The manual gate against `hepsi-android` passes: snapshots are listed, they hang under the
+> previews they belong to, a reference directory changed from a terminal is picked up without pressing Refresh,
+> and the toggle leaves the work queue on screen. Everything else below is still backlog.
 >
 > Each remaining entry becomes its own session: brainstorm → design spec in `docs/superpowers/specs/`
 > → plan in `docs/superpowers/plans/` → implementation. Commit prefixes (`PG16-N`, …) are assigned when
@@ -16,13 +17,12 @@ Ranked for what to build next, not by theme. Effort is a rough order of magnitud
 
 | # | Item | Why it is here | Effort |
 |---|---|---|---|
-| 1 | **F2 · Coverage filter and report** | The badge provokes exactly one question — "so what is uncovered?" — and today the only way to answer it is to scroll. Smallest change with a daily payoff, and it needs no new data. | S |
-| 2 | **F8 · MCP server over the index** | The consuming project already has a `snapshot-testing` skill that tells an agent *how* to write a snapshot. What the agent cannot get is *which* composables lack one. This closes that loop — and it may make F3 unnecessary, see below. | M |
-| 3 | **F3 · "Create snapshot test" action** | The action the filter's answer demands. Worth building **only if** F8 plus the existing skill turns out not to cover it — an agent with project context writes a better fake `UiState` than a PSI template can. | L |
-| 4 | **Spike, then F5 · Reference vs. live diff** | Highest ceiling of anything here, still gated on an unanswered AS-internal question. Run the spike early, decide after. | L |
-| 5 | **F7 · Degenerate golden detector** | Small, and it protects the value of every snapshot F3/F8 produces. | S |
-| 6 | **F6 · Gradle task runner** | Depends on F5's diff view to be worth the wiring. | L |
-| 7 | **F4 · Promote a comparison view to a variant** | Depends on F3's writer. Nice, not load-bearing. | M |
+| 1 | **F8 · MCP server over the index** | The consuming project already has a `snapshot-testing` skill that tells an agent *how* to write a snapshot. What the agent cannot get is *which* composables lack one. This closes that loop — and it may make F3 unnecessary, see below. | M |
+| 2 | **F3 · "Create snapshot test" action** | The action the filter's answer demands. Worth building **only if** F8 plus the existing skill turns out not to cover it — an agent with project context writes a better fake `UiState` than a PSI template can. | L |
+| 3 | **Spike, then F5 · Reference vs. live diff** | Highest ceiling of anything here, still gated on an unanswered AS-internal question. Run the spike early, decide after. | L |
+| 4 | **F7 · Degenerate golden detector** | Small, and it protects the value of every snapshot F3/F8 produces. | S |
+| 5 | **F6 · Gradle task runner** | Depends on F5's diff view to be worth the wiring. | L |
+| 6 | **F4 · Promote a comparison view to a variant** | Depends on F3's writer. Nice, not load-bearing. | M |
 
 **The F3-versus-F8 tension is worth deciding deliberately.** F3 generates snapshot files from inside the
 plugin with a PSI writer; F8 hands an agent the coverage data and lets it write them with the project's
@@ -148,24 +148,35 @@ strategies, and the design must pick one and state what it does with mismatches.
   set from the VFS, which fixes attribution and makes the modelling question moot either way. Which
   matching strategy (naming convention vs. resolving the called composable) survives real code?
 
-#### F2 · Coverage filter and report
+#### F2 · Coverage filter and report — **shipped (PG16)**
 
 **Goal:** turn F1's per-row facts into something you can act on without scrolling.
 
-A filter with three states rather than a plain toggle — **all** / **uncovered only** / **covered only**.
-Both directions earn their place: *uncovered* is the work queue, *covered* is what you scan when you
-change a shared component and want to know which snapshots you are about to invalidate. Modules with no
-`src/screenshotTest` stay unbadged and are hidden by either filter, since the question does not apply
-to them.
+Shipped as a **two-state toggle**, not the three-state control this entry sketched: only the *uncovered*
+direction was built. *Covered only* — "which snapshots am I about to invalidate?" — was cut for want of a
+second control in a toolbar that already carries a module filter, and because nobody had asked for it. It
+stays available as a follow-up: the filter is one `filter` call, and adding the direction is a dropdown, not
+an architecture.
 
-Plus an exportable report — `X/Y covered` per module, markdown — so the number can go in a ticket or a
-channel before the consuming project's CI job exists.
+Two decisions from the design spec reversed what this entry assumed, both after the manual gate:
 
-- **Hooks:** `PreviewSearchFilter`, `ModuleFilterToggleAction`, `PreviewGalleryPanel`, `SnapshotCoverage`
-- **Effort:** S · **Risk:** low
-- **Depends on:** F1 (shipped)
-- **Open:** does the filter compose with the search box and the module filter, or replace them? What
-  happens to the orphan branch under "covered only" — an orphan is a snapshot, not a preview.
+- Modules with no `src/screenshotTest` are **not** exempt. The `NotApplicable` state was deleted outright —
+  a preview with no matching snapshot is uncovered wherever it lives. Hiding those modules made the toggle
+  surface one module out of 1371 in `hepsi-android`, which read as the filter being broken rather than as
+  the project having no coverage.
+- The report counts every module holding a preview, so it reads near 0% on that project. That number is the
+  finding, not noise.
+
+The report writes `X/Y covered` per module as markdown to a file chosen in a save dialog, and always
+describes the whole project — never the filtered tree.
+
+- **Built:** `search/PreviewCoverageFilter.kt`, `service/CoverageReport.kt`, `ui/PersistentToggleAction.kt`
+  (extracted from `ModuleFilterToggleAction`), `ui/CoverageFilterToggleAction.kt`, `ui/CoverageReportAction.kt`
+- **Spec:** `docs/superpowers/specs/2026-08-06-snapshot-coverage-filter-design.md`
+- **Answers to the open questions:** the filter composes with the search box and the module filter rather than
+  replacing either (spec D4), and the orphan branch stays visible while it is on (spec D3) — an orphan is the
+  mirror of what the filter selects for, so hiding it would tell half the truth.
+- **Left for a follow-up:** the *covered only* direction.
 
 ### Theme 2 — Authoring
 
