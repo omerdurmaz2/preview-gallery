@@ -215,7 +215,7 @@ class PreviewGalleryPanel(
             RefreshAction(project) { reload() },
             ModuleFilterToggleAction(project) { applyFilter() },
             CoverageFilterToggleAction(project) { applyFilter() },
-            CoverageReportAction(project) { entries },
+            CoverageReportAction(project, { entries }, { orphanSnapshots }),
             McpServerAction(project),
             commonActions.createExpandAllAction(treeExpander, this),
             commonActions.createCollapseAllAction(treeExpander, this),
