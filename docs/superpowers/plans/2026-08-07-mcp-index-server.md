@@ -388,7 +388,7 @@ object ListSnapshotsTool {
                 row.referenceImages.forEach { image ->
                     add(
                         buildJsonObject {
-                            image.variant?.let { put("variant", it) }
+                            put("variant", image.variant)
                             put("path", image.path)
                         },
                     )

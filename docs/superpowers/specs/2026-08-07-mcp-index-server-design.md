@@ -134,7 +134,9 @@ failing the call.
 ```
 
 `variant` is `ReferenceRoots.Root.buildVariant`, which is `null` for a module whose reference directory is not
-under a build variant — the field is then omitted rather than emitted as an empty string. `referenceImages` is
+under a build variant — the field is then emitted as JSON `null`, never omitted and never an empty string. One
+rule for every optional field on this wire contract: always present, `null` when absent, so a consumer never
+needs a key-presence check for one field and a null check for the rest. `referenceImages` is
 `[]` for a snapshot with no committed PNG, which is a real state (the test exists, `update…ScreenshotTest` has
 not run) and not an error.
 
