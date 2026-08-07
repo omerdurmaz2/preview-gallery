@@ -32,6 +32,7 @@ IDE's own assistant — can answer "which composables have no snapshot?" in one 
 | # | Decision | Rationale |
 |---|----------|-----------|
 | D1 | Transport is **JDK `com.sun.net.httpserver.HttpServer`**, bound to `127.0.0.1`, serving `POST /mcp` and `GET /health`. | The surface is two endpoints and a request body. Ktor + Netty — what `DepHealth` uses for the same job — is four artifacts and a second Netty class-loader tree inside the IDE to buy a routing DSL this does not need. The JDK server is ~30 lines and ships with the JVM. |
+| D1a | Exactly one MCP protocol version is advertised: `2025-06-18`. | The two older versions are batching-era and this server takes no top-level JSON array. Advertising a version whose requests it would reject promises something it does not do, and nothing in the dispatcher behaves differently per version. |
 | D2 | The protocol layer is **pure**: `McpDispatcher.handle(String): DispatchResult`, no I/O and no IntelliJ types. | Copied from `DepHealth`'s proven shape. Every protocol behaviour — `initialize`, `tools/list`, a malformed body, an unknown method — becomes a `String → DispatchResult` assertion with no IDE fixture. |
 | D3 | **No new Gradle module.** The pure classes live in a `mcp/` package alongside the existing pure packages (`search/`, `model/`). | `DepHealth` gets test isolation from a module boundary; this project already gets it from a package boundary — `SnapshotCoverageResolverTest` and `CoverageReportTest` are plain JUnit in the same module today. A module would add build wiring for a boundary that is already enforced by "does this file import `com.intellij`". |
 | D4 | **One application-level server** on fixed port **7891**, with an optional `project` argument on every tool and a `list_projects` tool to discover the names. | Two IDEs run at once in this workflow: the main Android Studio on `hepsi-android` and the `runIde` sandbox on this plugin. A project-level server would make the second one fight for the port. `DepHealth` holds 7890, so this takes the next one. |
@@ -40,7 +41,7 @@ IDE's own assistant — can answer "which composables have no snapshot?" in one 
 | D7 | Reference PNGs are returned as **absolute paths**, never bytes. | Every consumer here has its own file-reading tool. Base64 in a JSON-RPC response would make a 200 KB screenshot a 270 KB string in a context window, to do worse what `Read` already does. |
 | D8 | `coverage_report` returns the **existing `CoverageReport.markdown` output**, verbatim. | The format is already pinned by tests and is what the human-facing export writes. A second, JSON-shaped coverage format would drift from it; `list_previews(uncoveredOnly = true)` already covers the machine-readable need. |
 | D9 | A request carrying an **`Origin` header is rejected** with 403. | Without this, any web page the user has open can POST to `http://localhost:7891/mcp` — the browser will happily send it, and a read-only server still leaks the project's file paths and structure. MCP clients do not set `Origin`; browsers always do. Three lines, and it closes the only remote-ish hole a loopback socket has. |
-| D10 | While the index is building, `list_projects` reports `"indexing": true` for that project and every other tool returns a JSON-RPC error naming it. | `PreviewIndexService` returns an empty list in dumb mode. An agent handed `[]` concludes "this project has no previews" and acts on it; an error makes it wait or ask. |
+| D10 | While the index is building, `list_projects` reports `"indexing": true` for that project and every other tool refuses, returning its message as an `isError` tool result. | `PreviewIndexService` returns an empty list in dumb mode. An agent handed `[]` concludes "this project has no previews" and acts on it; a refusal makes it wait or ask. The refusal is a **result**, not a JSON-RPC error: MCP reserves protocol errors for unroutable calls, and several clients reject the call outright on one — the message would never reach the model, which is the whole point of refusing. |
 | D11 | Index reads happen inside `ReadAction.compute`, on the HTTP handler's own thread. | The handler thread is not the EDT and holds no read lock, so touching PSI without one is an outright violation. The work is a cached-value lookup, not a scan, so a read action is cheap enough to take inline rather than pushing to a pooled thread and blocking on it. |
 | D12 | JSON is built with the platform's bundled **kotlinx-serialization-json runtime API** (`Json.parseToJsonElement`, `buildJsonObject`), with no `@Serializable` classes and no Kotlin serialization compiler plugin. | Verified present at `Android Studio.app/Contents/lib/module-intellij.libraries.kotlinx.serialization.json.jar`. The runtime API needs no compiler plugin, so this adds neither a Gradle plugin nor a declared dependency — the project still has exactly one, JUnit. |
 | D13 | The toolbar action also opens a dialog with ready-made client configuration snippets. | Four clients, four config shapes, one URL that nobody remembers. `DepHealth` ships the same dialog and it is the difference between "the server is running" and "the agent can reach it". |
@@ -159,8 +160,9 @@ Failure modes are surfaced, not swallowed:
 | Port 7891 already bound | The toggle stays off and a balloon says so, naming the port. Most likely cause is a second IDE that already has it — which is exactly the case D4 exists to make visible. |
 | Server on, no project open | `list_projects` returns `[]`. Not an error: the server belongs to the application. |
 | Project closed while a call is in flight | The snapshot was already taken; the response is the last consistent view. The next call omits the project. |
-| Index still building | D10: `indexing: true`, and every other tool errors with `-32000` and a message naming the project. |
-| A tool name that does not exist | JSON-RPC `-32601`, per spec. |
+| Index still building | D10: `indexing: true`, and every other tool returns an `isError` result naming the project. |
+| No project matches, or the argument is ambiguous | The same shape: an `isError` result listing the open projects. The tool ran; it could not answer. |
+| A tool name that does not exist | JSON-RPC `-32602`. Unroutable, so a protocol error rather than a tool result. |
 | Malformed body | JSON-RPC `-32700`, per spec. |
 | Request carries `Origin` | HTTP 403, no JSON-RPC body. D9. |
 
@@ -174,9 +176,10 @@ The config dialog shows one snippet per client, each with a copy button:
 
 Plain JUnit 4, everything under `mcp/`:
 
-- `McpDispatcherTest` — `initialize` echoes a supported protocol version and falls back for an unsupported one;
-  `tools/list` names all four tools; a notification (no `id`) yields `NoContent`; malformed JSON is `-32700`;
-  an unknown method is `-32601`; an unknown tool name is an error, not an empty result.
+- `McpDispatcherTest` — `initialize` echoes the supported protocol version and falls back for an unsupported
+  one; `tools/list` names all four tools; a notification (no `id`) yields `NoContent`; malformed JSON is
+  `-32700`; an unknown method is `-32601`; an unknown tool name is `-32602`; a tool that ran and could not
+  answer comes back as an `isError` result carrying its message.
 - `ToolRegistryTest` — each tool against a hand-built `ProjectSnapshot`: filters compose (`module` +
   `uncoveredOnly`), `orphansOnly` selects exactly the orphan rows, a missing `project` with two snapshots is an
   error naming both, a missing `project` with one snapshot resolves.

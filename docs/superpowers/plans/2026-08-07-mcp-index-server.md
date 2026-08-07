@@ -537,10 +537,15 @@ import kotlinx.serialization.json.put
 /** One entry of the `tools/list` response. */
 data class ToolDescriptor(val name: String, val description: String, val inputSchema: JsonObject)
 
-/** What a tool call produced. A [Failure] becomes a JSON-RPC error, not an empty result. */
+/** What a tool call produced. */
 sealed interface ToolOutcome {
     data class Text(val text: String) : ToolOutcome
+
+    /** The tool ran and could not answer. Becomes an `isError` result, so the message reaches the model. */
     data class Failure(val message: String) : ToolOutcome
+
+    /** No such tool: an unroutable call, so a protocol error rather than a tool result. */
+    data class UnknownTool(val name: String) : ToolOutcome
 }
 
 /**
@@ -606,7 +611,7 @@ class ToolRegistry(private val snapshots: () -> List<ProjectSnapshot>) {
                 ListSnapshotsTool.execute(project, module, boolean(arguments, "orphansOnly")),
             )
             CoverageReportTool.NAME -> ToolOutcome.Text(CoverageReportTool.execute(project, module))
-            else -> ToolOutcome.Failure("Unknown tool: $name")
+            else -> ToolOutcome.UnknownTool(name)
         }
     }
 
@@ -774,25 +779,31 @@ class McpDispatcher(
             ?: return error(id, INVALID_PARAMS, "Invalid params: missing tool name")
         val arguments = (params["arguments"] as? JsonObject) ?: JsonObject(emptyMap())
         return when (val outcome = tools.call(name, arguments)) {
-            is ToolOutcome.Failure -> error(id, TOOL_ERROR, outcome.message)
-            is ToolOutcome.Text -> ok(
-                id,
-                buildJsonObject {
-                    put(
-                        "content",
-                        buildJsonArray {
-                            add(
-                                buildJsonObject {
-                                    put("type", "text")
-                                    put("text", outcome.text)
-                                },
-                            )
-                        },
-                    )
-                    put("isError", false)
-                },
-            )
+            is ToolOutcome.UnknownTool -> error(id, INVALID_PARAMS, "Unknown tool: ${outcome.name}")
+            is ToolOutcome.Failure -> ok(id, toolResult(outcome.message, isError = true))
+            is ToolOutcome.Text -> ok(id, toolResult(outcome.text, isError = false))
         }
+    }
+
+    /**
+     * A tool that ran and could not answer is a result, not a protocol error. Several MCP clients reject the
+     * call outright on a JSON-RPC error, and the message never reaches the model — which would defeat the
+     * still-indexing refusal, whose whole purpose is to tell an agent to wait rather than to conclude the
+     * project is empty.
+     */
+    private fun toolResult(text: String, isError: Boolean): JsonObject = buildJsonObject {
+        put(
+            "content",
+            buildJsonArray {
+                add(
+                    buildJsonObject {
+                        put("type", "text")
+                        put("text", text)
+                    },
+                )
+            },
+        )
+        put("isError", isError)
     }
 
     private fun ok(id: JsonElement, result: JsonObject) = DispatchResult.Json(
@@ -818,15 +829,13 @@ class McpDispatcher(
     )
 
     private companion object {
-        val SUPPORTED_VERSIONS = setOf("2025-06-18", "2025-03-26", "2024-11-05")
+        /** One version only: the two older ones are batching-era, and `handle` takes no top-level array. */
+        val SUPPORTED_VERSIONS = setOf("2025-06-18")
         const val DEFAULT_VERSION = "2025-06-18"
         const val PARSE_ERROR = -32700
         const val INVALID_REQUEST = -32600
         const val METHOD_NOT_FOUND = -32601
         const val INVALID_PARAMS = -32602
-
-        /** Server-defined range: the call was well-formed, the server could not answer it. */
-        const val TOOL_ERROR = -32000
     }
 }
 ```
@@ -1744,10 +1753,22 @@ class ToolRegistryTest {
     }
 
     @Test
-    fun `an unknown tool fails rather than returning nothing`() {
+    fun `an unknown tool is reported as unroutable, not as a tool that failed`() {
         val outcome = registry(ready).call("delete_everything", JsonObject(emptyMap()))
 
-        assertTrue(outcome is ToolOutcome.Failure)
+        assertEquals(ToolOutcome.UnknownTool("delete_everything"), outcome)
+    }
+
+    @Test
+    fun `a wrong-typed argument is treated as absent rather than coerced`() {
+        val outcome = registry(ready).call(
+            "list_previews",
+            buildJsonObject { put("module", 42) },
+        )
+
+        // Coercing 42 to "42" would filter to nothing and answer "[]", which an agent reads as "no previews
+        // in that module" — the same false negative the indexing refusal exists to prevent.
+        assertEquals(ToolOutcome.Text("[]"), outcome)
     }
 }
 ```
@@ -1815,13 +1836,26 @@ class McpDispatcherTest {
     }
 
     @Test
-    fun `a tool failure is an error, not an empty result`() {
+    fun `an unknown tool is a protocol error`() {
         val response = body(
             """{"jsonrpc":"2.0","id":4,"method":"tools/call","params":{"name":"nope","arguments":{}}}""",
         )
 
-        // An agent that reads isError:false and an empty content array concludes the project is empty.
-        assertTrue(response, response.contains("-32000"))
+        // Unroutable, so a protocol error — unlike a tool that ran and could not answer.
+        assertTrue(response, response.contains("-32602"))
+        assertTrue(response, response.contains("nope"))
+    }
+
+    @Test
+    fun `a tool that cannot answer returns its message as an isError result`() {
+        // No project is open, so every tool but list_projects fails inside the registry. The message has to
+        // reach the model: a client that rejects on a JSON-RPC error would swallow it.
+        val response = body(
+            """{"jsonrpc":"2.0","id":7,"method":"tools/call","params":{"name":"list_previews"}}""",
+        )
+
+        assertTrue(response, response.contains("\"isError\":true"))
+        assertTrue(response, response.contains("No project is open"))
     }
 
     @Test
@@ -2002,8 +2036,8 @@ Sandbox check first, then:
 
 Run: `./gradlew clean test --no-build-cache --rerun-tasks --max-workers=1 --no-parallel`
 
-Expected: PASS. Baseline was 400 tests / 55 classes. This phase adds 7 + 8 + 7 + 8 + 5 + 2 = **37 tests and 6
-classes**, so expect **437 tests / 61 classes**.
+Expected: PASS. Baseline was 400 tests / 55 classes. This phase adds 7 + 8 + 9 + 9 + 5 + 2 = **40 tests and 6
+classes**, so expect **440 tests / 61 classes**.
 
 Iterate until green. If an assertion about exact JSON text fails on key order, fix the assertion to check the
 key and value together rather than relaxing it to a bare `contains(key)` — the payload shape is the contract
