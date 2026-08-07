@@ -611,10 +611,12 @@ class ToolRegistry(private val snapshots: () -> List<ProjectSnapshot>) {
     }
 
     private fun string(arguments: JsonObject, key: String): String? =
-        (arguments[key] as? JsonPrimitive)?.contentOrNull?.takeIf { it.isNotBlank() }
+        (arguments[key] as? JsonPrimitive)?.takeIf { it.isString }?.contentOrNull?.takeIf { it.isNotBlank() }
 
     private fun boolean(arguments: JsonObject, key: String): Boolean =
-        (arguments[key] as? JsonPrimitive)?.booleanOrNull ?: false
+        (arguments[key] as? JsonPrimitive)
+            ?.takeIf { !it.isString && it.booleanOrNull != null }
+            ?.booleanOrNull ?: false
 
     private fun schema(vararg properties: Pair<String, String>): JsonObject = buildJsonObject {
         put("type", "object")
