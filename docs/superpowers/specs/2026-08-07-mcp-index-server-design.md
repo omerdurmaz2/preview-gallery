@@ -94,8 +94,12 @@ No arguments. The discovery call, and the one an agent makes first.
 
 ```json
 [{ "name": "hepsi-android", "path": "/Users/…/hepsi-android",
-   "indexing": false, "previewCount": 1462, "snapshotCount": 33, "orphanCount": 2 }]
+   "indexing": false, "previewCount": 1462, "snapshotCount": 33,
+   "orphanCount": 2, "uncoveredCount": 1436 }]
 ```
+
+`uncoveredCount` is here so the discovery call already answers "is there work?" — otherwise every agent's second
+call is `list_previews(uncoveredOnly = true)` just to find out.
 
 ### `list_previews`
 
