@@ -54,7 +54,8 @@ class McpHttpServer(
      *
      * [ExecutorService.shutdownNow] would interrupt a handler thread that may be mid-read-action on the IDE
      * side of [handle], so this asks nicely first and only escalates if the pool has not drained within
-     * [SHUTDOWN_GRACE_MS].
+     * [SHUTDOWN_GRACE_MS]. That grace period is time this method can block its caller — `McpServerDialog` calls
+     * it straight from the EDT — so it is kept short rather than generous.
      */
     fun stop() {
         server?.stop(0)

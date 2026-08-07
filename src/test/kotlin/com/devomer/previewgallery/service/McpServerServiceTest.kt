@@ -90,6 +90,31 @@ class McpServerServiceTest : BasePlatformTestCase() {
         assertTrue(image.path, image.path.endsWith("Widget_Default_Snapshot_phone_eee23ffd_0.png"))
     }
 
+    // Regression for PG17-11: lineOf must resolve the right line off the file's raw text when no editor has
+    // opened a Document for it — addFileToProject never opens one, so this exercises exactly that path without
+    // depending on timing to prove it.
+    fun `test a preview line resolves correctly with no editor open for its file`() {
+        myFixture.addFileToProject(
+            "src/main/kotlin/com/example/Widgets.kt",
+            """
+            package com.example
+
+            import androidx.compose.ui.tooling.preview.Preview
+
+            // padding line 5
+            // padding line 6
+            // padding line 7
+
+            @Preview
+            fun WidgetPreview() = PreviewComponent { Widget() }
+            """.trimIndent(),
+        )
+
+        val preview = ownSnapshot().previews.single()
+
+        assertEquals(10, preview.line)
+    }
+
     // Light fixture projects can share a display name across test classes; the base path is the one field
     // McpServerService derives that is unique per fixture, so it is what tells this project's row apart from
     // any other fixture project alive in the same JVM.

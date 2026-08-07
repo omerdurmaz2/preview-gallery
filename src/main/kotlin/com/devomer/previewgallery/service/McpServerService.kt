@@ -20,12 +20,8 @@ import com.intellij.openapi.progress.ProcessCanceledException
 import com.intellij.openapi.project.DumbService
 import com.intellij.openapi.project.Project
 import com.intellij.openapi.project.ProjectManager
-import com.intellij.openapi.util.Key
+import com.intellij.openapi.vfs.VfsUtilCore
 import com.intellij.openapi.vfs.VirtualFile
-import com.intellij.psi.util.CachedValue
-import com.intellij.psi.util.CachedValueProvider
-import com.intellij.psi.util.CachedValuesManager
-import com.intellij.psi.util.PsiModificationTracker
 import java.io.IOException
 import java.util.concurrent.CancellationException
 
@@ -79,10 +75,17 @@ class McpServerService : Disposable {
      * `McpHttpServer` cannot log (`mcp/` cannot import `com.intellij`), so its catch turns a throw into a bare
      * 500 with nothing in `idea.log` either. This is the boundary that can: log with the project's logger, then
      * rethrow so the transport's own catch still produces the same response it always did.
+     *
+     * [ProcessCanceledException] and [CancellationException] are rethrown ahead of the logging catch, same rule
+     * as [snapshotOrNull]: they are control flow, not a failure worth a stack trace in `idea.log`.
      */
     private fun dispatchLogged(dispatcher: McpDispatcher, request: String): DispatchResult =
         try {
             dispatcher.handle(request)
+        } catch (e: ProcessCanceledException) {
+            throw e
+        } catch (e: CancellationException) {
+            throw e
         } catch (e: Throwable) {
             thisLogger().warn("MCP request handling failed", e)
             throw e
@@ -117,57 +120,42 @@ class McpServerService : Disposable {
         null
     }
 
+    /**
+     * Not cached at this layer. [PreviewIndexService] already caches [PreviewIndexService.findAll] and
+     * [PreviewIndexService.findOrphanSnapshots] with the dependencies that actually invalidate them correctly
+     * (`PsiModificationTracker.MODIFICATION_COUNT` **and** its own `refreshTracker`, the second of which fires
+     * for the indexing passes that fill the index without touching PSI at all). A cache at this layer keyed on
+     * `MODIFICATION_COUNT` alone — tried once, see PG17-10's report — would keep serving a snapshot from the
+     * smart window between two such passes after both `refreshTracker` and a later PSI change had moved on,
+     * which is the exact false negative spec D10 exists to prevent, reached through a cache instead of dumb
+     * mode. The reference images below have the same problem if cached: they read the VFS directly, which is
+     * not covered by a PSI-keyed dependency at all.
+     */
     private fun snapshot(project: Project): ProjectSnapshot {
         val name = project.name
         val path = project.basePath ?: ""
         if (DumbService.isDumb(project)) return ProjectSnapshot(name, path, indexing = true)
 
-        val rows = cachedRows(project)
+        val index = PreviewIndexService.getInstance(project)
+        val previews = index.findAll()
+        val orphans = index.findOrphanSnapshots()
+        val fileText = mutableMapOf<VirtualFile, String?>()
         return ProjectSnapshot(
             name = name,
             path = path,
             indexing = false,
-            previews = rows.previews,
-            snapshots = rows.snapshots,
+            previews = previews.map { previewFacts(it, fileText) },
+            snapshots = snapshotFacts(project, previews, orphans, fileText),
         )
     }
 
-    /**
-     * The expensive half of [snapshot], cached per project the way [PreviewIndexService] caches its own rows.
-     *
-     * [name] and [path] are deliberately not part of what is cached here: a light test fixture reuses the same
-     * `Project` object across test methods with a different [Project.name] each time, and a provider whose
-     * captured fields can hold two different values for what the platform sees as "the same" cached slot is
-     * exactly the misuse [com.intellij.util.CachedValueStabilityChecker] exists to catch — it fails the build
-     * under test, and in production it would mean a stale name surviving a rename that raised no PSI event.
-     * [project] itself is safe to capture: it is compared by reference, and the reference is stable for as long
-     * as the cache entry it is stored on is.
-     */
-    private fun cachedRows(project: Project): Rows =
-        CachedValuesManager.getManager(project).getCachedValue(
-            project,
-            SNAPSHOT_CACHE_KEY,
-            {
-                val index = PreviewIndexService.getInstance(project)
-                val previews = index.findAll()
-                val orphans = index.findOrphanSnapshots()
-                CachedValueProvider.Result.create(
-                    Rows(previews.map(::previewFacts), snapshotFacts(project, previews, orphans)),
-                    PsiModificationTracker.MODIFICATION_COUNT,
-                )
-            },
-            false,
-        )
-
-    private data class Rows(val previews: List<PreviewFacts>, val snapshots: List<SnapshotFacts>)
-
-    private fun previewFacts(entry: PreviewEntry) = PreviewFacts(
+    private fun previewFacts(entry: PreviewEntry, fileText: MutableMap<VirtualFile, String?>) = PreviewFacts(
         composableFqn = entry.indexed.composableFqn,
         displayName = entry.indexed.displayName,
         moduleName = entry.moduleName,
         packageName = entry.indexed.packageName,
         file = entry.file.path,
-        line = lineOf(entry.file, entry.indexed.offset),
+        line = lineOf(entry.file, entry.indexed.offset, fileText),
         isPrivate = entry.indexed.isPrivate,
         hasPreviewParameter = entry.indexed.hasPreviewParameter,
         unsupportedReason = entry.indexed.unsupportedReason,
@@ -179,17 +167,23 @@ class McpServerService : Disposable {
         project: Project,
         previews: List<PreviewEntry>,
         orphans: List<PreviewEntry>,
+        fileText: MutableMap<VirtualFile, String?>,
     ): List<SnapshotFacts> {
         val covering = previews.flatMap { it.snapshots }.distinctBy { it.indexed.composableFqn }
-        return (covering.map { facts(project, it, orphan = false) } +
-            orphans.map { facts(project, it, orphan = true) })
+        return (covering.map { facts(project, it, orphan = false, fileText) } +
+            orphans.map { facts(project, it, orphan = true, fileText) })
     }
 
-    private fun facts(project: Project, entry: PreviewEntry, orphan: Boolean) = SnapshotFacts(
+    private fun facts(
+        project: Project,
+        entry: PreviewEntry,
+        orphan: Boolean,
+        fileText: MutableMap<VirtualFile, String?>,
+    ) = SnapshotFacts(
         snapshotFqn = entry.indexed.composableFqn,
         moduleName = entry.moduleName,
         file = entry.file.path,
-        line = lineOf(entry.file, entry.indexed.offset),
+        line = lineOf(entry.file, entry.indexed.offset, fileText),
         targets = entry.indexed.targets,
         orphan = orphan,
         referenceImages = referenceImages(project, entry),
@@ -219,20 +213,40 @@ class McpServerService : Disposable {
         }
     }
 
-    /** 1-based, or null when the document is unavailable — a line number is worth a null, never a failed call. */
-    private fun lineOf(file: VirtualFile, offset: Int): Int? {
-        val document = FileDocumentManager.getInstance().getDocument(file) ?: return null
-        if (offset < 0 || offset > document.textLength) return null
-        return document.getLineNumber(offset) + 1
+    /**
+     * 1-based, or null when the offset cannot be resolved — a line number is worth a null, never a failed call.
+     *
+     * Prefers [FileDocumentManager.getCachedDocument] — a document only exists there if an editor already
+     * opened one — over [FileDocumentManager.getDocument], which would load and decode the file and build its
+     * line table just to answer this one lookup; doing that once per row inside one read action is PG17-10 item
+     * 2. When no document is cached, [fileText] holds each file's raw text for the lifetime of this call only
+     * (built via [SnapshotSourceScanner]'s own read-once pattern), so a file whose twenty previews all need a
+     * line pays for one disk read per call, not one per row, and the cache itself cannot go stale because
+     * nothing survives past the call that built it.
+     */
+    private fun lineOf(file: VirtualFile, offset: Int, fileText: MutableMap<VirtualFile, String?>): Int? {
+        if (offset < 0) return null
+        FileDocumentManager.getInstance().getCachedDocument(file)?.let { document ->
+            return if (offset > document.textLength) null else document.getLineNumber(offset) + 1
+        }
+        val text = fileText.getOrPut(file) { loadTextOrNull(file) } ?: return null
+        if (offset > text.length) return null
+        var line = 1
+        for (i in 0 until offset) if (text[i] == '\n') line++
+        return line
+    }
+
+    private fun loadTextOrNull(file: VirtualFile): String? = try {
+        VfsUtilCore.loadText(file)
+    } catch (e: IOException) {
+        thisLogger().warn("Could not read ${file.path} to resolve a line number", e)
+        null
     }
 
     companion object {
         const val PORT = 7891
         private const val SERVER_NAME = "preview-gallery"
         private const val SERVER_VERSION = "0.0.1"
-        private val SNAPSHOT_CACHE_KEY = Key.create<CachedValue<Rows>>(
-            "com.devomer.previewgallery.mcp.snapshot",
-        )
 
         fun getInstance(): McpServerService =
             ApplicationManager.getApplication().getService(McpServerService::class.java)
