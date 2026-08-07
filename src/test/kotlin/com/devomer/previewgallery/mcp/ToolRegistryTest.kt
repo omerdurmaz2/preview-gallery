@@ -9,7 +9,19 @@ import org.junit.Test
 
 class ToolRegistryTest {
 
-    private val ready = ProjectSnapshot("demo", "/src", indexing = false)
+    private val preview = PreviewFacts(
+        composableFqn = "com.example.FooKt.FooPreview",
+        displayName = "FooPreview",
+        moduleName = "app.main",
+        packageName = "com.example",
+        file = "/src/Foo.kt",
+        line = 12,
+        isPrivate = false,
+        hasPreviewParameter = false,
+        unsupportedReason = null,
+        covered = false,
+    )
+    private val ready = ProjectSnapshot("demo", "/src", indexing = false, previews = listOf(preview))
     private val building = ProjectSnapshot("busy", "/busy", indexing = true)
 
     private fun registry(vararg snapshots: ProjectSnapshot) = ToolRegistry { snapshots.toList() }
@@ -62,7 +74,8 @@ class ToolRegistryTest {
             buildJsonObject { put("project", "demo") },
         )
 
-        assertEquals(ToolOutcome.Text("[]"), outcome)
+        val text = (outcome as ToolOutcome.Text).text
+        assertTrue(text, text.contains("FooPreview"))
     }
 
     @Test
@@ -73,14 +86,39 @@ class ToolRegistryTest {
     }
 
     @Test
-    fun `a wrong-typed argument is treated as absent rather than coerced`() {
+    fun `a wrong-typed argument is refused rather than silently dropped`() {
         val outcome = registry(ready).call(
             "list_previews",
             buildJsonObject { put("module", 42) },
         )
 
-        // Coercing 42 to "42" would filter to nothing and answer "[]", which an agent reads as "no previews
-        // in that module" — the same false negative the indexing refusal exists to prevent.
-        assertEquals(ToolOutcome.Text("[]"), outcome)
+        // Coercing 42 to "42" would filter to nothing and answer "[]" — the same false negative the indexing
+        // refusal exists to prevent, just triggered by a type mismatch instead of a busy index. `ready` carries
+        // a real preview row so a silently-absent filter would answer "[]" here too, and the assertion would
+        // not have caught it.
+        val message = (outcome as ToolOutcome.Failure).message
+        assertTrue(message, message.contains("module") && message.contains("string") && message.contains("number"))
+    }
+
+    @Test
+    fun `a blank string argument is treated as absent, not refused`() {
+        val outcome = registry(ready).call(
+            "list_previews",
+            buildJsonObject { put("module", "  ") },
+        )
+
+        val text = (outcome as ToolOutcome.Text).text
+        assertTrue(text, text.contains("FooPreview"))
+    }
+
+    @Test
+    fun `a wrong-typed boolean argument is refused rather than silently dropped`() {
+        val outcome = registry(ready).call(
+            "list_previews",
+            buildJsonObject { put("uncoveredOnly", "true") },
+        )
+
+        val message = (outcome as ToolOutcome.Failure).message
+        assertTrue(message, message.contains("uncoveredOnly") && message.contains("boolean") && message.contains("string"))
     }
 }

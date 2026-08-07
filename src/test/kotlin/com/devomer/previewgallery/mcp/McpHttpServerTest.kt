@@ -84,4 +84,37 @@ class McpHttpServerTest {
 
         ServerSocket(port).use { assertEquals(port, it.localPort) }
     }
+
+    @Test
+    fun `stop then start rebinds in the same instance`() {
+        val port = start { DispatchResult.Json("{}") }
+
+        server?.stop()
+        server?.start()
+
+        assertEquals(200, post(port, "{}").first)
+    }
+
+    @Test
+    fun `an unhandled throw from the handler yields 500 with no detail`() {
+        val port = start { throw IllegalStateException("/Users/someone/secret/project/path") }
+
+        val (status, text) = post(port, "{}")
+
+        assertEquals(500, status)
+        assertEquals(false, text.contains("secret"))
+        assertEquals(false, text.contains("IllegalStateException"))
+    }
+
+    @Test
+    fun `health also refuses a request carrying an Origin header`() {
+        val port = start { DispatchResult.Json("{}") }
+
+        val requestBuilder = HttpRequest.newBuilder(URI("http://127.0.0.1:$port/health"))
+            .header("Origin", "https://evil.example")
+            .GET()
+        val response = HttpClient.newHttpClient().send(requestBuilder.build(), HttpResponse.BodyHandlers.ofString())
+
+        assertEquals(403, response.statusCode())
+    }
 }

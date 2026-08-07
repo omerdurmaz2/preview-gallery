@@ -47,5 +47,12 @@ data class SnapshotFacts(
     val referenceImages: List<ReferenceImage> = emptyList(),
 )
 
-/** A committed reference PNG. [variant] is null for a reference root that is not under a build variant. */
+/**
+ * A committed reference PNG. [variant] is null for a reference root that is not under a build variant.
+ *
+ * This is the **build** variant (`"Debug"`), the same string that composes into `update${variant}ScreenshotTest`
+ * — not [com.devomer.previewgallery.model.ReferenceImage.variant], which is the per-image device/config variant
+ * (`"phone"`) parsed off the file name. The two ride under the same field name in two different packages; they
+ * are not interchangeable.
+ */
 data class ReferenceImage(val variant: String?, val path: String)

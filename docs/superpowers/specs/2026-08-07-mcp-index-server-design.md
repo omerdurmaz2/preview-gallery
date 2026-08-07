@@ -42,7 +42,7 @@ IDE's own assistant — can answer "which composables have no snapshot?" in one 
 | D8 | `coverage_report` returns the **existing `CoverageReport.markdown` output**, verbatim. | The format is already pinned by tests and is what the human-facing export writes. A second, JSON-shaped coverage format would drift from it; `list_previews(uncoveredOnly = true)` already covers the machine-readable need. |
 | D9 | A request carrying an **`Origin` header is rejected** with 403. | Without this, any web page the user has open can POST to `http://localhost:7891/mcp` — the browser will happily send it, and a read-only server still leaks the project's file paths and structure. MCP clients do not set `Origin`; browsers always do. Three lines, and it closes the only remote-ish hole a loopback socket has. |
 | D10 | While the index is building, `list_projects` reports `"indexing": true` for that project and every other tool refuses, returning its message as an `isError` tool result. | `PreviewIndexService` returns an empty list in dumb mode. An agent handed `[]` concludes "this project has no previews" and acts on it; a refusal makes it wait or ask. The refusal is a **result**, not a JSON-RPC error: MCP reserves protocol errors for unroutable calls, and several clients reject the call outright on one — the message would never reach the model, which is the whole point of refusing. |
-| D11 | Index reads happen inside `ReadAction.compute`, on the HTTP handler's own thread. | The handler thread is not the EDT and holds no read lock, so touching PSI without one is an outright violation. The work is a cached-value lookup, not a scan, so a read action is cheap enough to take inline rather than pushing to a pooled thread and blocking on it. |
+| D11 | Index reads happen inside `ReadAction.compute`, on the HTTP handler's own thread, and the resulting `ProjectSnapshot` is itself cached per project via `CachedValuesManager`, keyed on `PsiModificationTracker.MODIFICATION_COUNT`. | The handler thread is not the EDT and holds no read lock, so touching PSI without one is an outright violation. The snapshot-level cache is what makes the read action actually cheap: resolving every preview's and every snapshot's line number loads a `Document` per row, and doing that for ~1462 previews inside one read action on every tool call froze the EDT (PG17-10 item 2). Caching means only the first call after a PSI change pays that cost; every call in between is a lookup, cheap enough to take inline rather than pushing to a pooled thread and blocking on it. |
 | D12 | JSON is built with the platform's bundled **kotlinx-serialization-json runtime API** (`Json.parseToJsonElement`, `buildJsonObject`), with no `@Serializable` classes and no Kotlin serialization compiler plugin. | Verified present at `Android Studio.app/Contents/lib/module-intellij.libraries.kotlinx.serialization.json.jar`. The runtime API needs no compiler plugin, so this adds neither a Gradle plugin nor a declared dependency — the project still has exactly one, JUnit. |
 | D13 | The toolbar action also opens a dialog with ready-made client configuration snippets. | Four clients, four config shapes, one URL that nobody remembers. `DepHealth` ships the same dialog and it is the difference between "the server is running" and "the agent can reach it". |
 
@@ -131,15 +131,15 @@ failing the call.
    "module": "hepsi-android.features.favorites.ui.main",
    "file": "/Users/…/FavoritesSnapshots.kt", "line": 61,
    "targets": ["FavoritesScreen"], "orphan": false,
-   "referenceImages": [{ "variant": "debug", "path": "/Users/…/screenshotTest/reference/…png" }] }]
+   "referenceImages": [{ "variant": "Debug", "path": "/Users/…/screenshotTest/reference/…png" }] }]
 ```
 
-`variant` is `ReferenceRoots.Root.buildVariant`, which is `null` for a module whose reference directory is not
-under a build variant — the field is then emitted as JSON `null`, never omitted and never an empty string. One
-rule for every optional field on this wire contract: always present, `null` when absent, so a consumer never
-needs a key-presence check for one field and a null check for the rest. `referenceImages` is
-`[]` for a snapshot with no committed PNG, which is a real state (the test exists, `update…ScreenshotTest` has
-not run) and not an error.
+`variant` is `ReferenceRoots.Root.buildVariant` (e.g. `"Debug"`, the same string that composes into
+`update${variant}ScreenshotTest`), which is `null` for a module whose reference directory is not under a build
+variant — the field is then emitted as JSON `null`, never omitted and never an empty string. One rule for every
+optional field on this wire contract: always present, `null` when absent, so a consumer never needs a
+key-presence check for one field and a null check for the rest. `referenceImages` is `[]` for a snapshot with no
+committed PNG, which is a real state (the test exists, `update…ScreenshotTest` has not run) and not an error.
 
 ### `coverage_report`
 
@@ -182,10 +182,13 @@ Plain JUnit 4, everything under `mcp/`:
   answer comes back as an `isError` result carrying its message.
 - `ToolRegistryTest` — each tool against a hand-built `ProjectSnapshot`: filters compose (`module` +
   `uncoveredOnly`), `orphansOnly` selects exactly the orphan rows, a missing `project` with two snapshots is an
-  error naming both, a missing `project` with one snapshot resolves.
-- `CoverageReportToolTest` — the tool's output is byte-identical to `CoverageReport.markdown` for the same rows.
+  error naming both, a missing `project` with one snapshot resolves, and a present-but-wrong-typed argument is
+  refused by name rather than treated as absent.
+- `ToolsTest` — each tool object's JSON/markdown shape against hand-built `PreviewFacts`/`SnapshotFacts`,
+  including that `coverage_report`'s output is byte-identical to `CoverageReport.markdown` for the same rows.
 - `McpHttpServerTest` — binds a real ephemeral port: `GET /health` answers, `POST /mcp` round-trips an
-  `initialize`, a request with `Origin` gets 403, and the port is released on `stop()`.
+  `initialize`, a request with `Origin` gets 403 on both endpoints, `stop()` releases the port and a subsequent
+  `start()` rebinds it, an unhandled throw from the handler yields 500 with no detail in the body.
 
 `BasePlatformTestCase`:
 

@@ -50,7 +50,7 @@ class McpServerDialog(project: Project) : DialogWrapper(project) {
         panel.add(header, BorderLayout.NORTH)
 
         val tabs = JBTabbedPane()
-        tabs.addTab("Claude Code / Codex", snippetPanel(REMOTE_CONFIG))
+        tabs.addTab("Claude Code", snippetPanel(REMOTE_CONFIG))
         tabs.addTab("Cursor", snippetPanel(REMOTE_CONFIG))
         tabs.addTab("Raw URL", snippetPanel("http://localhost:${service.port}/mcp"))
         panel.add(tabs, BorderLayout.CENTER)

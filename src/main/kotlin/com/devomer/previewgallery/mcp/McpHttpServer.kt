@@ -7,6 +7,7 @@ import java.net.InetAddress
 import java.net.InetSocketAddress
 import java.util.concurrent.ExecutorService
 import java.util.concurrent.Executors
+import java.util.concurrent.TimeUnit
 
 /**
  * Streamable HTTP for MCP, on the JDK's own server: `POST /mcp` and `GET /health`, bound to the loopback
@@ -40,7 +41,7 @@ class McpHttpServer(
         if (server != null) return
         val started = HttpServer.create(InetSocketAddress(InetAddress.getLoopbackAddress(), port), 0)
         val pool = Executors.newFixedThreadPool(2)
-        started.createContext("/health") { exchange -> exchange.use { respond(exchange, 200, "ok", TEXT) } }
+        started.createContext("/health") { exchange -> health(exchange) }
         started.createContext("/mcp") { exchange -> mcp(exchange) }
         started.executor = pool
         started.start()
@@ -48,30 +49,59 @@ class McpHttpServer(
         executor = pool
     }
 
-    /** Releases both the socket and the thread pool [start] created for it — neither is closed by the other. */
+    /**
+     * Releases both the socket and the thread pool [start] created for it — neither is closed by the other.
+     *
+     * [ExecutorService.shutdownNow] would interrupt a handler thread that may be mid-read-action on the IDE
+     * side of [handle], so this asks nicely first and only escalates if the pool has not drained within
+     * [SHUTDOWN_GRACE_MS].
+     */
     fun stop() {
         server?.stop(0)
         server = null
-        executor?.shutdownNow()
+        executor?.let(::drain)
         executor = null
+    }
+
+    private fun drain(pool: ExecutorService) {
+        pool.shutdown()
+        try {
+            if (!pool.awaitTermination(SHUTDOWN_GRACE_MS, TimeUnit.MILLISECONDS)) pool.shutdownNow()
+        } catch (e: InterruptedException) {
+            pool.shutdownNow()
+            Thread.currentThread().interrupt()
+        }
+    }
+
+    /** Both endpoints share this guard (spec D9) — `/health` leaks nothing sensitive today, but a probe that
+     *  distinguishes "server up" from "server down" is still information a page the user has open should not
+     *  get for free. */
+    private fun refusesOrigin(exchange: HttpExchange): Boolean {
+        if (exchange.requestHeaders.getFirst("Origin") == null) return false
+        respond(exchange, 403, "Forbidden", TEXT)
+        return true
+    }
+
+    private fun health(exchange: HttpExchange) {
+        exchange.use {
+            if (refusesOrigin(exchange)) return@use
+            respond(exchange, 200, "ok", TEXT)
+        }
     }
 
     private fun mcp(exchange: HttpExchange) {
         exchange.use {
-            if (exchange.requestHeaders.getFirst("Origin") != null) {
-                respond(exchange, 403, "Forbidden", TEXT)
-                return
-            }
+            if (refusesOrigin(exchange)) return@use
             if (exchange.requestMethod != "POST") {
                 respond(exchange, 405, "Method Not Allowed", TEXT)
-                return
+                return@use
             }
             val body = exchange.requestBody.readBytes().decodeToString()
             val result = try {
                 handle(body)
             } catch (e: Throwable) {
                 respond(exchange, 500, "Internal error", TEXT)
-                return
+                return@use
             }
             when (result) {
                 is DispatchResult.Json -> respond(exchange, 200, result.body, JSON)
@@ -90,5 +120,6 @@ class McpHttpServer(
     private companion object {
         const val JSON = "application/json"
         const val TEXT = "text/plain"
+        const val SHUTDOWN_GRACE_MS = 500L
     }
 }

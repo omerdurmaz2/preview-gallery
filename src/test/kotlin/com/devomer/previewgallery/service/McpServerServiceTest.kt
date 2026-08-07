@@ -51,6 +51,45 @@ class McpServerServiceTest : BasePlatformTestCase() {
         assertTrue(snapshot.snapshots.isEmpty())
     }
 
+    // Regression for PG17-10 item 1: the reference PNG lives nested under the facade class, never as a direct
+    // child of the `reference` directory, so a flat scan of that directory's children — the bug this replaced —
+    // always found nothing.
+    fun `test a committed reference PNG is found at its real nested path`() {
+        myFixture.addFileToProject(
+            "src/main/kotlin/com/example/Widgets.kt",
+            """
+            package com.example
+
+            import androidx.compose.ui.tooling.preview.Preview
+
+            @Preview
+            fun WidgetPreview() = PreviewComponent { Widget() }
+            """.trimIndent(),
+        )
+        myFixture.addFileToProject(
+            "src/screenshotTest/kotlin/com/example/WidgetSnapshots.kt",
+            """
+            package com.example
+
+            import com.android.tools.screenshot.PreviewTest
+
+            @PreviewTest
+            fun Widget_Default_Snapshot() = PreviewComponent { Widget() }
+            """.trimIndent(),
+        )
+        myFixture.tempDirFixture.createFile(
+            "src/screenshotTestDebug/reference/com/example/WidgetSnapshotsKt/" +
+                "Widget_Default_Snapshot_phone_eee23ffd_0.png",
+            "",
+        )
+
+        val snapshotFacts = ownSnapshot().snapshots.single()
+
+        val image = snapshotFacts.referenceImages.single()
+        assertEquals("Debug", image.variant)
+        assertTrue(image.path, image.path.endsWith("Widget_Default_Snapshot_phone_eee23ffd_0.png"))
+    }
+
     // Light fixture projects can share a display name across test classes; the base path is the one field
     // McpServerService derives that is unique per fixture, so it is what tells this project's row apart from
     // any other fixture project alive in the same JVM.

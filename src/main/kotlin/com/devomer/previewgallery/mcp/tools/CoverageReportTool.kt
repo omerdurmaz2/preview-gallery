@@ -28,6 +28,12 @@ object CoverageReportTool {
         return CoverageReport.markdown(rows)
     }
 
+    /**
+     * [IndexedPreview.functionName], [IndexedPreview.jvmClassName], [IndexedPreview.offset] and
+     * [IndexedPreview.annotationKind] are filler, not a re-parse of [PreviewFacts.composableFqn] worth trusting:
+     * [CoverageReport.markdown] never reads them, only [IndexedPreview.composableFqn] and the fields set directly
+     * from [facts] below. Do not tighten the FQN split here expecting it to matter.
+     */
     private fun asRow(facts: PreviewFacts): PreviewRow = ReportRow(
         indexed = IndexedPreview(
             displayName = facts.displayName,

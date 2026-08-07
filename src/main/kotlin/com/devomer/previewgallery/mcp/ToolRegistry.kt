@@ -4,6 +4,9 @@ import com.devomer.previewgallery.mcp.tools.CoverageReportTool
 import com.devomer.previewgallery.mcp.tools.ListPreviewsTool
 import com.devomer.previewgallery.mcp.tools.ListProjectsTool
 import com.devomer.previewgallery.mcp.tools.ListSnapshotsTool
+import kotlinx.serialization.json.JsonArray
+import kotlinx.serialization.json.JsonElement
+import kotlinx.serialization.json.JsonNull
 import kotlinx.serialization.json.JsonObject
 import kotlinx.serialization.json.JsonPrimitive
 import kotlinx.serialization.json.booleanOrNull
@@ -60,7 +63,8 @@ class ToolRegistry(private val snapshots: () -> List<ProjectSnapshot>) {
         if (name == ListProjectsTool.NAME) return ToolOutcome.Text(ListProjectsTool.execute(open))
         if (name !in KNOWN_TOOLS) return ToolOutcome.UnknownTool(name)
 
-        val selection = ProjectSelector.select(open, string(arguments, "project"))
+        val projectArg = stringArgument(arguments, "project").orFail { return it }
+        val selection = ProjectSelector.select(open, projectArg)
         val project = when (selection) {
             is ProjectSelector.SelectionResult.Failure -> return ToolOutcome.Failure(selection.message)
             is ProjectSelector.SelectionResult.Found -> selection.snapshot
@@ -72,29 +76,70 @@ class ToolRegistry(private val snapshots: () -> List<ProjectSnapshot>) {
             )
         }
 
-        val module = string(arguments, "module")
+        val module = stringArgument(arguments, "module").orFail { return it }
         return when (name) {
             ListPreviewsTool.NAME -> ToolOutcome.Text(
                 ListPreviewsTool.execute(
                     project,
                     module,
-                    string(arguments, "package"),
-                    boolean(arguments, "uncoveredOnly"),
+                    stringArgument(arguments, "package").orFail { return it },
+                    booleanArgument(arguments, "uncoveredOnly").orFail { return it } ?: false,
                 ),
             )
             ListSnapshotsTool.NAME -> ToolOutcome.Text(
-                ListSnapshotsTool.execute(project, module, boolean(arguments, "orphansOnly")),
+                ListSnapshotsTool.execute(
+                    project,
+                    module,
+                    booleanArgument(arguments, "orphansOnly").orFail { return it } ?: false,
+                ),
             )
             CoverageReportTool.NAME -> ToolOutcome.Text(CoverageReportTool.execute(project, module))
             else -> ToolOutcome.UnknownTool(name)
         }
     }
 
-    private fun string(arguments: JsonObject, key: String): String? =
-        (arguments[key] as? JsonPrimitive)?.takeIf { it.isString }?.contentOrNull?.takeIf { it.isNotBlank() }
+    /**
+     * An argument that is either genuinely missing (a filter that does not apply) or present with the wrong
+     * JSON type (a call this registry refuses rather than guesses at) — never both collapsed into the same
+     * "absent" outcome the way a plain nullable return would.
+     */
+    private sealed interface Argument<out T> {
+        data class Value<T>(val value: T?) : Argument<T>
+        data class Invalid(val message: String) : Argument<Nothing>
+    }
 
-    private fun boolean(arguments: JsonObject, key: String): Boolean =
-        (arguments[key] as? JsonPrimitive)?.takeIf { !it.isString && it.booleanOrNull != null }?.booleanOrNull ?: false
+    /** Unwraps [Argument], escaping to [fail] — always a non-local `return` at the call site — on [Argument.Invalid]. */
+    private inline fun <T> Argument<T>.orFail(fail: (ToolOutcome.Failure) -> Nothing): T? = when (this) {
+        is Argument.Invalid -> fail(ToolOutcome.Failure(message))
+        is Argument.Value -> value
+    }
+
+    /** A blank string counts as absent, same as a missing key: a `module` of `""` cannot match anything, so
+     *  treating it as "no filter" rather than "filter to nothing" is the only reading worth keeping. */
+    private fun stringArgument(arguments: JsonObject, key: String): Argument<String> {
+        val element = arguments[key] ?: return Argument.Value(null)
+        if (element is JsonNull) return Argument.Value(null)
+        val primitive = element as? JsonPrimitive
+        if (primitive == null || !primitive.isString) {
+            return Argument.Invalid("Argument \"$key\" must be a string, got ${typeNameOf(element)}.")
+        }
+        return Argument.Value(primitive.contentOrNull?.takeIf { it.isNotBlank() })
+    }
+
+    private fun booleanArgument(arguments: JsonObject, key: String): Argument<Boolean> {
+        val element = arguments[key] ?: return Argument.Value(null)
+        if (element is JsonNull) return Argument.Value(null)
+        val value = (element as? JsonPrimitive)?.takeIf { !it.isString }?.booleanOrNull
+        if (value == null) return Argument.Invalid("Argument \"$key\" must be a boolean, got ${typeNameOf(element)}.")
+        return Argument.Value(value)
+    }
+
+    private fun typeNameOf(element: JsonElement): String = when (element) {
+        is JsonNull -> "null"
+        is JsonArray -> "array"
+        is JsonObject -> "object"
+        is JsonPrimitive -> if (element.isString) "string" else if (element.booleanOrNull != null) "boolean" else "number"
+    }
 
     private fun schema(vararg properties: Pair<String, String>): JsonObject = buildJsonObject {
         put("type", "object")
