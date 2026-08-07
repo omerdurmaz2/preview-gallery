@@ -2,7 +2,6 @@ package com.devomer.previewgallery.mcp.tools
 
 import com.devomer.previewgallery.mcp.ProjectSnapshot
 import com.devomer.previewgallery.mcp.SnapshotFacts
-import kotlinx.serialization.json.JsonNull
 import kotlinx.serialization.json.JsonPrimitive
 import kotlinx.serialization.json.buildJsonArray
 import kotlinx.serialization.json.buildJsonObject
@@ -35,7 +34,7 @@ object ListSnapshotsTool {
         put("snapshotFqn", row.snapshotFqn)
         put("module", row.moduleName)
         put("file", row.file)
-        row.line?.let { put("line", it) } ?: put("line", JsonNull)
+        put("line", row.line)
         put("targets", buildJsonArray { row.targets.forEach { add(JsonPrimitive(it)) } })
         put("orphan", row.orphan)
         put(

@@ -58,6 +58,7 @@ class ToolRegistry(private val snapshots: () -> List<ProjectSnapshot>) {
     fun call(name: String, arguments: JsonObject): ToolOutcome {
         val open = snapshots()
         if (name == ListProjectsTool.NAME) return ToolOutcome.Text(ListProjectsTool.execute(open))
+        if (name !in KNOWN_TOOLS) return ToolOutcome.UnknownTool(name)
 
         val selection = ProjectSelector.select(open, string(arguments, "project"))
         val project = when (selection) {
@@ -111,5 +112,6 @@ class ToolRegistry(private val snapshots: () -> List<ProjectSnapshot>) {
     private companion object {
         const val STRING = "string"
         const val BOOLEAN = "boolean"
+        val KNOWN_TOOLS = setOf(ListPreviewsTool.NAME, ListSnapshotsTool.NAME, CoverageReportTool.NAME)
     }
 }

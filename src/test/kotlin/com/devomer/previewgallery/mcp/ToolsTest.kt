@@ -101,16 +101,20 @@ class ToolsTest {
 
     @Test
     fun `list_previews carries the facts a snapshot author needs`() {
-        val json = ListPreviewsTool.execute(project, null, null, uncoveredOnly = false)
+        val unsupported = uncovered.copy(line = null, unsupportedReason = "declared inside a class")
+        val json = ListPreviewsTool.execute(
+            project.copy(previews = listOf(covered, unsupported)),
+            null,
+            null,
+            uncoveredOnly = false,
+        )
 
         assertTrue(json, json.contains("\"file\":\"/src/Foo.kt\""))
-        // Pins shipped behavior, not the intended one: ListPreviewsTool.json()'s `row.line?.let { put(...) }
-        // ?: put(..., JsonNull)` uses put()'s return value (the prior mapping, always null for a fresh key) as
-        // the elvis condition instead of `row.line` itself, so "line" always serializes as null even though
-        // `covered.line` is 12 here. Reported in the task-8 report, not fixed by this test.
+        assertTrue(json, json.contains("\"line\":12"))
         assertTrue(json, json.contains("\"line\":null"))
         assertTrue(json, json.contains("com.example.FooSnapshotsKt.Covered_Snapshot"))
         assertTrue(json, json.contains("\"unsupportedReason\":null"))
+        assertTrue(json, json.contains("\"unsupportedReason\":\"declared inside a class\""))
     }
 
     @Test
@@ -128,6 +132,14 @@ class ToolsTest {
         assertTrue(json, json.contains("\"path\":\"/src/reference/Covered.png\""))
         assertTrue(json, json.contains("\"variant\":\"debug\""))
         assertTrue(json, json.contains("\"referenceImages\":[]"))
+    }
+
+    @Test
+    fun `list_snapshots carries the resolved line`() {
+        val json = ListSnapshotsTool.execute(project, null, orphansOnly = false)
+
+        assertTrue(json, json.contains("\"line\":30"))
+        assertTrue(json, json.contains("\"line\":44"))
     }
 
     @Test

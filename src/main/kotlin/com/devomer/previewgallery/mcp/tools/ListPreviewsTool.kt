@@ -2,7 +2,6 @@ package com.devomer.previewgallery.mcp.tools
 
 import com.devomer.previewgallery.mcp.PreviewFacts
 import com.devomer.previewgallery.mcp.ProjectSnapshot
-import kotlinx.serialization.json.JsonNull
 import kotlinx.serialization.json.JsonPrimitive
 import kotlinx.serialization.json.buildJsonArray
 import kotlinx.serialization.json.buildJsonObject
@@ -42,10 +41,10 @@ object ListPreviewsTool {
         put("module", row.moduleName)
         put("package", row.packageName)
         put("file", row.file)
-        row.line?.let { put("line", it) } ?: put("line", JsonNull)
+        put("line", row.line)
         put("isPrivate", row.isPrivate)
         put("hasPreviewParameter", row.hasPreviewParameter)
-        row.unsupportedReason?.let { put("unsupportedReason", it) } ?: put("unsupportedReason", JsonNull)
+        put("unsupportedReason", row.unsupportedReason)
         put("covered", row.covered)
         put("snapshots", buildJsonArray { row.snapshots.forEach { add(JsonPrimitive(it)) } })
     }

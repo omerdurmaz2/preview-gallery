@@ -58,22 +58,13 @@ class McpDispatcherTest {
     }
 
     @Test
-    fun `an unknown tool is a protocol error`() {
-        // A project must be open for this to reach tool-name routing: with none open, ToolRegistry resolves
-        // the `project` argument before it recognizes the tool name, so the routing error would otherwise be
-        // masked by "No project is open" — see the report for that ordering.
-        val withOpenProject = McpDispatcher(
-            "preview-gallery",
-            "0.0.1",
-            ToolRegistry { listOf(ProjectSnapshot("demo", "/src", indexing = false)) },
+    fun `an unknown tool is a protocol error even with no project open`() {
+        val response = body(
+            """{"jsonrpc":"2.0","id":4,"method":"tools/call","params":{"name":"nope","arguments":{}}}""",
         )
-        val response = (
-            withOpenProject.handle(
-                """{"jsonrpc":"2.0","id":4,"method":"tools/call","params":{"name":"nope","arguments":{}}}""",
-            ) as DispatchResult.Json
-            ).body
 
-        // Unroutable, so a protocol error — unlike a tool that ran and could not answer.
+        // Unroutable, so a protocol error — unlike a tool that ran and could not answer. ToolRegistry checks
+        // the tool name before it resolves `project`, so this holds even though no project is open here.
         assertTrue(response, response.contains("-32602"))
         assertTrue(response, response.contains("nope"))
     }
