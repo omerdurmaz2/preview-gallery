@@ -4,6 +4,8 @@ import com.devomer.previewgallery.mcp.tools.CoverageReportTool
 import com.devomer.previewgallery.mcp.tools.ListPreviewsTool
 import com.devomer.previewgallery.mcp.tools.ListProjectsTool
 import com.devomer.previewgallery.mcp.tools.ListSnapshotsTool
+import com.devomer.previewgallery.mcp.tools.SnapshotHealthTool
+import com.devomer.previewgallery.service.GoldenInspector
 import kotlinx.serialization.json.JsonArray
 import kotlinx.serialization.json.JsonElement
 import kotlinx.serialization.json.JsonNull
@@ -26,13 +28,16 @@ sealed interface ToolOutcome {
 }
 
 /**
- * Maps tool names onto the four tools, and owns the two rules every one of them shares: resolve `project`
+ * Maps tool names onto the five tools, and owns the two rules every one of them shares: resolve `project`
  * (spec D4), and refuse while the index is building (spec D10).
  *
  * The indexing refusal is the load-bearing one. `PreviewIndexService` answers with an empty list in dumb mode,
  * and an agent handed `[]` concludes the project has no previews and acts on it. An error makes it wait.
  */
-class ToolRegistry(private val snapshots: () -> List<ProjectSnapshot>) {
+class ToolRegistry(
+    private val snapshots: () -> List<ProjectSnapshot>,
+    private val blankGoldens: (String) -> List<GoldenInspector.BlankFinding>,
+) {
 
     fun descriptors(): List<ToolDescriptor> = listOf(
         ToolDescriptor(ListProjectsTool.NAME, ListProjectsTool.DESCRIPTION, schema()),
@@ -54,6 +59,11 @@ class ToolRegistry(private val snapshots: () -> List<ProjectSnapshot>) {
         ToolDescriptor(
             CoverageReportTool.NAME,
             CoverageReportTool.DESCRIPTION,
+            schema("project" to STRING, "module" to STRING),
+        ),
+        ToolDescriptor(
+            SnapshotHealthTool.NAME,
+            SnapshotHealthTool.DESCRIPTION,
             schema("project" to STRING, "module" to STRING),
         ),
     )
@@ -94,6 +104,9 @@ class ToolRegistry(private val snapshots: () -> List<ProjectSnapshot>) {
                 ),
             )
             CoverageReportTool.NAME -> ToolOutcome.Text(CoverageReportTool.execute(project, module))
+            SnapshotHealthTool.NAME -> ToolOutcome.Text(
+                SnapshotHealthTool.execute(project, module, blankGoldens(project.name)),
+            )
             else -> ToolOutcome.UnknownTool(name)
         }
     }
@@ -157,6 +170,11 @@ class ToolRegistry(private val snapshots: () -> List<ProjectSnapshot>) {
     private companion object {
         const val STRING = "string"
         const val BOOLEAN = "boolean"
-        val KNOWN_TOOLS = setOf(ListPreviewsTool.NAME, ListSnapshotsTool.NAME, CoverageReportTool.NAME)
+        val KNOWN_TOOLS = setOf(
+            ListPreviewsTool.NAME,
+            ListSnapshotsTool.NAME,
+            CoverageReportTool.NAME,
+            SnapshotHealthTool.NAME,
+        )
     }
 }

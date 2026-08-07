@@ -20,6 +20,8 @@ data class ProjectSnapshot(
 data class PreviewFacts(
     val composableFqn: String,
     val displayName: String,
+    /** The bare Kotlin function name, distinct from [composableFqn]: what a name-vs-body health check reads. */
+    val functionName: String,
     val moduleName: String,
     val packageName: String,
     val file: String,
@@ -32,6 +34,8 @@ data class PreviewFacts(
     val covered: Boolean,
     /** FQNs of the snapshot functions that cover this preview. */
     val snapshots: List<String> = emptyList(),
+    /** The composables this body shows, used to match a preview to the snapshot of the same component. */
+    val targets: List<String> = emptyList(),
 )
 
 /** One `@PreviewTest` function, and the reference images committed for it. */

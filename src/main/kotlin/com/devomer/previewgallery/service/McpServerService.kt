@@ -50,7 +50,7 @@ class McpServerService : Disposable {
 
     fun start(): StartResult {
         if (isRunning) return StartResult.AlreadyRunning
-        val dispatcher = McpDispatcher(SERVER_NAME, SERVER_VERSION, ToolRegistry(::snapshots))
+        val dispatcher = McpDispatcher(SERVER_NAME, SERVER_VERSION, ToolRegistry(::snapshots, ::blankGoldens))
         val started = McpHttpServer(PORT) { request -> dispatchLogged(dispatcher, request) }
         return try {
             started.start()
@@ -152,6 +152,7 @@ class McpServerService : Disposable {
     private fun previewFacts(entry: PreviewEntry, fileText: MutableMap<VirtualFile, CharSequence>) = PreviewFacts(
         composableFqn = entry.indexed.composableFqn,
         displayName = entry.indexed.displayName,
+        functionName = entry.indexed.functionName,
         moduleName = entry.moduleName,
         packageName = entry.indexed.packageName,
         file = entry.file.path,
@@ -161,6 +162,7 @@ class McpServerService : Disposable {
         unsupportedReason = entry.indexed.unsupportedReason,
         covered = entry.coverage is SnapshotCoverage.Covered,
         snapshots = entry.snapshots.map { it.indexed.composableFqn },
+        targets = entry.indexed.targets,
     )
 
     private fun snapshotFacts(
@@ -211,6 +213,35 @@ class McpServerService : Disposable {
         return ReferenceRoots.of(moduleDirectory).flatMap { root ->
             ReferenceImageLocator.locate(entry, listOf(root)).map { ReferenceImage(root.buildVariant, it.file.path) }
         }
+    }
+
+    /**
+     * The blank goldens of one open project, decoded on demand.
+     *
+     * Deliberately not part of [ProjectSnapshot]: that is rebuilt on every tool call, so a field there would
+     * decode every reference PNG for `list_previews` too. Only the health tool pays this cost, and only when
+     * an agent asks for it.
+     *
+     * The locate half needs the project model and takes a read action; the decode half must not hold one
+     * (spec D7), so the two are split rather than nested.
+     */
+    fun blankGoldens(projectName: String): List<GoldenInspector.BlankFinding> {
+        val project = ProjectManager.getInstance().openProjects
+            .firstOrNull { !it.isDisposed && it.name == projectName }
+            ?: return emptyList()
+        val candidates = ReadAction.compute<List<GoldenInspector.Candidate>, RuntimeException> {
+            if (DumbService.isDumb(project)) return@compute emptyList()
+            val index = PreviewIndexService.getInstance(project)
+            val snapshots = index.findAll().flatMap { it.snapshots } + index.findOrphanSnapshots()
+            snapshots.flatMap { snapshot ->
+                val moduleDirectory = ModuleDirectoryResolver.resolve(project, snapshot.file)
+                    ?: return@flatMap emptyList()
+                ReferenceImageLocator.locate(snapshot, ReferenceRoots.of(moduleDirectory)).map {
+                    GoldenInspector.Candidate(snapshot.indexed.composableFqn, snapshot.moduleName, it)
+                }
+            }
+        }
+        return GoldenInspector.inspect(candidates).findings
     }
 
     /**
