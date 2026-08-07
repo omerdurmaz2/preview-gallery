@@ -205,7 +205,7 @@ Plain JUnit 4, everything under `mcp/`:
 | The platform's bundled kotlinx-serialization-json is not on the compile classpath, or its ABI shifts with a platform update. | The first task compiles a single `buildJsonObject` call and stops if it does not resolve. If it does not, the fallback is a ~40-line JSON writer plus the platform's own `JsonReaderEx` — decided then, not designed for now. |
 | An agent treats an empty `list_previews` as ground truth during indexing. | D10 makes that state an error rather than an empty list. |
 | The port choice collides with something else on the machine. | It is visible: the toggle reports the bind failure. A configurable port is a settings page nobody has asked for yet. |
-| A read action on the handler thread blocks behind a write action in the IDE. | The read is a cached-value lookup, and the caller is an agent that already waits seconds for a tool call. If it ever shows up as a real stall, the fix is a pooled thread with a timeout, not a lock-free read of PSI. |
+| A read action on the handler thread blocks behind a write action in the IDE. | The read is `PreviewIndexService`'s own cached lookup plus one raw-file read per unique file (`lineOf`'s `LoadTextUtil.loadText` fallback, memoized per call) plus the reference-image VFS scan per snapshot — not free, but nothing here constructs a `DocumentImpl` or a line table, and nothing is retained past the call. The caller is an agent that already waits seconds for a tool call. If it ever shows up as a real stall, the fix is a pooled thread with a timeout, not a lock-free read of PSI. |
 | Scope creep into writing. | The non-goal is a scope guard in the roadmap, not a preference. A tool that writes belongs behind the IDE UI. |
 
 ## Open questions

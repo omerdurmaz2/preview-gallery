@@ -1,5 +1,6 @@
 package com.devomer.previewgallery.service
 
+import com.intellij.openapi.vfs.VfsUtilCore
 import com.intellij.testFramework.fixtures.BasePlatformTestCase
 
 /**
@@ -109,6 +110,32 @@ class McpServerServiceTest : BasePlatformTestCase() {
             fun WidgetPreview() = PreviewComponent { Widget() }
             """.trimIndent(),
         )
+
+        val preview = ownSnapshot().previews.single()
+
+        assertEquals(10, preview.line)
+    }
+
+    // Regression for PG17-12: the file's raw bytes are CRLF, but IndexedPreview.offset is a PSI offset, always
+    // in `\n`-normalized coordinates. Counting newlines in the unnormalized raw text (VfsUtilCore.loadText, the
+    // bug) drifts the reported line low by one per `\r\n` pair crossed before the offset; LoadTextUtil.loadText
+    // (the fix) normalizes separators the same way PSI does, so it must not drift.
+    fun `test a preview line resolves correctly on a CRLF file`() {
+        val content = "package com.example\r\n" +
+            "\r\n" +
+            "import androidx.compose.ui.tooling.preview.Preview\r\n" +
+            "\r\n" +
+            "// padding line 5\r\n" +
+            "// padding line 6\r\n" +
+            "// padding line 7\r\n" +
+            "\r\n" +
+            "@Preview\r\n" +
+            "fun WidgetPreview() = PreviewComponent { Widget() }\r\n"
+        val file = myFixture.addFileToProject("src/main/kotlin/com/example/Widgets.kt", content).virtualFile
+
+        // Guards the fixture itself: if addFileToProject ever normalizes this to LF before it reaches the VFS,
+        // this fails loudly here instead of the assertion below passing for the wrong reason.
+        assertTrue(VfsUtilCore.loadText(file).contains("\r\n"))
 
         val preview = ownSnapshot().previews.single()
 

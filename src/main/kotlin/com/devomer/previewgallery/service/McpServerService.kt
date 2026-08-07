@@ -16,11 +16,11 @@ import com.intellij.openapi.application.ReadAction
 import com.intellij.openapi.components.Service
 import com.intellij.openapi.diagnostic.thisLogger
 import com.intellij.openapi.fileEditor.FileDocumentManager
+import com.intellij.openapi.fileEditor.impl.LoadTextUtil
 import com.intellij.openapi.progress.ProcessCanceledException
 import com.intellij.openapi.project.DumbService
 import com.intellij.openapi.project.Project
 import com.intellij.openapi.project.ProjectManager
-import com.intellij.openapi.vfs.VfsUtilCore
 import com.intellij.openapi.vfs.VirtualFile
 import java.io.IOException
 import java.util.concurrent.CancellationException
@@ -139,7 +139,7 @@ class McpServerService : Disposable {
         val index = PreviewIndexService.getInstance(project)
         val previews = index.findAll()
         val orphans = index.findOrphanSnapshots()
-        val fileText = mutableMapOf<VirtualFile, String?>()
+        val fileText = mutableMapOf<VirtualFile, CharSequence>()
         return ProjectSnapshot(
             name = name,
             path = path,
@@ -149,7 +149,7 @@ class McpServerService : Disposable {
         )
     }
 
-    private fun previewFacts(entry: PreviewEntry, fileText: MutableMap<VirtualFile, String?>) = PreviewFacts(
+    private fun previewFacts(entry: PreviewEntry, fileText: MutableMap<VirtualFile, CharSequence>) = PreviewFacts(
         composableFqn = entry.indexed.composableFqn,
         displayName = entry.indexed.displayName,
         moduleName = entry.moduleName,
@@ -167,7 +167,7 @@ class McpServerService : Disposable {
         project: Project,
         previews: List<PreviewEntry>,
         orphans: List<PreviewEntry>,
-        fileText: MutableMap<VirtualFile, String?>,
+        fileText: MutableMap<VirtualFile, CharSequence>,
     ): List<SnapshotFacts> {
         val covering = previews.flatMap { it.snapshots }.distinctBy { it.indexed.composableFqn }
         return (covering.map { facts(project, it, orphan = false, fileText) } +
@@ -178,7 +178,7 @@ class McpServerService : Disposable {
         project: Project,
         entry: PreviewEntry,
         orphan: Boolean,
-        fileText: MutableMap<VirtualFile, String?>,
+        fileText: MutableMap<VirtualFile, CharSequence>,
     ) = SnapshotFacts(
         snapshotFqn = entry.indexed.composableFqn,
         moduleName = entry.moduleName,
@@ -220,27 +220,22 @@ class McpServerService : Disposable {
      * opened one — over [FileDocumentManager.getDocument], which would load and decode the file and build its
      * line table just to answer this one lookup; doing that once per row inside one read action is PG17-10 item
      * 2. When no document is cached, [fileText] holds each file's raw text for the lifetime of this call only
-     * (built via [SnapshotSourceScanner]'s own read-once pattern), so a file whose twenty previews all need a
-     * line pays for one disk read per call, not one per row, and the cache itself cannot go stale because
-     * nothing survives past the call that built it.
+     * (built via [LoadTextUtil.loadText], never [com.intellij.openapi.vfs.VfsUtilCore.loadText]: [offset] is a
+     * PSI offset, always in `\n`-normalized coordinates, and the latter would hand back the file's raw bytes —
+     * `\r\n` and all — so counting newlines in it drifts further from the true line the deeper into the file the
+     * offset is), so a file whose twenty previews all need a line pays for one disk read per call, not one per
+     * row, and the cache itself cannot go stale because nothing survives past the call that built it.
      */
-    private fun lineOf(file: VirtualFile, offset: Int, fileText: MutableMap<VirtualFile, String?>): Int? {
+    private fun lineOf(file: VirtualFile, offset: Int, fileText: MutableMap<VirtualFile, CharSequence>): Int? {
         if (offset < 0) return null
         FileDocumentManager.getInstance().getCachedDocument(file)?.let { document ->
             return if (offset > document.textLength) null else document.getLineNumber(offset) + 1
         }
-        val text = fileText.getOrPut(file) { loadTextOrNull(file) } ?: return null
+        val text = fileText.getOrPut(file) { LoadTextUtil.loadText(file) }
         if (offset > text.length) return null
         var line = 1
         for (i in 0 until offset) if (text[i] == '\n') line++
         return line
-    }
-
-    private fun loadTextOrNull(file: VirtualFile): String? = try {
-        VfsUtilCore.loadText(file)
-    } catch (e: IOException) {
-        thisLogger().warn("Could not read ${file.path} to resolve a line number", e)
-        null
     }
 
     companion object {
