@@ -68,7 +68,7 @@ class McpServerDialog(project: Project) : DialogWrapper(project) {
             when (val result = service.start()) {
                 is McpServerService.StartResult.PortInUse -> Messages.showWarningDialog(
                     contentPanel,
-                    PreviewGalleryBundle.message("mcp.portInUse", result.port),
+                    PreviewGalleryBundle.message("mcp.portInUse", result.port.toString()),
                     title,
                 )
                 else -> PropertiesComponent.getInstance().setValue(McpServerStartup.ENABLED_KEY, true)
@@ -79,7 +79,7 @@ class McpServerDialog(project: Project) : DialogWrapper(project) {
 
     private fun refresh() {
         status.text = if (service.isRunning) {
-            PreviewGalleryBundle.message("mcp.status.running", service.port)
+            PreviewGalleryBundle.message("mcp.status.running", service.port.toString())
         } else {
             PreviewGalleryBundle.message("mcp.status.stopped")
         }
