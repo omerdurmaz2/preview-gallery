@@ -488,8 +488,7 @@ class PreviewGalleryPanel(
         // Only notify the pipeline when the selection actually changed: re-landing on the same entry must
         // not restart a render that is already in flight or already showing a result.
         if (currentSelection?.id != previousSelectionId) {
-            lastSelectedEntry = currentSelection
-            pipeline.select(currentSelection)
+            routeSelection(deferReferenceLookup = true)
         }
 
         // Both emptiness tests count the orphan snapshots too (spec D4): a module that snapshots composables it
