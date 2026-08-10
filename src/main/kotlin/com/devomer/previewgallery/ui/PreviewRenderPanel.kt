@@ -269,12 +269,13 @@ class PreviewRenderPanel(private val project: Project) : JBPanel<PreviewRenderPa
      * A snapshot that passed carries no difference image, so it shows two — an empty third slot would read as a
      * difference of nothing rather than as no difference.
      *
-     * [message] carries one of two different facts depending on [images]. With images, it names any path that
-     * failed to decode — the strip's tooltip, same as [showReference]'s own `skipped` wording, so a missing diff
-     * is reported rather than silently read as "no difference". With none, there is no strip left to hang a
-     * tooltip off of, so [message] is shown as the pane's own text instead — this is how a verify run whose
-     * outcome was `NOT_RUN` or `BUILD_FAILED` (PG20-5) stays visible: neither may look like a clean pass, and a
-     * blank or generic "no reference images" pane would read as exactly that.
+     * [message] is always shown as visible text, never hover-only: a run's own outcome (`NOT_RUN`/`BUILD_FAILED`,
+     * PG20-5) must not depend on the user hovering to be seen, or a module with committed goldens and nothing
+     * measured would paint an ordinary-looking strip with no visible sign anything was wrong — the exact failure
+     * PG20-5's carried-forward requirement forbids, just moved from "overwritten" to "invisible". With [images],
+     * that text sits above the strip (also mirrored onto the tooltip, for the same wording on hover as
+     * [showReference]'s own `skipped` case). With none, there is no strip to put text next to, so the message
+     * becomes the pane's own centered text instead (mirrors [noReference]).
      */
     fun showVerified(entry: PreviewEntry, images: List<ReferenceStripView.LabelledImage>, message: String?) {
         if (images.isEmpty() && message != null) {
@@ -289,6 +290,10 @@ class PreviewRenderPanel(private val project: Project) : JBPanel<PreviewRenderPa
         showReference(entry, images, skipped = emptyList(), tasks = emptyList())
         if (message != null) {
             referenceStrip?.toolTipText = message
+            centerPanel.add(JBLabel(message), BorderLayout.NORTH)
+            centerPanel.validate()
+            fitReferenceStrip()
+            centerPanel.repaint()
         }
     }
 

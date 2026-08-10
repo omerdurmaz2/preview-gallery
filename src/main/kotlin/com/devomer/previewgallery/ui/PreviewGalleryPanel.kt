@@ -698,8 +698,12 @@ class PreviewGalleryPanel(
      * decode and a plain-golden decode fire from two independent triggers for the same selection, and whichever
      * finished second silently overwrote whichever finished first, including overwriting a `NOT_RUN`/
      * `BUILD_FAILED` message with a plain golden that made a run that never measured anything look like a clean
-     * pass. Funnelling both through the one alarm removes the second trigger entirely, so there is nothing left to
-     * race. [deferReferenceLookup] = false mirrors the same choice inline, via [verifiableResult].
+     * pass. Funnelling both through the one alarm removes that second *trigger* — there is only one scheduled
+     * decode per selection again — but a single trigger can still straddle two [SnapshotVerifyStore] generations
+     * (a decode started against a stale `RAN` run, the store updated to `NOT_RUN` before that decode's own
+     * `invokeLater` lands); [decodeVerifyResult] and [publishReferences] both re-check [unmeasuredRun] at publish
+     * time for exactly that reason, rather than trusting the branch [loadReferences] took when it was scheduled.
+     * [deferReferenceLookup] = false mirrors the same choice inline, via [verifiableResult].
      */
     private fun routeSelection(deferReferenceLookup: Boolean) {
         val rows = referenceRowsForSelection()
@@ -847,8 +851,8 @@ class PreviewGalleryPanel(
      * must show the failure's evidence, not silently pick whichever variant the XML read order put first.
      */
     private fun verifiableResult(snapshot: PreviewEntry): SnapshotVerifyResults.SnapshotResult? {
-        if (unmeasuredRun(snapshot.moduleName) != null) return null
         val run = SnapshotVerifyStore.getInstance(project).forModule(snapshot.moduleName) ?: return null
+        if (run.outcome != SnapshotVerifyRunner.Outcome.RAN) return null
         return run.results.firstOrNull { it.methodName == snapshot.indexed.functionName && it.status == SnapshotVerifyResults.Status.FAILED }
             ?: run.results.firstOrNull { it.methodName == snapshot.indexed.functionName }
     }
@@ -881,9 +885,11 @@ class PreviewGalleryPanel(
 
     /**
      * Background half of the verify-image path (PG20-5): runs [decodeVerifyImages] on the same executor
-     * [loadReferences] uses for the plain path, then publishes on the EDT behind the same two-part guard
-     * [publishReferences] uses — [disposalCheck] and "is this still the selected row" — so a slower decode for a
-     * row the user has already left cannot land on top of a later selection.
+     * [loadReferences] uses for the plain path, then publishes on the EDT behind the same three-part guard
+     * [publishReferences] uses — [disposalCheck], "is this still the selected row", and [unmeasuredRun] — so a
+     * slower decode for a row the user has already left cannot land on top of a later selection, and a decode
+     * started against a since-superseded `RAN` run cannot land on top of the `NOT_RUN`/`BUILD_FAILED` message a
+     * newer run replaced it with.
      */
     private fun decodeVerifyResult(snapshot: PreviewEntry, result: SnapshotVerifyResults.SnapshotResult, modality: ModalityState) {
         AppExecutorUtil.getAppExecutorService().execute {
@@ -891,6 +897,7 @@ class PreviewGalleryPanel(
             ApplicationManager.getApplication().invokeLater({
                 if (disposalCheck.isDisposed) return@invokeLater
                 if (selectedSnapshotEntry()?.id != snapshot.id) return@invokeLater
+                if (unmeasuredRun(snapshot.moduleName) != null) return@invokeLater
                 renderPanel.showVerified(snapshot, images, missing.takeIf { it.isNotEmpty() }?.joinToString(", "))
             }, modality)
         }
