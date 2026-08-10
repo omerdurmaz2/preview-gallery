@@ -59,12 +59,17 @@ class ReferenceStripLoader(
      * the module directory is what the roots hang off. Groups that found nothing are dropped, so a snapshot with
      * no committed PNG cannot put an empty section in the strip; [Located.tasks] still collects that module's
      * regenerating tasks, which is what the no-reference message needs.
+     *
+     * [refreshedModules] tracks which module directories [locateOne] has already refreshed during this call: a
+     * preview covered by several snapshots in the same module would otherwise pay [ReferenceRoots.refresh]'s
+     * synchronous, recursive VFS walk once per row instead of once per module, for the same answer every time.
      */
     fun locate(snapshots: List<PreviewEntry>): Located {
         val groups = mutableListOf<Located.Group>()
         val tasks = mutableListOf<String>()
+        val refreshedModules = mutableSetOf<VirtualFile>()
         for (snapshot in snapshots) {
-            val located = locateOne(snapshot)
+            val located = locateOne(snapshot, refreshedModules)
             tasks += located.tasks
             if (located.groups.isNotEmpty()) groups += located.groups
         }
@@ -96,8 +101,14 @@ class ReferenceStripLoader(
      *
      * Deleting the [ReferenceRoots.refresh] call below breaks no automated test — steps 2-3 of PG15's manual gate
      * are what actually cover it.
+     *
+     * Skips the refresh entirely when [refreshedModules] already contains [snapshot]'s module directory — a
+     * second or third row of the same [locate] call resolving to the same module directory gains nothing from
+     * refreshing it again, only the cost of a second recursive VFS walk. The three-way split stays intact on the
+     * rows where the refresh *does* run: this only removes a redundant call, never moves the remaining one
+     * relative to the two read actions around it.
      */
-    private fun locateOne(snapshot: PreviewEntry): Located {
+    private fun locateOne(snapshot: PreviewEntry, refreshedModules: MutableSet<VirtualFile>): Located {
         val moduleDirectory = ReadAction.nonBlocking<VirtualFile?> {
             ModuleDirectoryResolver.resolve(project, snapshot.file)
         }
@@ -105,7 +116,9 @@ class ReferenceStripLoader(
             .executeSynchronously()
             ?: return Located(emptyList(), emptyList())
         if (disposalCheck.isDisposed) return Located(emptyList(), emptyList())
-        ReferenceRoots.refresh(moduleDirectory)
+        if (refreshedModules.add(moduleDirectory)) {
+            ReferenceRoots.refresh(moduleDirectory)
+        }
         return ReadAction.nonBlocking<Located> { locateUnderRoots(snapshot, moduleDirectory) }
             .expireWith(parentDisposable)
             .executeSynchronously()

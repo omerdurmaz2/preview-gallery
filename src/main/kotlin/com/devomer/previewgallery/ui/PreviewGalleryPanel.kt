@@ -765,8 +765,19 @@ class PreviewGalleryPanel(
      * EDT half of [showReferenceImages]. Dropped unless the selection *still* wants [owner]'s goldens: arrow-keying
      * down a preview's snapshot children starts one decode per row, and a slower earlier one must not land on top
      * of a later selection — nor on top of a live render, if the user has moved back to a preview or switched the
-     * reference mode off meanwhile. Re-deriving the answer from [referenceRowsForSelection] is the whole guard; no
-     * separate generation counter can disagree with it.
+     * reference mode off meanwhile. The guard is two checks, not one: [referenceRowsForSelection] re-derives
+     * whether the current selection wants a strip at all, and the `currentOwner?.id != owner.id` comparison below
+     * catches the case where it still does, but for a different row than [owner]. Neither alone is the whole
+     * guard; no separate generation counter can disagree with either.
+     *
+     * ponytail: the owner-id comparison is a known, accepted ceiling — it compares which row the strip is about,
+     * not which rows built it. If the index re-resolves the same preview with a *different* snapshot set inside
+     * the decode window, a strip built from the stale row list still has the right owner id and publishes; nothing
+     * re-routes until the next selection. Reaching it needs a PSI change plus a reload landing in the roughly
+     * 400 ms-2 s window between [showReferenceImages] firing and [loadReferences] finishing, and the failure mode
+     * is one stale strip that the next selection corrects. Upgrade path, if this ever needs tightening: compare
+     * the row list [publishReferences] was called with against a fresh [referenceRowsForSelection], not just the
+     * owner id.
      */
     private fun publishReferences(owner: PreviewEntry, decoded: ReferenceStripLoader.Decoded, tasks: List<String>) {
         val wanted = referenceRowsForSelection()
