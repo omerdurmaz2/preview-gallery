@@ -47,6 +47,20 @@ class PreviewRenderPanel(private val project: Project) : JBPanel<PreviewRenderPa
     var onRender: (PreviewEntry) -> Unit = {}
     var onOpenFile: (PreviewEntry) -> Unit = {}
 
+    /** Fires when the user toggles the reference mode, with the requested state. The mode itself is owned by
+     *  [com.devomer.previewgallery.ui.PreviewGalleryPanel] — it survives selection changes (PG19 spec D5) and
+     *  decides what the next selection routes to, neither of which this panel knows about. */
+    var onToggleReference: (Boolean) -> Unit = {}
+
+    /** The owner's reference-mode flag, mirrored so the toggle can show its pressed state. Set by the owner, and
+     *  never by the action itself: the action reports intent through [onToggleReference] and the owner decides,
+     *  which keeps one source of truth for a mode that outlives this panel's current entry. */
+    var referenceModeActive: Boolean = false
+        set(value) {
+            field = value
+            updateActionsBar(currentEntry)
+        }
+
     /** Fires when the user clicks Properties **while Original is the active tab**, with a screen anchor for the
      *  popup to open next to the button (design/spec P4). Only ever wired to fire when Original is active and
      *  [propertiesAvailable] is true — see [updateActionsBar]/`PropertiesAction`. A copy tab opens
@@ -334,6 +348,14 @@ class PreviewRenderPanel(private val project: Project) : JBPanel<PreviewRenderPa
         // end in a render, and a `@SnapshotPreviews`-marked function has no `@Preview` entry for the picker to
         // resolve either. Gated on [showingSnapshot], NOT on the strip above: NO_REFERENCE is a snapshot with no
         // strip, and testing the strip there left Properties as the toolbar's only control, bound to a snapshot.
+        // PG19 spec D6: only for a preview that actually has goldens to show, and asked of the ENTRY rather than
+        // of [showingSnapshot] — with the mode on, a preview sits in REFERENCE too, and gating on the state would
+        // hide the only control that turns it back off.
+        val referenceAvailable = entry != null && !entry.indexed.isSnapshotTest && entry.snapshots.isNotEmpty()
+        if (referenceAvailable) {
+            if (group.childrenCount > 0) group.addSeparator()
+            group.add(ShowReferenceAction())
+        }
         val activeCopy = activeComparisonView()
         val originalActive = activeCopy == null || activeCopy.id == ComparisonViewList.ORIGINAL_ID
         val propertiesGated = if (originalActive) propertiesAvailable else deviceOverrideAvailable
@@ -431,6 +453,16 @@ class PreviewRenderPanel(private val project: Project) : JBPanel<PreviewRenderPa
     ), DumbAware {
         override fun isSelected(e: AnActionEvent): Boolean = activeView().handToolActive
         override fun setSelected(e: AnActionEvent, state: Boolean) { activeView().handToolActive = state }
+        override fun getActionUpdateThread(): ActionUpdateThread = ActionUpdateThread.EDT
+    }
+
+    /** The reference mode as a real toggle so the toolbar shows its pressed state; the state itself lives in the
+     *  owner (see [referenceModeActive]). */
+    private inner class ShowReferenceAction : ToggleAction(
+        PreviewGalleryBundle.message("render.showReference"), null, AllIcons.Actions.Diff,
+    ), DumbAware {
+        override fun isSelected(e: AnActionEvent): Boolean = referenceModeActive
+        override fun setSelected(e: AnActionEvent, state: Boolean) { onToggleReference(state) }
         override fun getActionUpdateThread(): ActionUpdateThread = ActionUpdateThread.EDT
     }
 
