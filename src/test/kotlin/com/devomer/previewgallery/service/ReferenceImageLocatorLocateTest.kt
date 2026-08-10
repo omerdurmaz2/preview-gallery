@@ -37,7 +37,7 @@ class ReferenceImageLocatorLocateTest : BasePlatformTestCase() {
         myFixture.tempDirFixture.createFile("src/$sourceSet/reference/$facade/$name", "")
     }
 
-    /** Exactly what `PreviewGalleryPanel.locateReferences` passes: no `Module`, no `ProjectFileIndex`. */
+    /** Exactly what `ReferenceStripLoader.locateUnderRoots` passes: no `Module`, no `ProjectFileIndex`. */
     private fun roots(entry: PreviewEntry): List<ReferenceRoots.Root> {
         val moduleDirectory = requireNotNull(SnapshotSourceScanner.moduleDirectory(entry.file)) {
             "A snapshot under src/screenshotTest must resolve to the module directory holding its references"

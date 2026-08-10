@@ -1,5 +1,7 @@
 package com.devomer.previewgallery.ui
 
+import com.devomer.previewgallery.model.PreviewEntry
+import com.devomer.previewgallery.render.RenderResultView
 import com.devomer.previewgallery.render.RenderState
 import com.devomer.previewgallery.service.PreviewIndexService
 import com.devomer.previewgallery.withExcludedRoot
@@ -7,6 +9,7 @@ import com.intellij.openapi.application.WriteAction
 import com.intellij.openapi.fileEditor.FileEditorManager
 import com.intellij.openapi.util.Disposer
 import com.intellij.testFramework.LightProjectDescriptor
+import com.intellij.testFramework.PlatformTestUtil
 import com.intellij.testFramework.fixtures.BasePlatformTestCase
 import java.awt.image.BufferedImage
 import java.io.ByteArrayOutputStream
@@ -721,5 +724,143 @@ class PreviewGalleryPanelTest : BasePlatformTestCase() {
         // The active module does have a preview; the coverage filter is what emptied the tree. NO_ACTIVE_MODULE
         // would say the module has none.
         assertEquals(PreviewGalleryPanel.State.NO_UNCOVERED, panel.state)
+    }
+
+    private fun waitUntilRenderStateChangesFrom(panel: PreviewGalleryPanel, state: RenderState) {
+        PlatformTestUtil.waitWithEventsDispatching(
+            "The render pipeline never dispatched a state change",
+            { panel.renderStateForTest != state },
+            10,
+        )
+    }
+
+    private fun lonelyPreview() {
+        myFixture.addFileToProject(
+            "src/main/kotlin/com/example/Lonely.kt",
+            """
+            package com.example
+
+            import androidx.compose.ui.tooling.preview.Preview
+
+            @Preview
+            fun LonelyPreview() = PreviewComponent { Lonely() }
+            """.trimIndent(),
+        )
+    }
+
+    private fun show(renderPanel: PreviewRenderPanel, entry: PreviewEntry) {
+        renderPanel.show(RenderResultView(RenderState.NEEDS_BUILD, null, entry.moduleName), entry)
+    }
+
+    fun `test a covered preview lists the reference toggle among its actions`() {
+        projectWithSnapshot()
+        val entry = PreviewIndexService.getInstance(project).findAll().single { it.indexed.displayName == "WidgetPreview" }
+        val renderPanel = PreviewRenderPanel(project)
+
+        show(renderPanel, entry)
+
+        assertTrue(renderPanel.actionTitlesForTest().toString(), renderPanel.actionTitlesForTest().contains(SHOW_REFERENCE_TITLE))
+    }
+
+    fun `test an uncovered preview does not list the reference toggle`() {
+        lonelyPreview()
+        val entry = PreviewIndexService.getInstance(project).findAll().single { it.indexed.displayName == "LonelyPreview" }
+        val renderPanel = PreviewRenderPanel(project)
+
+        show(renderPanel, entry)
+
+        assertFalse(renderPanel.actionTitlesForTest().toString(), renderPanel.actionTitlesForTest().contains(SHOW_REFERENCE_TITLE))
+    }
+
+    fun `test a snapshot row does not list the reference toggle`() {
+        projectWithSnapshot()
+        val previewEntry = PreviewIndexService.getInstance(project).findAll().single { it.indexed.displayName == "WidgetPreview" }
+        val snapshotEntry = previewEntry.snapshots.single()
+        val renderPanel = PreviewRenderPanel(project)
+
+        show(renderPanel, snapshotEntry)
+
+        assertFalse(renderPanel.actionTitlesForTest().toString(), renderPanel.actionTitlesForTest().contains(SHOW_REFERENCE_TITLE))
+    }
+
+    fun `test the reference mode shows a covered preview's goldens instead of a render`() {
+        projectWithSnapshot()
+        referencePng(
+            "src/screenshotTestDebug/reference/com/example/WidgetSnapshotsKt",
+            "Widget_Default_Snapshot_phone_eee23ffd_0.png",
+        )
+        val panel = panel()
+        panel.reloadSynchronously()
+        panel.setReferenceModeForTest(true)
+
+        panel.selectByLabelPathForTest("WidgetPreview")
+
+        assertEquals(RenderState.REFERENCE, panel.renderStateForTest)
+    }
+
+    fun `test the mode stays on across an uncovered preview and shows the next covered one again`() {
+        projectWithSnapshot()
+        referencePng(
+            "src/screenshotTestDebug/reference/com/example/WidgetSnapshotsKt",
+            "Widget_Default_Snapshot_phone_eee23ffd_0.png",
+        )
+        lonelyPreview()
+        val panel = panel()
+        panel.reloadSynchronously()
+        panel.setReferenceModeForTest(true)
+
+        panel.selectByLabelPathForTest("LonelyPreview")
+        assertFalse(panel.renderStateForTest == RenderState.REFERENCE)
+
+        panel.selectByLabelPathForTest("WidgetPreview")
+        assertEquals(RenderState.REFERENCE, panel.renderStateForTest)
+    }
+
+    fun `test switching the mode off returns the covered preview to the render path`() {
+        projectWithSnapshot()
+        referencePng(
+            "src/screenshotTestDebug/reference/com/example/WidgetSnapshotsKt",
+            "Widget_Default_Snapshot_phone_eee23ffd_0.png",
+        )
+        val panel = panel()
+        panel.reloadSynchronously()
+        panel.setReferenceModeForTest(true)
+        panel.selectByLabelPathForTest("WidgetPreview")
+        assertEquals(RenderState.REFERENCE, panel.renderStateForTest)
+
+        panel.setReferenceModeForTest(false)
+
+        waitUntilRenderStateChangesFrom(panel, RenderState.REFERENCE)
+    }
+
+    fun `test switching the mode off before a late decode lands leaves the panel out of REFERENCE`() {
+        projectWithSnapshot()
+        referencePng(
+            "src/screenshotTestDebug/reference/com/example/WidgetSnapshotsKt",
+            "Widget_Default_Snapshot_phone_eee23ffd_0.png",
+        )
+        val panel = panel()
+        panel.reloadSynchronously()
+        panel.setReferenceModeForTest(true)
+        panel.selectByLabelPathForTest("WidgetPreview")
+        assertEquals(RenderState.REFERENCE, panel.renderStateForTest)
+        val owner = PreviewIndexService.getInstance(project).findAll().single { it.indexed.displayName == "WidgetPreview" }
+
+        panel.setReferenceModeForTest(false)
+        waitUntilRenderStateChangesFrom(panel, RenderState.REFERENCE)
+
+        panel.publishReferencesForTest(
+            owner,
+            ReferenceStripLoader.Decoded(
+                images = listOf(ReferenceStripView.LabelledImage("phone", BufferedImage(1, 1, BufferedImage.TYPE_INT_ARGB))),
+                skipped = emptyList(),
+            ),
+        )
+
+        assertFalse(panel.renderStateForTest == RenderState.REFERENCE)
+    }
+
+    private companion object {
+        const val SHOW_REFERENCE_TITLE = "Show committed reference images"
     }
 }

@@ -402,6 +402,13 @@ class PreviewGalleryPanel(
     internal val renderMessageForTest: String?
         get() = renderPanel.messageForTest()
 
+    @TestOnly
+    fun setReferenceModeForTest(active: Boolean) {
+        showReferenceForPreviews = active
+        renderPanel.referenceModeActive = active
+        routeSelection(deferReferenceLookup = false)
+    }
+
     /** What double-click and Enter do to the current selection, without a mouse or a key event. */
     @TestOnly
     fun navigateToSelectionForTest(): Boolean = navigateToSelection()
@@ -769,6 +776,11 @@ class PreviewGalleryPanel(
         val currentOwner = selectedSnapshotEntry() ?: selectedEntry()
         if (currentOwner?.id != owner.id) return
         renderPanel.showReference(owner, decoded.images, decoded.skipped, tasks)
+    }
+
+    @TestOnly
+    internal fun publishReferencesForTest(owner: PreviewEntry, decoded: ReferenceStripLoader.Decoded) {
+        publishReferences(owner, decoded, emptyList())
     }
 
     /**
