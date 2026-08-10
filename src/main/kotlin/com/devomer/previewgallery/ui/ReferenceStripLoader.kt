@@ -32,8 +32,17 @@ class ReferenceStripLoader(
     private val disposalCheck: CheckedDisposable,
 ) {
 
-    /** What one lookup produced: the images to show, and the Gradle tasks to name when there are none. */
-    data class Located(val images: List<ReferenceImage>, val tasks: List<String>)
+    /**
+     * What one lookup produced. The images stay grouped by the snapshot row they came from, because [decode]'s
+     * label rule needs to know how many snapshots are in play (spec D4) — flattening here would throw away the
+     * only thing that distinguishes `Loaded · phone` from `phone`.
+     */
+    data class Located(val groups: List<Group>, val tasks: List<String>) {
+
+        /** [snapshotName] is the snapshot function's own name, used as a label prefix only when the strip spans
+         *  more than one snapshot. */
+        data class Group(val snapshotName: String, val images: List<ReferenceImage>)
+    }
 
     /** What [decode] found: the variants it could decode, and the ones it could not — reported in the strip's
      *  tooltip rather than dropped silently. */
@@ -41,6 +50,26 @@ class ReferenceStripLoader(
         val images: List<ReferenceStripView.LabelledImage>,
         val skipped: List<String>,
     )
+
+    /**
+     * Locates the reference images of every row in [snapshots] — one row for a snapshot selection, a preview's
+     * whole `snapshots` list for the reference mode (spec D3).
+     *
+     * Each row is resolved independently: two snapshots of the same preview can live in different modules, and
+     * the module directory is what the roots hang off. Groups that found nothing are dropped, so a snapshot with
+     * no committed PNG cannot put an empty section in the strip; [Located.tasks] still collects that module's
+     * regenerating tasks, which is what the no-reference message needs.
+     */
+    fun locate(snapshots: List<PreviewEntry>): Located {
+        val groups = mutableListOf<Located.Group>()
+        val tasks = mutableListOf<String>()
+        for (snapshot in snapshots) {
+            val located = locateOne(snapshot)
+            tasks += located.tasks
+            if (located.groups.isNotEmpty()) groups += located.groups
+        }
+        return Located(groups, tasks.distinct().sorted())
+    }
 
     /**
      * Resolves [snapshot]'s module directory and locates its reference images under read actions, refreshing the
@@ -68,7 +97,7 @@ class ReferenceStripLoader(
      * Deleting the [ReferenceRoots.refresh] call below breaks no automated test — steps 2-3 of PG15's manual gate
      * are what actually cover it.
      */
-    fun locate(snapshot: PreviewEntry): Located {
+    private fun locateOne(snapshot: PreviewEntry): Located {
         val moduleDirectory = ReadAction.nonBlocking<VirtualFile?> {
             ModuleDirectoryResolver.resolve(project, snapshot.file)
         }
@@ -92,25 +121,40 @@ class ReferenceStripLoader(
      */
     private fun locateUnderRoots(snapshot: PreviewEntry, moduleDirectory: VirtualFile): Located {
         val roots = ReferenceRoots.of(moduleDirectory)
+        val images = ReferenceImageLocator.locate(snapshot, roots)
         return Located(
-            images = ReferenceImageLocator.locate(snapshot, roots),
+            groups = if (images.isEmpty()) {
+                emptyList()
+            } else {
+                listOf(Located.Group(snapshot.indexed.functionName, images))
+            },
             tasks = roots.mapNotNull { ReferenceRoots.updateTask(it.buildVariant) }.distinct().sorted(),
         )
     }
 
-    /** Decodes what [locate] found — deliberately holding no read lock; a `VirtualFile`'s bytes are readable
-     *  without one, and this is the slow half.
+    /**
+     * Decodes what [locate] found — deliberately holding no read lock; a `VirtualFile`'s bytes are readable
+     * without one, and this is the slow half.
      *
-     *  Labels come from [ReferenceImageLocator.labels], whose own KDoc states when one carries its source set. */
+     * A label carries its snapshot's name only when more than one snapshot is on the strip (spec D4): with one,
+     * naming it on every image is noise, and the single-snapshot case must read exactly as it did before this
+     * feature existed. `ReferenceImageLocator.labels` applies the same rule one level down for the source set,
+     * and the two compose — a strip spanning two snapshots and two source sets earns both qualifiers, because
+     * without both its rows genuinely cannot be told apart.
+     */
     fun decode(located: Located): Decoded {
         val images = mutableListOf<ReferenceStripView.LabelledImage>()
         val skipped = mutableListOf<String>()
-        for ((reference, label) in located.images.zip(ReferenceImageLocator.labels(located.images))) {
-            val image = readImage(reference.file)
-            if (image == null) {
-                skipped += label
-            } else {
-                images += ReferenceStripView.LabelledImage(label, image)
+        val qualify = located.groups.size > 1
+        for (group in located.groups) {
+            for ((reference, label) in group.images.zip(ReferenceImageLocator.labels(group.images))) {
+                val qualified = if (qualify) "${group.snapshotName} · $label" else label
+                val image = readImage(reference.file)
+                if (image == null) {
+                    skipped += qualified
+                } else {
+                    images += ReferenceStripView.LabelledImage(qualified, image)
+                }
             }
         }
         return Decoded(images, skipped)

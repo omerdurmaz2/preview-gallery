@@ -657,7 +657,7 @@ class PreviewGalleryPanel(
             if (deferReferenceLookup) {
                 showReferenceImages(snapshot)
             } else {
-                val located = referenceLoader.locate(snapshot)
+                val located = referenceLoader.locate(listOf(snapshot))
                 publishReferences(snapshot, referenceLoader.decode(located), located.tasks)
             }
             return
@@ -711,7 +711,7 @@ class PreviewGalleryPanel(
         val modality = ModalityState.defaultModalityState()
         AppExecutorUtil.getAppExecutorService().execute {
             val located = try {
-                referenceLoader.locate(snapshot)
+                referenceLoader.locate(listOf(snapshot))
             } catch (e: ProcessCanceledException) {
                 // The panel is gone, or a write action preempted the lookup. Nothing to publish and nothing to
                 // retry: the selection that would want this result is gone with it.
