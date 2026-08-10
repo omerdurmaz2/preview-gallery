@@ -77,6 +77,62 @@ class ModuleFreshnessTest {
         assertEquals(DISTINCTIVE_MTIME, ModuleFreshness.newestMtimeBounded(tempFolder.root, maxDepth = 4))
     }
 
+    // ── newestSourceMtime ────────────────────────────────────────────────────────────────────────────
+
+    @Test
+    fun `a module with no source roots at all has no source mtime`() {
+        assertEquals(0L, ModuleFreshness.newestSourceMtime(emptyList(), buildOutputRoot = null))
+    }
+
+    @Test
+    fun `a source root under the build directory is excluded, not scanned`() {
+        // AGP registers build/generated/... as a source root, so a build writing BuildConfig.java would read
+        // exactly like the user typing if this were not excluded — the confusion that made PsiModificationTracker
+        // unusable for staleness in the first place.
+        val buildRoot = File(tempFolder.root, "build").apply { mkdirs() }
+        val generated = File(buildRoot, "generated/source/buildConfig").apply { mkdirs() }
+        File(generated, "BuildConfig.java").apply { createNewFile() }.setLastModified(DISTINCTIVE_MTIME)
+
+        val newest = ModuleFreshness.newestSourceMtime(listOf(generated), buildOutputRoot = buildRoot)
+
+        assertEquals(0L, newest)
+    }
+
+    @Test
+    fun `a hand-written source root beside the build directory is still scanned`() {
+        val buildRoot = File(tempFolder.root, "build").apply { mkdirs() }
+        val sources = File(tempFolder.root, "src/main/kotlin").apply { mkdirs() }
+        File(sources, "Widget.kt").apply { createNewFile() }.setLastModified(DISTINCTIVE_MTIME)
+
+        val newest = ModuleFreshness.newestSourceMtime(listOf(sources), buildOutputRoot = buildRoot)
+
+        assertEquals(DISTINCTIVE_MTIME, newest)
+    }
+
+    @Test
+    fun `an edit in a package deeper than the build scan's depth bound is still seen`() {
+        // Unbounded on purpose: a deep-package edit missed here would let a verify result that no longer
+        // describes the code claim to be fresh.
+        val sources = File(tempFolder.root, "src/main/kotlin").apply { mkdirs() }
+        val deep = File(sources, "com/example/features/favorites/ui/list/item/detail").apply { mkdirs() }
+        File(deep, "Row.kt").apply { createNewFile() }.setLastModified(DISTINCTIVE_MTIME)
+
+        assertEquals(DISTINCTIVE_MTIME, ModuleFreshness.newestSourceMtime(listOf(sources), buildOutputRoot = null))
+    }
+
+    @Test
+    fun `the newest of several source roots wins`() {
+        val older = File(tempFolder.root, "src/main/kotlin").apply { mkdirs() }
+        val newer = File(tempFolder.root, "src/main/res").apply { mkdirs() }
+        File(older, "Widget.kt").apply { createNewFile() }.setLastModified(DISTINCTIVE_MTIME - 60_000)
+        File(newer, "colors.xml").apply { createNewFile() }.setLastModified(DISTINCTIVE_MTIME)
+
+        assertEquals(
+            DISTINCTIVE_MTIME,
+            ModuleFreshness.newestSourceMtime(listOf(older, newer), buildOutputRoot = null),
+        )
+    }
+
     /** Creates a file exactly [depth] directory levels below [TemporaryFolder.getRoot] (root itself is depth 0)
      *  and returns it, e.g. `depth = 2` creates `root/l0/Deep.class`. */
     private fun nestedFile(depth: Int): File {

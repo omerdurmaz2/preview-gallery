@@ -39,7 +39,6 @@ import com.intellij.openapi.util.Disposer
 import com.intellij.openapi.vfs.VirtualFile
 import com.intellij.psi.search.FilenameIndex
 import com.intellij.psi.search.GlobalSearchScope
-import com.intellij.psi.util.PsiModificationTracker
 import com.intellij.ui.DoubleClickListener
 import com.intellij.ui.DocumentAdapter
 import com.intellij.ui.OnePixelSplitter
@@ -821,22 +820,18 @@ class PreviewGalleryPanel(
     private fun runVerify(explicit: Boolean) {
         val target = verifyTarget() ?: return
         val store = SnapshotVerifyStore.getInstance(project)
-        // Captured before the task launches, not when it completes: an edit landing mid-run must make the
-        // result stale the instant it arrives, not read as fresh because the count moved before it was stamped.
-        val psiStamp = PsiModificationTracker.getInstance(project).modificationCount
         verifyInFlightModule = target.moduleName
         SnapshotVerifyRunner.getInstance(project).verify(target.module, target.buildVariant) { outcome, started ->
             val results = if (started == null) {
                 emptyList()
             } else {
-                SnapshotVerifyResults.read(started.resultsDirectory, started.startedAtMillis)
+                SnapshotVerifyResults.read(started.resultsDirectory, started.startedAtMillis, started.buildRoot)
             }
             SnapshotVerifyStore.resolve(
                 moduleName = target.moduleName,
                 outcome = outcome,
                 results = results,
                 ranAtMillis = started?.startedAtMillis ?: System.currentTimeMillis(),
-                psiStamp = psiStamp,
                 previous = store.forModule(target.moduleName),
                 explicit = explicit,
             )?.let(store::put)

@@ -44,7 +44,7 @@ class SnapshotVerifyResultsTest {
             passingCaseXml("Widget_Default_Snapshot", "phone", "/golden/widget.png", "/rendered/widget.png"),
         )
 
-        val results = SnapshotVerifyResults.read(tempFolder.root.toPath(), startedAtMillis = 0L)
+        val results = SnapshotVerifyResults.read(tempFolder.root.toPath(), startedAtMillis = 0L, buildRoot = BUILD_ROOT)
 
         assertEquals(1, results.size)
         val result = results.single()
@@ -76,7 +76,7 @@ class SnapshotVerifyResultsTest {
             """.trimIndent(),
         )
 
-        val results = SnapshotVerifyResults.read(tempFolder.root.toPath(), startedAtMillis = 0L)
+        val results = SnapshotVerifyResults.read(tempFolder.root.toPath(), startedAtMillis = 0L, buildRoot = BUILD_ROOT)
 
         assertEquals(SnapshotVerifyResults.Status.FAILED, results.single().status)
     }
@@ -89,7 +89,7 @@ class SnapshotVerifyResultsTest {
         old.setLastModified(startedAtMillis - 60_000)
         fresh.setLastModified(startedAtMillis + 60_000)
 
-        val results = SnapshotVerifyResults.read(tempFolder.root.toPath(), startedAtMillis)
+        val results = SnapshotVerifyResults.read(tempFolder.root.toPath(), startedAtMillis, BUILD_ROOT)
 
         // If the guard were removed, "Old_Snapshot" would show up too — a stale, hand-run `update` presented as
         // this verify's answer.
@@ -101,7 +101,7 @@ class SnapshotVerifyResultsTest {
         resultsFile("TEST-broken.xml", "not xml at all <<<")
         resultsFile("TEST-ok.xml", passingCaseXml("Ok_Snapshot", "phone", "/g/ok.png", "/r/ok.png"))
 
-        val results = SnapshotVerifyResults.read(tempFolder.root.toPath(), startedAtMillis = 0L)
+        val results = SnapshotVerifyResults.read(tempFolder.root.toPath(), startedAtMillis = 0L, buildRoot = BUILD_ROOT)
 
         assertEquals(listOf("Ok_Snapshot"), results.map { it.methodName })
     }
@@ -110,6 +110,67 @@ class SnapshotVerifyResultsTest {
     fun `an absent directory yields an empty list rather than throwing`() {
         val missing = Path.of(tempFolder.root.absolutePath, "does-not-exist")
 
-        assertEquals(emptyList<SnapshotVerifyResults.SnapshotResult>(), SnapshotVerifyResults.read(missing, 0L))
+        assertEquals(
+            emptyList<SnapshotVerifyResults.SnapshotResult>(),
+            SnapshotVerifyResults.read(missing, 0L, BUILD_ROOT),
+        )
+    }
+
+    @Test
+    fun `the relative paths the task really writes are resolved against the build root`() {
+        // Verbatim shape from a real result file in the reference project: relative to the directory Gradle was
+        // invoked from, which is neither the results directory nor the IDE process's working directory.
+        resultsFile(
+            "TEST-com.example.WidgetSnapshotsTest.xml",
+            passingCaseXml(
+                "Widget_Default_Snapshot",
+                "phone",
+                "features/favorites/ui/src/screenshotTestDebug/reference/com/example/Widget_phone_0.png",
+                "features/favorites/ui/build/outputs/screenshotTest-results/preview/debug/rendered/com/example/Widget_phone_0.png",
+            ),
+        )
+
+        val result = SnapshotVerifyResults.read(tempFolder.root.toPath(), 0L, BUILD_ROOT).single()
+
+        assertEquals(
+            "/repo/features/favorites/ui/src/screenshotTestDebug/reference/com/example/Widget_phone_0.png",
+            result.goldenPath,
+        )
+        assertEquals(
+            "/repo/features/favorites/ui/build/outputs/screenshotTest-results/preview/debug/rendered/com/example/Widget_phone_0.png",
+            result.renderedPath,
+        )
+    }
+
+    @Test
+    fun `an already absolute path is left exactly as the task wrote it`() {
+        resultsFile(
+            "TEST-com.example.WidgetSnapshotsTest.xml",
+            passingCaseXml("Widget_Default_Snapshot", "phone", "/elsewhere/golden.png", "/elsewhere/rendered.png"),
+        )
+
+        val result = SnapshotVerifyResults.read(tempFolder.root.toPath(), 0L, BUILD_ROOT).single()
+
+        assertEquals("/elsewhere/golden.png", result.goldenPath)
+        assertEquals("/elsewhere/rendered.png", result.renderedPath)
+    }
+
+    @Test
+    fun `an empty path attribute stays null rather than resolving to the build root itself`() {
+        resultsFile(
+            "TEST-com.example.WidgetSnapshotsTest.xml",
+            passingCaseXml("Widget_Default_Snapshot", "phone", "", ""),
+        )
+
+        val result = SnapshotVerifyResults.read(tempFolder.root.toPath(), 0L, BUILD_ROOT).single()
+
+        assertNull(result.goldenPath)
+        assertNull(result.renderedPath)
+    }
+
+    private companion object {
+        /** Stands in for [com.devomer.previewgallery.render.SnapshotVerifyRunner.Started.buildRoot]: the
+         *  directory Gradle was invoked from, deliberately unrelated to the results directory these tests read. */
+        val BUILD_ROOT: Path = Path.of("/repo")
     }
 }

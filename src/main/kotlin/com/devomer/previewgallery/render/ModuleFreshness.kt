@@ -56,6 +56,44 @@ object ModuleFreshness {
     }
 
     /**
+     * The newest mtime among [module]'s own source files, or 0 when it has none.
+     *
+     * A different question from [isModuleFresh]'s: that one asks whether the compiled output is current, this one
+     * asks when the human last changed the code. [com.devomer.previewgallery.service.SnapshotVerifyStore] compares
+     * it against when a verify started.
+     *
+     * Source roots under the module's Gradle `build` directory are dropped, and that exclusion is the entire
+     * reason this is not a one-line call to [newestMtimeBounded] over [ModuleRootManager.getSourceRoots]: AGP
+     * registers `build/generated/…` as source roots, so a build writing `BuildConfig.java` would otherwise be
+     * indistinguishable from the user typing — the same confusion between build churn and an edit that made
+     * `PsiModificationTracker` unusable for this.
+     *
+     * Unbounded, unlike [isModuleFresh]'s scan. [MAX_SCAN_DEPTH] exists for the enormous class-file tree a build
+     * produces, and a module's own source tree is nothing like that size; more to the point, a deep-package edit
+     * missed by a depth cap would let a verify result that no longer describes the code claim to be fresh, and
+     * that claim is the one thing this must never make.
+     *
+     * Callable off the EDT and outside a read action, exactly like [isModuleFresh]: the project-model half takes
+     * its own short read action and the filesystem walk that follows holds no lock. Deliberately uncached — its
+     * caller asks once per settled selection, not once per painted row, and a cache would have to be invalidated
+     * by the very edits this exists to notice.
+     */
+    fun newestModuleSourceMtime(module: Module): Long {
+        val roots = ReadAction.compute<ModuleRoots, RuntimeException> { resolveRoots(module) }
+        return newestSourceMtime(roots.sourceRoots, roots.outputRoot)
+    }
+
+    /** The pure half of [newestModuleSourceMtime] — see its doc for why [buildOutputRoot]'s descendants are
+     *  excluded rather than scanned. */
+    internal fun newestSourceMtime(sourceRoots: List<File>, buildOutputRoot: File?): Long {
+        val excluded = buildOutputRoot?.toPath()
+        return sourceRoots
+            .filterNot { excluded != null && it.toPath().startsWith(excluded) }
+            .maxOfOrNull { newestMtimeBounded(it, Int.MAX_VALUE) }
+            ?: 0L
+    }
+
+    /**
      * Drops the cached verdict for [module], if any. [RenderPipeline] calls this right after a successful
      * build, so a selection in the same module moments later (still inside [CACHE_TTL_MS]) re-derives
      * freshness from the just-updated output instead of replaying the pre-build "stale" verdict that triggered

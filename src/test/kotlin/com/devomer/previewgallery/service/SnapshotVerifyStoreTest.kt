@@ -5,8 +5,8 @@ import com.intellij.psi.util.PsiModificationTracker
 import com.intellij.testFramework.fixtures.BasePlatformTestCase
 
 /**
- * Needs a real [com.intellij.openapi.project.Project]: [SnapshotVerifyStore.isStale] reads
- * [PsiModificationTracker], not just the coarse `stale` flag [SnapshotVerifyStore.markAllStale] sets, so the
+ * Needs a real [com.intellij.openapi.project.Project]: [SnapshotVerifyStore.isStale] resolves the run's module
+ * through the project model, not just the coarse `stale` flag [SnapshotVerifyStore.markAllStale] sets, so the
  * store cannot be constructed bare the way the brief for this phase first assumed.
  *
  * Each test uses its own module name, deliberately not shared with any other test in this class: the store is a
@@ -17,14 +17,12 @@ class SnapshotVerifyStoreTest : BasePlatformTestCase() {
 
     private fun store() = SnapshotVerifyStore.getInstance(project)
 
-    private fun currentPsiStamp(): Long = PsiModificationTracker.getInstance(project).modificationCount
-
     private fun run(
         moduleName: String,
         methodName: String = "Widget_Default_Snapshot",
         variant: String = "phone",
         status: SnapshotVerifyResults.Status = SnapshotVerifyResults.Status.PASSED,
-        psiStamp: Long = currentPsiStamp(),
+        ranAtMillis: Long = 0L,
         stale: Boolean = false,
     ) = SnapshotVerifyStore.Run(
         moduleName = moduleName,
@@ -39,8 +37,7 @@ class SnapshotVerifyStoreTest : BasePlatformTestCase() {
                 diffPath = null,
             ),
         ),
-        ranAtMillis = 0L,
-        psiStamp = psiStamp,
+        ranAtMillis = ranAtMillis,
         stale = stale,
     )
 
@@ -82,24 +79,50 @@ class SnapshotVerifyStoreTest : BasePlatformTestCase() {
         assertFalse(current.stale)
     }
 
-    fun `test isStale is false for a fresh run whose psiStamp matches and the flag is unset`() {
-        val fresh = run(moduleName = "app.freshStamp", psiStamp = currentPsiStamp(), stale = false)
+    fun `test isStale is false for a run no source has been written since, with the flag unset`() {
+        val fresh = run(moduleName = "app.freshSources", ranAtMillis = 2_000L, stale = false)
 
+        assertFalse(SnapshotVerifyStore.isStale(fresh, newestSourceMillis = 1_000L))
+    }
+
+    fun `test isStale reads true once a source is newer than the run, even with the flag false`() {
+        // The flag stays false on purpose: this is exactly the case markStale/markAllStale never see, an ordinary
+        // edit landing while the Gradle task the run measures is still going.
+        val edited = run(moduleName = "app.editedSources", ranAtMillis = 2_000L, stale = false)
+
+        assertTrue(SnapshotVerifyStore.isStale(edited, newestSourceMillis = 2_001L))
+    }
+
+    fun `test isStale treats a source written in the very millisecond the run launched as measured`() {
+        val started = run(moduleName = "app.sameMillisecond", ranAtMillis = 2_000L, stale = false)
+
+        assertFalse(SnapshotVerifyStore.isStale(started, newestSourceMillis = 2_000L))
+    }
+
+    fun `test isStale reads true when the flag is set even though no source is newer`() {
+        val flagged = run(moduleName = "app.staleFlag", ranAtMillis = 2_000L, stale = true)
+
+        assertTrue(SnapshotVerifyStore.isStale(flagged, newestSourceMillis = 1_000L))
+    }
+
+    fun `test isStale reads true when the module is gone and staleness cannot be determined`() {
+        val orphaned = run(moduleName = "app.noSuchModule", ranAtMillis = 2_000L, stale = false)
+
+        assertTrue(SnapshotVerifyStore.isStale(orphaned, newestSourceMillis = null))
+        assertTrue(store().isStale(orphaned))
+    }
+
+    fun `test a project event that is not a source edit no longer makes a run stale`() {
+        // The PG20 gate bug: PsiModificationTracker is project-wide and moves for any change that can affect PSI,
+        // so a verify that writes into build/ for minutes always outran a stamp captured before it launched.
+        val tracker = PsiModificationTracker.getInstance(project)
+        val before = tracker.modificationCount
+        val fresh = run(moduleName = module.name, ranAtMillis = System.currentTimeMillis())
+
+        myFixture.tempDirFixture.createFile("build/outputs/screenshotTest-results/rendered.png", "not a png")
+
+        assertTrue("expected the PSI counter to move on an event that is not an edit", tracker.modificationCount > before)
         assertFalse(store().isStale(fresh))
-    }
-
-    fun `test isStale reads true once the psiStamp no longer matches, even with the flag false`() {
-        // The flag stays false on purpose: this is exactly the case markStale/markAllStale never see, an
-        // ordinary edit that only PsiModificationTracker knows happened.
-        val edited = run(moduleName = "app.staleStamp", psiStamp = currentPsiStamp() - 1, stale = false)
-
-        assertTrue(store().isStale(edited))
-    }
-
-    fun `test isStale reads true when the flag is set even though the psiStamp still matches`() {
-        val flagged = run(moduleName = "app.staleFlag", psiStamp = currentPsiStamp(), stale = true)
-
-        assertTrue(store().isStale(flagged))
     }
 
     private fun resolve(
@@ -112,7 +135,6 @@ class SnapshotVerifyStoreTest : BasePlatformTestCase() {
         outcome = outcome,
         results = results,
         ranAtMillis = 1_000L,
-        psiStamp = 7L,
         previous = previous,
         explicit = explicit,
     )
@@ -134,7 +156,6 @@ class SnapshotVerifyStoreTest : BasePlatformTestCase() {
         assertEquals(SnapshotVerifyRunner.Outcome.RAN, resolved.outcome)
         assertEquals(oneResult(), resolved.results)
         assertEquals(1_000L, resolved.ranAtMillis)
-        assertEquals(7L, resolved.psiStamp)
         assertFalse(resolved.stale)
     }
 

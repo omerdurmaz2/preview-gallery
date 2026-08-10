@@ -52,10 +52,23 @@ class SnapshotVerifyRunner(private val project: Project) : Disposable {
      *  (spec D8). */
     enum class Outcome { RAN, BUILD_FAILED, NOT_RUN }
 
-    /** Where to look for what the run wrote, and from when. [startedAtMillis] is captured before the task is
-     *  launched so [com.devomer.previewgallery.service.SnapshotVerifyResults]' timestamp guard cannot be
-     *  defeated by a result written moments earlier. */
-    data class Started(val taskName: String, val resultsDirectory: Path, val startedAtMillis: Long)
+    /**
+     * Where to look for what the run wrote, and from when. [startedAtMillis] is captured before the task is
+     * launched so [com.devomer.previewgallery.service.SnapshotVerifyResults]' timestamp guard cannot be
+     * defeated by a result written moments earlier.
+     *
+     * [buildRoot] is the directory Gradle was invoked from — [Target.projectPath], not the module's own
+     * subproject directory — because that is what the image paths inside the results XML are relative to. It
+     * travels with the run rather than being re-derived at read time: by then the only thing in hand is a
+     * results directory, and guessing a build root back out of it by string surgery is exactly the kind of
+     * inference [SnapshotVerifyResults] exists to avoid.
+     */
+    data class Started(
+        val taskName: String,
+        val resultsDirectory: Path,
+        val startedAtMillis: Long,
+        val buildRoot: Path,
+    )
 
     /** The task this run is currently waiting on, if any — claimed once by [onTaskStarted], never overwritten
      *  by an unrelated Gradle task that happens to start in this project while this run is in flight. */
@@ -102,7 +115,12 @@ class SnapshotVerifyRunner(private val project: Project) : Disposable {
             externalSystemIdString = GradleConstants.SYSTEM_ID.id
             scriptParameters = GATE_FLAG
         }
-        val started = Started(target.taskName, target.resultsDirectory, System.currentTimeMillis())
+        val started = Started(
+            taskName = target.taskName,
+            resultsDirectory = target.resultsDirectory,
+            startedAtMillis = System.currentTimeMillis(),
+            buildRoot = Path.of(target.projectPath),
+        )
 
         val notifications = ExternalSystemProgressNotificationManager.getInstance()
         val taskIdForThisRun = AtomicReference<ExternalSystemTaskId?>(null)
@@ -267,6 +285,10 @@ class SnapshotVerifyRunner(private val project: Project) : Disposable {
      * that path is the *build root*, the directory an absolute task path resolves against, not where a
      * subproject writes its own output. [GradleModuleData.getGradleProjectDir] is that module's own subproject
      * directory — the same property [ModuleFreshness.gradleBuildOutputDir] already uses for the same reason.
+     *
+     * The distinction cuts the other way for the image paths inside those results: they are written relative to
+     * the build root, so [Started.buildRoot] carries [Target.projectPath] on, not [Target.resultsDirectory]'s
+     * subproject directory.
      */
     private fun resolveTarget(module: Module, buildVariant: String): Target? =
         ReadAction.compute<Target?, RuntimeException> {
