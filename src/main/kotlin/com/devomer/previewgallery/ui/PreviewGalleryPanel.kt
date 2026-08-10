@@ -403,10 +403,8 @@ class PreviewGalleryPanel(
         get() = renderPanel.messageForTest()
 
     @TestOnly
-    fun setReferenceModeForTest(active: Boolean) {
-        showReferenceForPreviews = active
-        renderPanel.referenceModeActive = active
-        routeSelection(deferReferenceLookup = false)
+    internal fun setReferenceModeForTest(active: Boolean) {
+        renderPanel.onToggleReference(active)
     }
 
     /** What double-click and Enter do to the current selection, without a mouse or a key event. */

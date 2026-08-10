@@ -783,6 +783,27 @@ class PreviewGalleryPanelTest : BasePlatformTestCase() {
         assertFalse(renderPanel.actionTitlesForTest().toString(), renderPanel.actionTitlesForTest().contains(SHOW_REFERENCE_TITLE))
     }
 
+    // Regression guard for the toggle's gate reading the ENTRY (spec D6), not `showingSnapshot`: with the mode on,
+    // a covered preview sits in RenderState.REFERENCE too, and gating on the state instead of the entry would hide
+    // the only control that turns the mode back off exactly when the user needs it. The trio above cannot catch
+    // that — every one of them shows with NEEDS_BUILD, where `showingSnapshot` is false regardless of which gate
+    // is used.
+    fun `test the reference toggle stays listed while the panel itself is showing REFERENCE`() {
+        projectWithSnapshot()
+        val entry = PreviewIndexService.getInstance(project).findAll().single { it.indexed.displayName == "WidgetPreview" }
+        val renderPanel = PreviewRenderPanel(project)
+        renderPanel.referenceModeActive = true
+
+        renderPanel.showReference(
+            entry,
+            listOf(ReferenceStripView.LabelledImage("phone", BufferedImage(1, 1, BufferedImage.TYPE_INT_ARGB))),
+            emptyList(),
+        )
+
+        assertEquals(RenderState.REFERENCE, renderPanel.activeState)
+        assertTrue(renderPanel.actionTitlesForTest().toString(), renderPanel.actionTitlesForTest().contains(SHOW_REFERENCE_TITLE))
+    }
+
     fun `test the reference mode shows a covered preview's goldens instead of a render`() {
         projectWithSnapshot()
         referencePng(
