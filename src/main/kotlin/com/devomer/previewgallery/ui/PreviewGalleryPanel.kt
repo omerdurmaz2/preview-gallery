@@ -54,6 +54,8 @@ import java.awt.BorderLayout
 import java.awt.event.KeyAdapter
 import java.awt.event.KeyEvent
 import java.awt.event.MouseEvent
+import java.io.File
+import javax.imageio.ImageIO
 import javax.swing.JTree
 import javax.swing.event.DocumentEvent
 import javax.swing.tree.DefaultMutableTreeNode
@@ -170,7 +172,7 @@ class PreviewGalleryPanel(
     init {
         tree.isRootVisible = false
         tree.showsRootHandles = true
-        tree.cellRenderer = PreviewTreeCellRenderer()
+        tree.cellRenderer = PreviewTreeCellRenderer(project)
         tree.selectionModel.selectionMode = TreeSelectionModel.SINGLE_TREE_SELECTION
         tree.addTreeSelectionListener {
             if (restoringSelection) return@addTreeSelectionListener
@@ -689,14 +691,23 @@ class PreviewGalleryPanel(
      * and debounce. Both paths now run the very same [ReferenceStripLoader.locate] rather than each keeping their
      * own copy of its three steps in sync by hand. Production always defers, keeping the lookup and the PNG
      * decode off the EDT and behind the selection debounce.
+     *
+     * [publishVerify] (PG20-5) is tried on the snapshot path before the plain reference lookup, and only there —
+     * only a snapshot row, never a preview shown via the reference mode, has a verify target ([verifyTarget]).
+     * When it finds a stored run it owns the render entirely (its own true return short-circuits this method), so
+     * the plain golden lookup below never overwrites what it just published; when it finds nothing yet — the
+     * common case right after a selection, before the debounced verify has even run — it returns false and this
+     * falls through to the plain path exactly as before, so goldens still appear while the run is in flight.
      */
     private fun routeSelection(deferReferenceLookup: Boolean) {
         val rows = referenceRowsForSelection()
         if (rows.isNotEmpty()) {
-            val owner = selectedSnapshotEntry() ?: selectedEntry() ?: return
+            val snapshot = selectedSnapshotEntry()
+            val owner = snapshot ?: selectedEntry() ?: return
             lastSelectedEntry = null
             pipeline.select(null)
-            if (!refreshingAfterVerify) startVerify(selectedSnapshotEntry())
+            if (!refreshingAfterVerify) startVerify(snapshot)
+            if (snapshot != null && publishVerify(snapshot)) return
             if (deferReferenceLookup) {
                 showReferenceImages(owner, rows)
             } else {
@@ -799,6 +810,53 @@ class PreviewGalleryPanel(
                 }
             }, ModalityState.defaultModalityState())
         }
+    }
+
+    /**
+     * Publishes what the store knows about [snapshot]'s module — its golden, what the run rendered, and the
+     * difference — or returns false when there is nothing verify-related to show, leaving the caller on the
+     * plain reference path.
+     *
+     * A stored run whose [SnapshotVerifyStore.Run.outcome] is not [SnapshotVerifyRunner.Outcome.RAN] is shown
+     * immediately, synchronously, with no images at all: [SnapshotVerifyRunner.Outcome.NOT_RUN] (indexing, or the
+     * module is not part of a linked Gradle project) and [SnapshotVerifyRunner.Outcome.BUILD_FAILED] (the task ran
+     * but wrote no results) both mean nothing was measured, and a plain golden image underneath would read as a
+     * clean pass that never happened — the exact failure PG20-5's carried-forward requirement forbids. No module
+     * run at all — the common case right after a selection, before the debounced verify has even started — falls
+     * through instead, so goldens still show while the run is in flight.
+     *
+     * A named path that no longer exists is reported rather than dropped: a strip silently missing its diff would
+     * read as "no difference", which is the one thing it must never say by accident.
+     */
+    private fun publishVerify(snapshot: PreviewEntry): Boolean {
+        val store = SnapshotVerifyStore.getInstance(project)
+        val run = store.forModule(snapshot.moduleName) ?: return false
+        if (run.outcome != SnapshotVerifyRunner.Outcome.RAN) {
+            val key = if (run.outcome == SnapshotVerifyRunner.Outcome.NOT_RUN) "verify.notRun" else "verify.buildFailed"
+            renderPanel.showVerified(snapshot, emptyList(), PreviewGalleryBundle.message(key))
+            return true
+        }
+        val result = run.results.firstOrNull { it.methodName == snapshot.indexed.functionName } ?: return false
+        val sources = buildList {
+            result.goldenPath?.let { add(PreviewGalleryBundle.message("verify.golden") to it) }
+            result.renderedPath?.let { add(PreviewGalleryBundle.message("verify.rendered") to it) }
+            result.diffPath?.let { add(PreviewGalleryBundle.message("verify.diff") to it) }
+        }
+        val modality = ModalityState.defaultModalityState()
+        AppExecutorUtil.getAppExecutorService().execute {
+            val images = mutableListOf<ReferenceStripView.LabelledImage>()
+            val missing = mutableListOf<String>()
+            for ((label, path) in sources) {
+                val image = runCatching { ImageIO.read(File(path)) }.getOrNull()
+                if (image == null) missing += label else images += ReferenceStripView.LabelledImage(label, image)
+            }
+            ApplicationManager.getApplication().invokeLater({
+                if (disposalCheck.isDisposed) return@invokeLater
+                if (selectedSnapshotEntry()?.id != snapshot.id) return@invokeLater
+                renderPanel.showVerified(snapshot, images, missing.takeIf { it.isNotEmpty() }?.joinToString(", "))
+            }, modality)
+        }
+        return true
     }
 
     /** The rows whose goldens the current selection should show, or empty when it should render instead. The one

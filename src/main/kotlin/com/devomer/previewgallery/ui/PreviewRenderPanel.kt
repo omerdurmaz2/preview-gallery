@@ -264,6 +264,43 @@ class PreviewRenderPanel(private val project: Project) : JBPanel<PreviewRenderPa
         show(RenderResultView(RenderState.REFERENCE, null, entry.moduleName), entry, strip)
     }
 
+    /**
+     * The images for a verified snapshot: its golden, what the run rendered, and the difference between them.
+     * A snapshot that passed carries no difference image, so it shows two — an empty third slot would read as a
+     * difference of nothing rather than as no difference.
+     *
+     * [message] carries one of two different facts depending on [images]. With images, it names any path that
+     * failed to decode — the strip's tooltip, same as [showReference]'s own `skipped` wording, so a missing diff
+     * is reported rather than silently read as "no difference". With none, there is no strip left to hang a
+     * tooltip off of, so [message] is shown as the pane's own text instead — this is how a verify run whose
+     * outcome was `NOT_RUN` or `BUILD_FAILED` (PG20-5) stays visible: neither may look like a clean pass, and a
+     * blank or generic "no reference images" pane would read as exactly that.
+     */
+    fun showVerified(entry: PreviewEntry, images: List<ReferenceStripView.LabelledImage>, message: String?) {
+        if (images.isEmpty() && message != null) {
+            referenceTasks = emptyList()
+            show(RenderResultView(RenderState.NO_REFERENCE, null, entry.moduleName), entry, strip = null)
+            centerPanel.removeAll()
+            center(verifyOutcome(entry, message))
+            centerPanel.revalidate()
+            centerPanel.repaint()
+            return
+        }
+        showReference(entry, images, skipped = emptyList(), tasks = emptyList())
+        if (message != null) {
+            referenceStrip?.toolTipText = message
+        }
+    }
+
+    /** The pane [showVerified] shows for a run outcome that produced nothing to measure — mirrors [noReference]'s
+     *  shape (message north, Open file south) but with the outcome's own wording instead of the generic
+     *  "no reference images" text, which would be actively wrong here (goldens may well be committed; the run
+     *  simply never produced a verdict to compare them against). */
+    private fun verifyOutcome(entry: PreviewEntry, message: String): JBPanel<*> = JBPanel<JBPanel<*>>(BorderLayout()).apply {
+        add(JBLabel(message), BorderLayout.NORTH)
+        add(ActionLink(PreviewGalleryBundle.message("detail.openFile")) { onOpenFile(entry) }, BorderLayout.SOUTH)
+    }
+
     /** [strip] is non-null only on the [RenderState.REFERENCE] path ([showReference]): [RenderResultView] is the
      *  render pipeline's own type and deliberately carries no Swing, so the strip travels as its own argument
      *  instead of inside it. */
