@@ -23,6 +23,7 @@ import com.intellij.openapi.externalSystem.model.task.ExternalSystemTaskId
 import com.intellij.openapi.externalSystem.model.task.ExternalSystemTaskNotificationListener
 import com.intellij.openapi.externalSystem.model.task.ExternalSystemTaskType
 import com.intellij.openapi.externalSystem.service.execution.ProgressExecutionMode
+import com.intellij.openapi.externalSystem.service.internal.ExternalSystemExecuteTaskTask
 import com.intellij.openapi.externalSystem.service.internal.ExternalSystemProcessingManager
 import com.intellij.openapi.externalSystem.service.notification.ExternalSystemProgressNotificationManager
 import com.intellij.openapi.externalSystem.task.TaskCallback
@@ -94,9 +95,10 @@ class BuildService(private val project: Project) : Disposable {
         val myGeneration = generation.incrementAndGet()
         cancelCurrent()
 
+        val submittedTasks = target.taskPaths
         val settings = ExternalSystemTaskExecutionSettings().apply {
             externalProjectPath = target.projectPath
-            taskNames = target.taskPaths
+            taskNames = submittedTasks
             externalSystemIdString = GradleConstants.SYSTEM_ID.id
         }
 
@@ -107,7 +109,7 @@ class BuildService(private val project: Project) : Disposable {
         // no matter which overload the platform's dispatcher calls directly.
         @Suppress("OVERRIDE_DEPRECATION")
         val listener = object : ExternalSystemTaskNotificationListener {
-            override fun onStart(id: ExternalSystemTaskId) = onTaskStarted(id, myGeneration)
+            override fun onStart(id: ExternalSystemTaskId) = onTaskStarted(id, myGeneration, submittedTasks)
         }
         val callback = object : TaskCallback {
             override fun onSuccess() = finish(myGeneration, listener, notifications, true, onDone)
@@ -143,13 +145,18 @@ class BuildService(private val project: Project) : Disposable {
     /**
      * [ExternalSystemProgressNotificationManager] is an application-level service — it notifies of every
      * external-system task for every open project, not just ours, so [id] is only trusted once it is confirmed to
-     * be our own Gradle execute-task, for this project.
+     * be our own Gradle execute-task, for this project, running the tasks *this* build submitted ([isOurTask]).
+     *
+     * Matching on the project alone is what let [SnapshotVerifyRunner]'s minutes-long `validate…ScreenshotTest`
+     * become `currentTaskId` — selecting a preview row and then one of its snapshot children is enough — after
+     * which the next render-triggered build cancelled the verify instead of its own compile.
      */
-    private fun onTaskStarted(id: ExternalSystemTaskId, myGeneration: Long) {
+    private fun onTaskStarted(id: ExternalSystemTaskId, myGeneration: Long, taskNames: List<String>) {
         try {
             if (id.type != ExternalSystemTaskType.EXECUTE_TASK) return
             if (id.projectSystemId != GradleConstants.SYSTEM_ID) return
             if (id.findProject() != project) return
+            if (!isOurTask(id, taskNames)) return
 
             if (generation.get() == myGeneration) {
                 currentTaskId.set(id)
@@ -182,6 +189,24 @@ class BuildService(private val project: Project) : Disposable {
     /** Cancels whatever build this service currently has in flight (rule B4). A no-op if nothing is running. */
     private fun cancelCurrent() {
         currentTaskId.getAndSet(null)?.let { cancelTaskId(it) }
+    }
+
+    /**
+     * Whether [id] names a task this service submitted. [ExternalSystemProcessingManager] hands back the task
+     * object itself — registered before that task's own `onStart` is broadcast — and an execute-task's
+     * [ExternalSystemExecuteTaskTask.getTasksToExecute] is a verbatim copy of the
+     * [ExternalSystemTaskExecutionSettings.taskNames] it was built from. An id this cannot confirm is not ours,
+     * and is therefore neither tracked nor cancelled.
+     */
+    private fun isOurTask(id: ExternalSystemTaskId, taskNames: List<String>): Boolean = try {
+        val task = ExternalSystemProcessingManager.getInstance().findTask(id)
+        task is ExternalSystemExecuteTaskTask && task.tasksToExecute == taskNames
+    } catch (e: Exception) {
+        thisLogger().warn("Failed to confirm whether Gradle task $id belongs to this build", e)
+        false
+    } catch (e: LinkageError) {
+        thisLogger().warn("The Gradle task-lookup API is incompatible with this IDE build", e)
+        false
     }
 
     private fun cancelTaskId(id: ExternalSystemTaskId) {

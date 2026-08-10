@@ -27,6 +27,7 @@ import com.intellij.openapi.actionSystem.DefaultActionGroup
 import com.intellij.openapi.application.ApplicationManager
 import com.intellij.openapi.application.ModalityState
 import com.intellij.openapi.application.ReadAction
+import com.intellij.openapi.diagnostic.thisLogger
 import com.intellij.openapi.fileEditor.OpenFileDescriptor
 import com.intellij.openapi.module.Module
 import com.intellij.openapi.module.ModuleUtilCore
@@ -48,6 +49,7 @@ import com.intellij.ui.components.JBScrollPane
 import com.intellij.ui.treeStructure.Tree
 import com.intellij.util.Alarm
 import com.intellij.util.concurrency.AppExecutorUtil
+import com.intellij.util.text.DateFormatUtil
 import com.intellij.util.ui.JBUI
 import org.jetbrains.annotations.TestOnly
 import java.awt.BorderLayout
@@ -55,6 +57,7 @@ import java.awt.event.KeyAdapter
 import java.awt.event.KeyEvent
 import java.awt.event.MouseEvent
 import java.io.File
+import java.io.IOException
 import javax.imageio.ImageIO
 import javax.swing.JTree
 import javax.swing.event.DocumentEvent
@@ -149,6 +152,13 @@ class PreviewGalleryPanel(
      *  A real selection change, from the tree listener or from [applyFilter], never sets this. */
     private var refreshingAfterVerify = false
 
+    /** The module [runVerify] last launched a run for and has not yet seen finish, read by [needsVerify] so
+     *  moving between a module's own snapshot rows cannot cancel the very run those rows are waiting on. EDT-only,
+     *  like every other field here: set in [runVerify] and cleared from its completion callback's `invokeLater`.
+     *  A run superseded by a newer one never reports back at all (the runner's own contract), which is why the
+     *  clear is conditional — by then this field already names the newer run's module, and must keep doing so. */
+    private var verifyInFlightModule: String? = null
+
     /** PG11-2: indexing a large project takes several dumb→smart transitions, and [reload]'s own
      *  `runWhenSmart` only rides the first one — so the tree used to cache whatever fraction of the index
      *  existed at that moment and stay that way until the user pressed Refresh. This reloads again, exactly
@@ -242,7 +252,7 @@ class PreviewGalleryPanel(
             CoverageFilterToggleAction(project) { applyFilter() },
             CoverageReportAction(project, { entries }, { orphanSnapshots }),
             McpServerAction(project),
-            VerifySnapshotsAction({ startVerify(selectedSnapshotEntry()) }, { selectedSnapshotEntry() != null }),
+            VerifySnapshotsAction({ startVerify(selectedSnapshotEntry(), force = true) }, { selectedSnapshotEntry() != null }),
             commonActions.createExpandAllAction(treeExpander, this),
             commonActions.createCollapseAllAction(treeExpander, this),
         )
@@ -703,7 +713,9 @@ class PreviewGalleryPanel(
      * (a decode started against a stale `RAN` run, the store updated to `NOT_RUN` before that decode's own
      * `invokeLater` lands); [decodeVerifyResult] and [publishReferences] both re-check [unmeasuredRun] at publish
      * time for exactly that reason, rather than trusting the branch [loadReferences] took when it was scheduled.
-     * [deferReferenceLookup] = false mirrors the same choice inline, via [verifiableResult].
+     * [deferReferenceLookup] = false mirrors the same choice inline, via [verifiableResult] — but deliberately
+     * without [startVerify]: that seam exists to run the publish path synchronously, and arming a Gradle run
+     * behind a 400 ms alarm is the one thing a synchronous test path must not leave behind.
      */
     private fun routeSelection(deferReferenceLookup: Boolean) {
         val rows = referenceRowsForSelection()
@@ -712,8 +724,8 @@ class PreviewGalleryPanel(
             val owner = snapshot ?: selectedEntry() ?: return
             lastSelectedEntry = null
             pipeline.select(null)
-            if (!refreshingAfterVerify) startVerify(snapshot)
             if (deferReferenceLookup) {
+                if (!refreshingAfterVerify) startVerify(snapshot, force = false)
                 showReferenceImages(owner, rows)
             } else {
                 val verifyResult = snapshot?.let { verifiableResult(it) }
@@ -771,11 +783,36 @@ class PreviewGalleryPanel(
      * snapshot children fires one selection per row, and a Gradle run per row is not a cost the user asked for.
      * [RenderPipeline.DEBOUNCE_MS] is shared with the render and reference paths deliberately — all three mean
      * "the user settled on this row".
+     *
+     * The debounce alone is not enough, though: it only collapses the rows the user crosses *quickly*. Settling
+     * on each of a preview's snapshot children in turn still asks the same module the same question once per
+     * row, at minutes a run, cancelling the previous answer each time — so the automatic path may never produce
+     * one at all, and every cancelled run has already invalidated Gradle's configuration cache through the
+     * runner's gate flag. [needsVerify] is what stops that: an answer this module already has, or is already
+     * computing, is not asked for again.
+     *
+     * [force] is the toolbar action ([VerifySnapshotsAction]) — the user asking directly, which always runs.
      */
-    private fun startVerify(snapshot: PreviewEntry?) {
+    private fun startVerify(snapshot: PreviewEntry?, force: Boolean) {
         verifyAlarm.cancelAllRequests()
         if (snapshot == null) return
+        if (!force && !needsVerify(snapshot.moduleName)) return
         verifyAlarm.addRequest({ runVerify() }, RenderPipeline.DEBOUNCE_MS)
+    }
+
+    /**
+     * Whether the automatic path still owes [moduleName] a verify: false while one is already in flight for it
+     * (cancelling that to re-ask the identical question is pure loss), and false when the store already holds a
+     * run that measured something and still describes the code on disk.
+     *
+     * A [SnapshotVerifyRunner.Outcome.NOT_RUN] or [SnapshotVerifyRunner.Outcome.BUILD_FAILED] run is deliberately
+     * *not* an answer to keep: those are the states worth retrying once the user comes back to the row.
+     */
+    private fun needsVerify(moduleName: String): Boolean {
+        if (verifyInFlightModule == moduleName) return false
+        val store = SnapshotVerifyStore.getInstance(project)
+        val run = store.forModule(moduleName) ?: return true
+        return run.outcome != SnapshotVerifyRunner.Outcome.RAN || store.isStale(run)
     }
 
     private fun runVerify() {
@@ -784,32 +821,23 @@ class PreviewGalleryPanel(
         // Captured before the task launches, not when it completes: an edit landing mid-run must make the
         // result stale the instant it arrives, not read as fresh because the count moved before it was stamped.
         val psiStamp = PsiModificationTracker.getInstance(project).modificationCount
+        verifyInFlightModule = target.moduleName
         SnapshotVerifyRunner.getInstance(project).verify(target.module, target.buildVariant) { outcome, started ->
             val results = if (started == null) {
                 emptyList()
             } else {
                 SnapshotVerifyResults.read(started.resultsDirectory, started.startedAtMillis)
             }
-            // A run that produced no results did not measure anything, whatever Gradle's exit status said: a
-            // compile failure and a clean pass are both "the task returned", and only the results tell them
-            // apart (spec D8). A task name that does not exist in Gradle lands here too — the spec's error
-            // table lists it separately, but telling it from a compile failure would mean parsing Gradle's
-            // output, and both answer the user the same way: nothing was measured.
-            val resolved = when {
-                outcome == SnapshotVerifyRunner.Outcome.NOT_RUN -> SnapshotVerifyRunner.Outcome.NOT_RUN
-                results.isEmpty() -> SnapshotVerifyRunner.Outcome.BUILD_FAILED
-                else -> SnapshotVerifyRunner.Outcome.RAN
-            }
-            store.put(
-                SnapshotVerifyStore.Run(
-                    moduleName = target.moduleName,
-                    outcome = resolved,
-                    results = results,
-                    ranAtMillis = started?.startedAtMillis ?: System.currentTimeMillis(),
-                    psiStamp = psiStamp,
-                ),
-            )
+            SnapshotVerifyStore.resolve(
+                moduleName = target.moduleName,
+                outcome = outcome,
+                results = results,
+                ranAtMillis = started?.startedAtMillis ?: System.currentTimeMillis(),
+                psiStamp = psiStamp,
+                previous = store.forModule(target.moduleName),
+            )?.let(store::put)
             ApplicationManager.getApplication().invokeLater({
+                if (verifyInFlightModule == target.moduleName) verifyInFlightModule = null
                 if (disposalCheck.isDisposed) return@invokeLater
                 tree.repaint()
                 refreshingAfterVerify = true
@@ -835,9 +863,36 @@ class PreviewGalleryPanel(
     private fun unmeasuredRun(moduleName: String): SnapshotVerifyStore.Run? =
         SnapshotVerifyStore.getInstance(project).forModule(moduleName)?.takeIf { it.outcome != SnapshotVerifyRunner.Outcome.RAN }
 
-    private fun verifyOutcomeMessage(run: SnapshotVerifyStore.Run): String {
-        val key = if (run.outcome == SnapshotVerifyRunner.Outcome.NOT_RUN) "verify.notRun" else "verify.buildFailed"
-        return PreviewGalleryBundle.message(key)
+    private fun verifyOutcomeMessage(run: SnapshotVerifyStore.Run): String =
+        if (run.outcome == SnapshotVerifyRunner.Outcome.NOT_RUN) {
+            PreviewGalleryBundle.message("verify.notRun")
+        } else {
+            PreviewGalleryBundle.message("verify.buildFailed")
+        }
+
+    /**
+     * The text [PreviewRenderPanel.showVerified] shows above a verified snapshot's images: which of them could
+     * not be read, and — the part that stops this pane from being the one place in the feature that overstates
+     * confidence — that the run behind them no longer describes the code on disk, with the time it ran (spec D4).
+     *
+     * A stale `RAN` run still publishes its golden, rendered and diff, because a verdict that *was* true is worth
+     * more than none; what it must never do is publish them looking freshly measured. The tree says `stale` only
+     * on a failing row, so without this a snapshot that passed before the edit reads as passing after it.
+     *
+     * Read at publish time, on the EDT, for the same reason [unmeasuredRun] is: the run this decode started
+     * against may have been superseded, or gone stale, while the PNGs were being decoded off the EDT.
+     */
+    private fun verifyMessage(moduleName: String, missing: List<String>): String? {
+        val store = SnapshotVerifyStore.getInstance(project)
+        val run = store.forModule(moduleName)
+        val parts = listOfNotNull(
+            run?.takeIf { store.isStale(it) }?.let {
+                PreviewGalleryBundle.message("verify.staleResult", DateFormatUtil.formatPrettyDateTime(it.ranAtMillis))
+            },
+            missing.takeIf { it.isNotEmpty() }
+                ?.let { PreviewGalleryBundle.message("render.referenceUnreadable", it.joinToString(", ")) },
+        )
+        return parts.takeIf { it.isNotEmpty() }?.joinToString(" · ")
     }
 
     /**
@@ -877,7 +932,12 @@ class PreviewGalleryPanel(
             missing += PreviewGalleryBundle.message("verify.diff")
         }
         for ((label, path) in sources) {
-            val image = runCatching { ImageIO.read(File(path)) }.getOrNull()
+            val image = try {
+                ImageIO.read(File(path))
+            } catch (e: IOException) {
+                thisLogger().warn("Could not read verify image $path", e)
+                null
+            }
             if (image == null) missing += label else images += ReferenceStripView.LabelledImage(label, image)
         }
         return images to missing
@@ -898,7 +958,7 @@ class PreviewGalleryPanel(
                 if (disposalCheck.isDisposed) return@invokeLater
                 if (selectedSnapshotEntry()?.id != snapshot.id) return@invokeLater
                 if (unmeasuredRun(snapshot.moduleName) != null) return@invokeLater
-                renderPanel.showVerified(snapshot, images, missing.takeIf { it.isNotEmpty() }?.joinToString(", "))
+                renderPanel.showVerified(snapshot, images, verifyMessage(snapshot.moduleName, missing))
             }, modality)
         }
     }
@@ -908,7 +968,7 @@ class PreviewGalleryPanel(
      *  same trade-off, same reason: the test seam needs routing finished by the time it returns. */
     private fun publishVerifiedResultSynchronously(snapshot: PreviewEntry, result: SnapshotVerifyResults.SnapshotResult) {
         val (images, missing) = decodeVerifyImages(result)
-        renderPanel.showVerified(snapshot, images, missing.takeIf { it.isNotEmpty() }?.joinToString(", "))
+        renderPanel.showVerified(snapshot, images, verifyMessage(snapshot.moduleName, missing))
     }
 
     /** The rows whose goldens the current selection should show, or empty when it should render instead. The one

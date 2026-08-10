@@ -11,6 +11,7 @@ import com.intellij.openapi.externalSystem.model.task.ExternalSystemTaskId
 import com.intellij.openapi.externalSystem.model.task.ExternalSystemTaskNotificationListener
 import com.intellij.openapi.externalSystem.model.task.ExternalSystemTaskType
 import com.intellij.openapi.externalSystem.service.execution.ProgressExecutionMode
+import com.intellij.openapi.externalSystem.service.internal.ExternalSystemExecuteTaskTask
 import com.intellij.openapi.externalSystem.service.internal.ExternalSystemProcessingManager
 import com.intellij.openapi.externalSystem.service.notification.ExternalSystemProgressNotificationManager
 import com.intellij.openapi.externalSystem.task.TaskCallback
@@ -94,9 +95,10 @@ class SnapshotVerifyRunner(private val project: Project) : Disposable {
         val myGeneration = generation.incrementAndGet()
         cancelCurrent()
 
+        val submittedTasks = listOf(target.taskPath)
         val settings = ExternalSystemTaskExecutionSettings().apply {
             externalProjectPath = target.projectPath
-            taskNames = listOf(target.taskPath)
+            taskNames = submittedTasks
             externalSystemIdString = GradleConstants.SYSTEM_ID.id
             scriptParameters = GATE_FLAG
         }
@@ -111,7 +113,8 @@ class SnapshotVerifyRunner(private val project: Project) : Disposable {
         // overriding a newer overload instead would silently stop this run from ever being tracked.
         @Suppress("OVERRIDE_DEPRECATION")
         val listener = object : ExternalSystemTaskNotificationListener {
-            override fun onStart(id: ExternalSystemTaskId) = onTaskStarted(id, myGeneration, taskIdForThisRun)
+            override fun onStart(id: ExternalSystemTaskId) =
+                onTaskStarted(id, myGeneration, taskIdForThisRun, submittedTasks)
         }
         val callback = object : TaskCallback {
             override fun onSuccess() = finish(myGeneration, listener, notifications, Outcome.RAN, started, onDone)
@@ -149,31 +152,32 @@ class SnapshotVerifyRunner(private val project: Project) : Disposable {
     /**
      * [ExternalSystemProgressNotificationManager] is an application-level bus — it notifies of every
      * external-system task for every open project, not just the one this run launched. So [id] is trusted only
-     * once confirmed to be our own Gradle execute-task for this project, and even then [taskIdForThisRun] lets
-     * only the first such notification claim it: a second, unrelated Gradle task starting in this project while
-     * this run is still in flight — a [BuildService] compile, or the user's own Gradle invocation — must not be
-     * able to overwrite the task this run is actually tracking.
+     * once it is *confirmed* to be this run's own task: a Gradle execute-task, for this project, whose submitted
+     * task names are the ones [verify] put in [ExternalSystemTaskExecutionSettings.taskNames] (see [isOurTask]).
      *
-     * The claim happens *before* the generation check below is allowed to cancel anything, not after. A run this
-     * service has already superseded keeps its listener registered for as long as its own Gradle task takes to
-     * finish — for a run superseded before its task ever started, that is the task's *entire* duration. If the
-     * generation check ran first, every unrelated [ExternalSystemTaskId] arriving during that whole window would
-     * get cancelled outright, including a [BuildService] compile or the user's own Gradle run — worse than the
-     * hijack this method exists to prevent. Claiming first caps the damage at one: a superseded run can cancel at
-     * most the single id it claims, and only when that id turns out to be its own late task rather than someone
-     * else's. The cost is a superseded run that claims a foreign id first: its own real task then never gets
-     * cancelled and runs to completion untracked. That is wasted work, not a cancelled build, and is the
-     * intended trade-off — do not reorder these two checks back the other way.
+     * Matching on the project alone is not enough, and the window where it goes wrong is wide open rather than
+     * theoretical. [GATE_FLAG] invalidates Gradle's configuration cache, so this run's own task can take seconds
+     * to minutes to start, and the listener is registered before [ExternalSystemUtil.runTask] is even called.
+     * Any Gradle task starting in that window — a [BuildService] compile the user's next preview selection
+     * triggers, or an `assemble` they started themselves — would otherwise be claimed as this run's, and the next
+     * [verify]'s [cancelCurrent] would cancel *that* task while the real verify ran untracked.
+     *
+     * [taskIdForThisRun] still lets only the first confirmed notification claim the run, so a second verify task
+     * (the user's own `validate…` invocation, with the same task names) cannot displace the one being tracked.
+     * An id that cannot be confirmed is neither claimed nor cancelled — a task this service did not start is
+     * never this service's to stop.
      */
     private fun onTaskStarted(
         id: ExternalSystemTaskId,
         myGeneration: Long,
         taskIdForThisRun: AtomicReference<ExternalSystemTaskId?>,
+        taskNames: List<String>,
     ) {
         try {
             if (id.type != ExternalSystemTaskType.EXECUTE_TASK) return
             if (id.projectSystemId != GradleConstants.SYSTEM_ID) return
             if (id.findProject() != project) return
+            if (!isOurTask(id, taskNames)) return
             if (!taskIdForThisRun.compareAndSet(null, id)) return
             if (generation.get() != myGeneration) cancelTaskId(id) else currentTaskId.set(id)
         } catch (e: ProcessCanceledException) {
@@ -201,6 +205,30 @@ class SnapshotVerifyRunner(private val project: Project) : Disposable {
 
     private fun cancelCurrent() {
         currentTaskId.getAndSet(null)?.let { cancelTaskId(it) }
+    }
+
+    /**
+     * Whether [id] names a task this service submitted, rather than any other Gradle task the shared
+     * notification bus happens to be reporting.
+     *
+     * [ExternalSystemProcessingManager] hands back the task object itself — registered before the task's own
+     * `onStart` is broadcast, verified against this IDE's jars — and an execute-task's
+     * [ExternalSystemExecuteTaskTask.getTasksToExecute] is a verbatim copy of the
+     * [ExternalSystemTaskExecutionSettings.taskNames] it was built from, so comparing the two answers the
+     * question exactly. Anything this cannot confirm — a lookup that fails, a task of another shape, an id
+     * already released — is not ours, and an id that is not ours is never claimed and never cancelled.
+     */
+    private fun isOurTask(id: ExternalSystemTaskId, taskNames: List<String>): Boolean = try {
+        val task = ExternalSystemProcessingManager.getInstance().findTask(id)
+        task is ExternalSystemExecuteTaskTask && task.tasksToExecute == taskNames
+    } catch (e: ProcessCanceledException) {
+        throw e
+    } catch (e: Exception) {
+        thisLogger().warn("Failed to confirm whether Gradle task $id belongs to this verify", e)
+        false
+    } catch (e: LinkageError) {
+        thisLogger().warn("The Gradle task-lookup API is incompatible with this IDE build", e)
+        false
     }
 
     private fun cancelTaskId(id: ExternalSystemTaskId) {

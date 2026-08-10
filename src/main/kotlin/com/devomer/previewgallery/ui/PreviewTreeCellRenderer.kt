@@ -88,9 +88,10 @@ class PreviewTreeCellRenderer(private val project: Project? = null) : ColoredTre
                 // variant differs is worth flagging regardless of what `small` did.
                 val store = project?.let { SnapshotVerifyStore.getInstance(it) }
                 val verify = store?.forModule(node.row.moduleName)
-                val failed = verify?.results.orEmpty()
-                    .any { it.methodName == node.row.indexed.functionName && it.status == SnapshotVerifyResults.Status.FAILED }
-                if (failed && store != null && verify != null) {
+                if (store != null && verify != null && verify.results.any {
+                        it.methodName == node.row.indexed.functionName && it.status == SnapshotVerifyResults.Status.FAILED
+                    }
+                ) {
                     val label = if (store.isStale(verify)) {
                         "${PreviewGalleryBundle.message("verify.differs")} · ${PreviewGalleryBundle.message("verify.stale")}"
                     } else {
