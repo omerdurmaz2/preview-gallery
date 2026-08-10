@@ -3,7 +3,6 @@ package com.devomer.previewgallery.ui
 import com.devomer.previewgallery.PreviewGalleryBundle
 import com.devomer.previewgallery.model.PreviewEntry
 import com.devomer.previewgallery.model.PreviewSourceLocation
-import com.devomer.previewgallery.model.ReferenceImage
 import com.devomer.previewgallery.render.BuildService
 import com.devomer.previewgallery.render.EphemeralPickerBridge
 import com.devomer.previewgallery.render.LiveRenderer
@@ -13,10 +12,7 @@ import com.devomer.previewgallery.render.RenderPipeline
 import com.devomer.previewgallery.render.RenderState
 import com.devomer.previewgallery.search.PreviewCoverageFilter
 import com.devomer.previewgallery.search.PreviewModuleFilter
-import com.devomer.previewgallery.service.ModuleDirectoryResolver
 import com.devomer.previewgallery.service.PreviewIndexService
-import com.devomer.previewgallery.service.ReferenceImageLocator
-import com.devomer.previewgallery.service.ReferenceRoots
 import com.intellij.ide.CommonActionsManager
 import com.intellij.ide.DefaultTreeExpander
 import com.intellij.ide.TreeExpander
@@ -26,7 +22,6 @@ import com.intellij.openapi.actionSystem.DefaultActionGroup
 import com.intellij.openapi.application.ApplicationManager
 import com.intellij.openapi.application.ModalityState
 import com.intellij.openapi.application.ReadAction
-import com.intellij.openapi.diagnostic.thisLogger
 import com.intellij.openapi.fileEditor.OpenFileDescriptor
 import com.intellij.openapi.progress.ProcessCanceledException
 import com.intellij.openapi.project.DumbService
@@ -51,9 +46,6 @@ import java.awt.BorderLayout
 import java.awt.event.KeyAdapter
 import java.awt.event.KeyEvent
 import java.awt.event.MouseEvent
-import java.awt.image.BufferedImage
-import java.io.IOException
-import javax.imageio.ImageIO
 import javax.swing.JTree
 import javax.swing.event.DocumentEvent
 import javax.swing.tree.DefaultMutableTreeNode
@@ -129,6 +121,8 @@ class PreviewGalleryPanel(
     private var restoringSelection = false
 
     private val moduleTracker = ActiveModuleTracker(project, parentDisposable) { applyFilter() }
+
+    private val referenceLoader = ReferenceStripLoader(project, parentDisposable, disposalCheck)
 
     /** PG11-2: indexing a large project takes several dumb→smart transitions, and [reload]'s own
      *  `runWhenSmart` only rides the first one — so the tree used to cache whatever fraction of the index
@@ -649,11 +643,11 @@ class PreviewGalleryPanel(
      * cancellation semantics then cannot drift from the preview-to-preview switch's.
      *
      * [deferReferenceLookup] is false only for [selectByLabelPathForTest], which needs the routing to have
-     * finished by the time it returns — so it calls [resolveReferences] and [decodeReferences] directly, on
-     * whatever thread the test runs on, instead of going through [loadReferences]'s background hop and debounce.
-     * Both paths now run the very same [resolveReferences] rather than each keeping their own copy of its three
-     * steps in sync by hand. Production always defers, keeping the lookup and the PNG decode off the EDT and
-     * behind the selection debounce.
+     * finished by the time it returns — so it calls [ReferenceStripLoader.locate] and [ReferenceStripLoader.decode]
+     * directly, on whatever thread the test runs on, instead of going through [loadReferences]'s background hop
+     * and debounce. Both paths now run the very same [ReferenceStripLoader.locate] rather than each keeping their
+     * own copy of its three steps in sync by hand. Production always defers, keeping the lookup and the PNG
+     * decode off the EDT and behind the selection debounce.
      */
     private fun routeSelection(deferReferenceLookup: Boolean) {
         val snapshot = selectedSnapshotEntry()
@@ -663,8 +657,8 @@ class PreviewGalleryPanel(
             if (deferReferenceLookup) {
                 showReferenceImages(snapshot)
             } else {
-                val located = resolveReferences(snapshot)
-                publishReferences(snapshot, decodeReferences(located.images), located.tasks)
+                val located = referenceLoader.locate(snapshot)
+                publishReferences(snapshot, referenceLoader.decode(located), located.tasks)
             }
             return
         }
@@ -706,8 +700,8 @@ class PreviewGalleryPanel(
     }
 
     /**
-     * Runs [resolveReferences] and decodes its images, both on the same background executor, then hands the
-     * result to [publishReferences] on the EDT.
+     * Runs [ReferenceStripLoader.locate] and decodes its images, both on the same background executor, then hands
+     * the result to [publishReferences] on the EDT.
      *
      * Decoding stays outside every read action for the reason it always has (`RenderPipeline`'s own class doc
      * calls holding the read lock across long work "a prime freeze suspect"): `ImageIO.read` on two
@@ -717,13 +711,13 @@ class PreviewGalleryPanel(
         val modality = ModalityState.defaultModalityState()
         AppExecutorUtil.getAppExecutorService().execute {
             val located = try {
-                resolveReferences(snapshot)
+                referenceLoader.locate(snapshot)
             } catch (e: ProcessCanceledException) {
                 // The panel is gone, or a write action preempted the lookup. Nothing to publish and nothing to
                 // retry: the selection that would want this result is gone with it.
                 return@execute
             }
-            val decoded = decodeReferences(located.images)
+            val decoded = referenceLoader.decode(located)
             ApplicationManager.getApplication().invokeLater(
                 {
                     if (disposalCheck.isDisposed) return@invokeLater
@@ -735,105 +729,17 @@ class PreviewGalleryPanel(
     }
 
     /**
-     * Resolves [snapshot]'s module directory and locates its reference images under read actions, refreshing the
-     * reference directories **between** them without one.
-     *
-     * The three-way split is forced, not stylistic. `ModuleDirectoryResolver` reads the project model and needs
-     * the lock; `ReferenceRoots.refresh` is a synchronous VFS refresh, which the platform rejects under one; the
-     * listing needs it again.
-     *
-     * Callable from the EDT as well as a background thread — which is what lets [routeSelection]'s inline branch
-     * call this directly instead of mirroring its steps — but legal on each for a different reason: which thread
-     * calls [ReferenceRoots.refresh] is exactly what decides whether the call is legal, not merely whether a read
-     * lock is held. On the EDT the read lock **is** held, and the refresh runs anyway only because the platform
-     * exempts the EDT from the check that would otherwise reject it; off the EDT it runs only because this call
-     * sits between the two read actions below rather than inside either. Getting either wrong fails silently — a
-     * logged error, no refresh, no exception — so the panel would simply keep showing stale images forever
-     * instead of crashing; that silent failure mode, not a stylistic preference, is why the lookup stays split
-     * into three steps.
-     *
-     * Returns empty images and tasks when [snapshot] resolves to no module, or when [disposalCheck] fires
-     * between the two read actions: the panel that would show the result is gone, so the refresh and the second
-     * read action are both work nothing will use. Lets [ProcessCanceledException] propagate rather than
-     * catching it here; only [loadReferences] needs to react to it, and it already does.
-     *
-     * Deleting the [ReferenceRoots.refresh] call below breaks no automated test — steps 2-3 of the phase's
-     * manual gate are what actually cover it.
-     */
-    private fun resolveReferences(snapshot: PreviewEntry): LocatedReferences {
-        val moduleDirectory = ReadAction.nonBlocking<VirtualFile?> {
-            ModuleDirectoryResolver.resolve(project, snapshot.file)
-        }
-            .expireWith(parentDisposable)
-            .executeSynchronously()
-            ?: return LocatedReferences(emptyList(), emptyList())
-        if (disposalCheck.isDisposed) return LocatedReferences(emptyList(), emptyList())
-        ReferenceRoots.refresh(moduleDirectory)
-        return ReadAction.nonBlocking<LocatedReferences> { locateReferences(snapshot, moduleDirectory) }
-            .expireWith(parentDisposable)
-            .executeSynchronously()
-    }
-
-    /** What one lookup produced: the images to show, and the Gradle tasks to name when there are none. */
-    private data class LocatedReferences(val images: List<ReferenceImage>, val tasks: List<String>)
-
-    /**
      * EDT half of [showReferenceImages]. Dropped unless [snapshot] is *still* the selected row: arrow-keying down
      * a preview's snapshot children starts one decode per row, and a slower earlier one must not land on top of a
      * later selection — nor on top of a live render, if the user has moved back to a preview meanwhile. Re-reading
      * the tree's own selection is the whole guard; no separate generation counter can disagree with it. [tasks]
-     * passes straight through to [PreviewRenderPanel.showReference] — it is assembled in [locateReferences], the
-     * one place that already knows which roots exist.
+     * passes straight through to [PreviewRenderPanel.showReference] — it is assembled in `ReferenceStripLoader.locate`,
+     * the one place that already knows which roots exist.
      */
-    private fun publishReferences(snapshot: PreviewEntry, decoded: DecodedReferences, tasks: List<String>) {
+    private fun publishReferences(snapshot: PreviewEntry, decoded: ReferenceStripLoader.Decoded, tasks: List<String>) {
         if (selectedSnapshotEntry()?.id != snapshot.id) return
         renderPanel.showReference(snapshot, decoded.images, decoded.skipped, tasks)
     }
-
-    /**
-     * Finds [snapshot]'s committed reference images under [moduleDirectory] (PG15 spec D3). **This** is the half
-     * that needs a read action: the VFS directory listing, and nothing else.
-     *
-     * Every discovered root contributes, and the tasks that would regenerate them are collected here rather than
-     * in the panel, because this is where the roots are known — the message has to name the module's own
-     * variants, not the `Debug` a library module happens to have.
-     */
-    private fun locateReferences(snapshot: PreviewEntry, moduleDirectory: VirtualFile): LocatedReferences {
-        val roots = ReferenceRoots.of(moduleDirectory)
-        return LocatedReferences(
-            images = ReferenceImageLocator.locate(snapshot, roots),
-            tasks = roots.mapNotNull { ReferenceRoots.updateTask(it.buildVariant) }.distinct().sorted(),
-        )
-    }
-
-    /** Decodes what [locateReferences] found — deliberately holding no read lock (see [loadReferences]); a
-     *  `VirtualFile`'s bytes are readable without one, and this is the slow half.
-     *
-     *  Labels come from [ReferenceImageLocator.labels], whose own KDoc states when one carries its source set. */
-    private fun decodeReferences(references: List<ReferenceImage>): DecodedReferences {
-        val images = mutableListOf<ReferenceStripView.LabelledImage>()
-        val skipped = mutableListOf<String>()
-        for ((reference, label) in references.zip(ReferenceImageLocator.labels(references))) {
-            val image = readImage(reference.file)
-            if (image == null) {
-                skipped += label
-            } else {
-                images += ReferenceStripView.LabelledImage(label, image)
-            }
-        }
-        return DecodedReferences(images, skipped)
-    }
-
-    /** null when the PNG cannot be read: `ImageIO.read` returns null for a stream no decoder recognises and
-     *  throws for an IO failure. Either way that one variant is skipped and reported, never fatal — the other
-     *  variants still show (spec's error-handling table). */
-    private fun readImage(file: VirtualFile): BufferedImage? =
-        try {
-            file.inputStream.use { ImageIO.read(it) }
-        } catch (e: IOException) {
-            thisLogger().warn("Could not read reference image ${file.path}", e)
-            null
-        }
 
     /**
      * Double-click / Enter: opens the selected row's source.
@@ -952,13 +858,6 @@ class PreviewGalleryPanel(
 
     /** The two halves of one index read, kept together by [loadRows]. */
     private data class LoadedRows(val previews: List<PreviewEntry>, val orphans: List<PreviewEntry>)
-
-    /** What [decodeReferences] found: the variants it could decode, and the ones it could not — reported in the
-     *  strip's tooltip rather than dropped silently. */
-    private data class DecodedReferences(
-        val images: List<ReferenceStripView.LabelledImage>,
-        val skipped: List<String>,
-    )
 
     private companion object {
         const val SEARCH_DEBOUNCE_MS = 150
