@@ -200,7 +200,11 @@ class BuildService(private val project: Project) : Disposable {
      */
     private fun isOurTask(id: ExternalSystemTaskId, taskNames: List<String>): Boolean = try {
         val task = ExternalSystemProcessingManager.getInstance().findTask(id)
-        task is ExternalSystemExecuteTaskTask && task.tasksToExecute == taskNames
+        val ours = task is ExternalSystemExecuteTaskTask && task.tasksToExecute == taskNames
+        if (!ours) thisLogger().debug("Ignoring Gradle task $id: not a task this build submitted")
+        ours
+    } catch (e: ProcessCanceledException) {
+        throw e
     } catch (e: Exception) {
         thisLogger().warn("Failed to confirm whether Gradle task $id belongs to this build", e)
         false

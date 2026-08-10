@@ -791,13 +791,16 @@ class PreviewGalleryPanel(
      * runner's gate flag. [needsVerify] is what stops that: an answer this module already has, or is already
      * computing, is not asked for again.
      *
-     * [force] is the toolbar action ([VerifySnapshotsAction]) — the user asking directly, which always runs.
+     * [force] is the toolbar action ([VerifySnapshotsAction]) — the user asking directly. It skips [needsVerify]
+     * so the run always happens, and travels on to [SnapshotVerifyStore.resolve] as `explicit`, which is what
+     * makes a run that measured nothing still say so: a button press that publishes nothing and changes nothing
+     * on screen is indistinguishable from a broken button.
      */
     private fun startVerify(snapshot: PreviewEntry?, force: Boolean) {
         verifyAlarm.cancelAllRequests()
         if (snapshot == null) return
         if (!force && !needsVerify(snapshot.moduleName)) return
-        verifyAlarm.addRequest({ runVerify() }, RenderPipeline.DEBOUNCE_MS)
+        verifyAlarm.addRequest({ runVerify(explicit = force) }, RenderPipeline.DEBOUNCE_MS)
     }
 
     /**
@@ -815,7 +818,7 @@ class PreviewGalleryPanel(
         return run.outcome != SnapshotVerifyRunner.Outcome.RAN || store.isStale(run)
     }
 
-    private fun runVerify() {
+    private fun runVerify(explicit: Boolean) {
         val target = verifyTarget() ?: return
         val store = SnapshotVerifyStore.getInstance(project)
         // Captured before the task launches, not when it completes: an edit landing mid-run must make the
@@ -835,6 +838,7 @@ class PreviewGalleryPanel(
                 ranAtMillis = started?.startedAtMillis ?: System.currentTimeMillis(),
                 psiStamp = psiStamp,
                 previous = store.forModule(target.moduleName),
+                explicit = explicit,
             )?.let(store::put)
             ApplicationManager.getApplication().invokeLater({
                 if (verifyInFlightModule == target.moduleName) verifyInFlightModule = null

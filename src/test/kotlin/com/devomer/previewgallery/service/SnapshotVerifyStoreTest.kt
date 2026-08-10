@@ -106,6 +106,7 @@ class SnapshotVerifyStoreTest : BasePlatformTestCase() {
         outcome: SnapshotVerifyRunner.Outcome,
         results: List<SnapshotVerifyResults.SnapshotResult>,
         previous: SnapshotVerifyStore.Run? = null,
+        explicit: Boolean = false,
     ) = SnapshotVerifyStore.resolve(
         moduleName = "app.resolve",
         outcome = outcome,
@@ -113,6 +114,7 @@ class SnapshotVerifyStoreTest : BasePlatformTestCase() {
         ranAtMillis = 1_000L,
         psiStamp = 7L,
         previous = previous,
+        explicit = explicit,
     )
 
     private fun oneResult(status: SnapshotVerifyResults.Status = SnapshotVerifyResults.Status.PASSED) = listOf(
@@ -196,6 +198,54 @@ class SnapshotVerifyStoreTest : BasePlatformTestCase() {
         val previous = run(moduleName = "app.resolve", stale = true)
 
         assertNull(resolve(SnapshotVerifyRunner.Outcome.RAN, emptyList(), previous = previous))
+    }
+
+    fun `test resolve publishes an explicit run that measured nothing over an earlier one`() {
+        // The toolbar's own Verify: silence is an acceptable answer to a question nobody asked, never to a
+        // button press, so this outcome replaces the earlier run rather than leaving it standing.
+        val resolved = requireNotNull(
+            resolve(
+                SnapshotVerifyRunner.Outcome.RAN,
+                emptyList(),
+                previous = run(moduleName = "app.resolve"),
+                explicit = true,
+            ),
+        )
+
+        assertEquals(SnapshotVerifyRunner.Outcome.BUILD_FAILED, resolved.outcome)
+        assertTrue(resolved.results.isEmpty())
+    }
+
+    fun `test resolve publishes an explicit run that never started over an earlier one`() {
+        val resolved = requireNotNull(
+            resolve(
+                SnapshotVerifyRunner.Outcome.NOT_RUN,
+                emptyList(),
+                previous = run(moduleName = "app.resolve"),
+                explicit = true,
+            ),
+        )
+
+        assertEquals(SnapshotVerifyRunner.Outcome.NOT_RUN, resolved.outcome)
+    }
+
+    fun `test resolve treats an explicit and an automatic run that measured nothing differently`() {
+        val previous = run(moduleName = "app.resolve")
+
+        val automatic = resolve(SnapshotVerifyRunner.Outcome.RAN, emptyList(), previous = previous, explicit = false)
+        val explicit = resolve(SnapshotVerifyRunner.Outcome.RAN, emptyList(), previous = previous, explicit = true)
+
+        assertNull(automatic)
+        assertNotNull(explicit)
+    }
+
+    fun `test resolve stores the same run for an explicit and an automatic run that measured something`() {
+        val previous = run(moduleName = "app.resolve", methodName = "Widget_Old_Snapshot")
+
+        val automatic = resolve(SnapshotVerifyRunner.Outcome.RAN, oneResult(), previous = previous, explicit = false)
+        val explicit = resolve(SnapshotVerifyRunner.Outcome.RAN, oneResult(), previous = previous, explicit = true)
+
+        assertEquals(automatic, explicit)
     }
 
     fun `test validateTask names the sibling of ReferenceRoots#updateTask`() {

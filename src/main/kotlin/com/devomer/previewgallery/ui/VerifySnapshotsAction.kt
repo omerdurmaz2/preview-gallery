@@ -17,9 +17,10 @@ import com.intellij.openapi.project.DumbAware
  * the user is the display layer's job, not this action's. Hidden rather than disabled when there is nothing to
  * verify, matching this panel's own convention.
  *
- * `AllIcons.Actions.Diff` rather than the `Refresh` this first used: [RefreshAction] sits three slots away in the
- * same toolbar with that icon, and two buttons that look identical and do unrelated things is worse than a less
- * obvious glyph. Comparing a golden against what the run produced is also what this actually asks Gradle for.
+ * `AllIcons.Actions.Execute` rather than `Refresh` or `Diff`, both of which are already on screen next to it:
+ * [RefreshAction] three slots away in this toolbar, and `PreviewRenderPanel.ShowReferenceAction` in the render
+ * pane's toolbar, which the tool window shows at the same time. Two buttons that look identical and do unrelated
+ * things is worse than a less obvious glyph — and running a Gradle task is what this literally does.
  */
 class VerifySnapshotsAction(
     private val onVerify: () -> Unit,
@@ -27,7 +28,7 @@ class VerifySnapshotsAction(
 ) : AnAction(
     PreviewGalleryBundle.message("action.verifySnapshots.text"),
     PreviewGalleryBundle.message("action.verifySnapshots.text"),
-    AllIcons.Actions.Diff,
+    AllIcons.Actions.Execute,
 ), DumbAware {
 
     override fun actionPerformed(event: AnActionEvent) = onVerify()

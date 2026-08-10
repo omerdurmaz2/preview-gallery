@@ -72,14 +72,21 @@ class SnapshotVerifyStore(private val project: Project) {
          * from a compile failure would mean parsing Gradle's output, and both answer the user the same way.
          *
          * "Measured nothing" is not evidence that [previous] is wrong, though, and that is why an empty result
-         * set never overwrites one. Two ordinary paths reach it with a perfectly good earlier run on record: the
-         * user pressing Stop (the spec's error table: *run cancelled → nothing published, the previous result
-         * stays*), and Gradle passing the task UP-TO-DATE on a second run over unchanged sources, which rewrites
-         * no XML and so fails [SnapshotVerifyResults]' timestamp guard. Publishing [SnapshotVerifyRunner.Outcome.
-         * BUILD_FAILED] for either would drop a green module's badge on its normal second verify.
+         * set never overwrites one — *unless* [explicit]. Two ordinary paths reach it with a perfectly good
+         * earlier run on record: the user pressing Stop (the spec's error table: *run cancelled → nothing
+         * published, the previous result stays*), and Gradle passing the task UP-TO-DATE on a second run over
+         * unchanged sources, which rewrites no XML and so fails [SnapshotVerifyResults]' timestamp guard.
+         * Publishing [SnapshotVerifyRunner.Outcome.BUILD_FAILED] for either would drop a green module's badge on
+         * its normal second verify.
          *
          * [previous] going stale does not change that: a stale verdict is still the best one there is, and
          * [isStale] is what says so at the point it is shown.
+         *
+         * [explicit] — the user pressing Verify rather than the selection triggering one — inverts it, and must.
+         * Silence is an acceptable answer to a question nobody asked; it is never an acceptable answer to a
+         * button press. An explicit run that measured nothing publishes exactly that, so the pane can say
+         * "Not verified" or "Verify did not complete" instead of leaving the previous verdict standing as though
+         * the button had done nothing.
          */
         fun resolve(
             moduleName: String,
@@ -88,8 +95,9 @@ class SnapshotVerifyStore(private val project: Project) {
             ranAtMillis: Long,
             psiStamp: Long,
             previous: Run?,
+            explicit: Boolean,
         ): Run? {
-            if (results.isEmpty() && previous != null) return null
+            if (results.isEmpty() && previous != null && !explicit) return null
             val resolved = when {
                 results.isNotEmpty() -> SnapshotVerifyRunner.Outcome.RAN
                 outcome == SnapshotVerifyRunner.Outcome.NOT_RUN -> SnapshotVerifyRunner.Outcome.NOT_RUN
