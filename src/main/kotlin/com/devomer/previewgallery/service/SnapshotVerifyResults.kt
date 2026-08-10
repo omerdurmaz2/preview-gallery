@@ -3,6 +3,8 @@ package com.devomer.previewgallery.service
 import org.w3c.dom.Element
 import java.io.File
 import java.nio.file.Path
+import java.util.logging.Level
+import java.util.logging.Logger
 import javax.xml.XMLConstants
 import javax.xml.parsers.DocumentBuilderFactory
 
@@ -16,6 +18,11 @@ import javax.xml.parsers.DocumentBuilderFactory
  *
  * Deliberately free of `com.intellij` imports (spec D10): these results are the natural thing to serve over MCP
  * next, and nothing under `mcp/` may import platform classes.
+ *
+ * The **failing** shape is assumed, not observed. Only a passing `update` run existed when this was written, so
+ * [DIFF_IMAGE]'s property name and the `<failure>`-child check in `readCase` are taken from JUnit's convention
+ * rather than from a real mismatch. Both are deliberately single points of correction: the manual gate breaks a
+ * golden on purpose, reads the real failing XML, and fixes them here.
  */
 object SnapshotVerifyResults {
 
@@ -36,6 +43,8 @@ object SnapshotVerifyResults {
     private const val REF_IMAGE = "PreviewScreenshot.refImagePath"
     private const val NEW_IMAGE = "PreviewScreenshot.newImagePath"
     private const val DIFF_IMAGE = "PreviewScreenshot.diffImagePath"
+
+    private val logger = Logger.getLogger(SnapshotVerifyResults::class.java.name)
 
     /**
      * Every snapshot result in [resultsDirectory], ignoring files last modified before [startedAtMillis].
@@ -72,6 +81,7 @@ object SnapshotVerifyResults {
             val cases = document.getElementsByTagName("testcase")
             (0 until cases.length).mapNotNull { index -> (cases.item(index) as? Element)?.let(::readCase) }
         } catch (e: Exception) {
+            logger.log(Level.WARNING, "Failed to parse snapshot verify results file: ${file.name}", e)
             emptyList()
         }
 
@@ -79,8 +89,9 @@ object SnapshotVerifyResults {
         val properties = propertiesOf(case)
         val methodName = properties[METHOD_NAME] ?: return null
         val variant = properties[PREVIEW_NAME] ?: return null
-        // A <failure> child is what marks a mismatch; its absence is a pass. Checked by presence rather than by
-        // the testsuite's failures= count, because that count is per facade class and this is per snapshot.
+        // Presence of a <failure> child is taken as the mismatch marker — assumption noted in the class KDoc.
+        // Checked by presence rather than the testsuite's failures= count, because that count is per facade
+        // class and this is per snapshot.
         val failed = case.getElementsByTagName("failure").length > 0
         return SnapshotResult(
             methodName = methodName,
