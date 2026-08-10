@@ -2,6 +2,7 @@ package com.devomer.previewgallery.render
 
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
+import org.junit.Assert.assertNull
 import org.junit.Assert.assertTrue
 import org.junit.Rule
 import org.junit.Test
@@ -80,8 +81,10 @@ class ModuleFreshnessTest {
     // ── newestSourceMtime ────────────────────────────────────────────────────────────────────────────
 
     @Test
-    fun `a module with no source roots at all has no source mtime`() {
-        assertEquals(0L, ModuleFreshness.newestSourceMtime(emptyList(), buildOutputRoot = null))
+    fun `a module with no source roots at all has no source clock, not a zero one`() {
+        // Null, not 0: "nothing found" must not be spelled the same way as "nothing has changed", because
+        // SnapshotVerifyStore reads the first as stale and the second as fresh.
+        assertNull(ModuleFreshness.newestSourceMtime(emptyList(), buildOutputRoot = null))
     }
 
     @Test
@@ -93,9 +96,7 @@ class ModuleFreshnessTest {
         val generated = File(buildRoot, "generated/source/buildConfig").apply { mkdirs() }
         File(generated, "BuildConfig.java").apply { createNewFile() }.setLastModified(DISTINCTIVE_MTIME)
 
-        val newest = ModuleFreshness.newestSourceMtime(listOf(generated), buildOutputRoot = buildRoot)
-
-        assertEquals(0L, newest)
+        assertNull(ModuleFreshness.newestSourceMtime(listOf(generated), buildOutputRoot = buildRoot))
     }
 
     @Test
@@ -106,7 +107,7 @@ class ModuleFreshnessTest {
 
         val newest = ModuleFreshness.newestSourceMtime(listOf(sources), buildOutputRoot = buildRoot)
 
-        assertEquals(DISTINCTIVE_MTIME, newest)
+        assertEquals(DISTINCTIVE_MTIME, requireNotNull(newest))
     }
 
     @Test
@@ -117,7 +118,10 @@ class ModuleFreshnessTest {
         val deep = File(sources, "com/example/features/favorites/ui/list/item/detail").apply { mkdirs() }
         File(deep, "Row.kt").apply { createNewFile() }.setLastModified(DISTINCTIVE_MTIME)
 
-        assertEquals(DISTINCTIVE_MTIME, ModuleFreshness.newestSourceMtime(listOf(sources), buildOutputRoot = null))
+        assertEquals(
+            DISTINCTIVE_MTIME,
+            requireNotNull(ModuleFreshness.newestSourceMtime(listOf(sources), buildOutputRoot = null)),
+        )
     }
 
     @Test
@@ -129,7 +133,7 @@ class ModuleFreshnessTest {
 
         assertEquals(
             DISTINCTIVE_MTIME,
-            ModuleFreshness.newestSourceMtime(listOf(older, newer), buildOutputRoot = null),
+            requireNotNull(ModuleFreshness.newestSourceMtime(listOf(older, newer), buildOutputRoot = null)),
         )
     }
 

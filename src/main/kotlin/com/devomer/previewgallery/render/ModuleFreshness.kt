@@ -1,5 +1,6 @@
 package com.devomer.previewgallery.render
 
+import com.devomer.previewgallery.service.SnapshotSourceScanner
 import com.intellij.openapi.application.ReadAction
 import com.intellij.openapi.diagnostic.thisLogger
 import com.intellij.openapi.module.Module
@@ -44,63 +45,88 @@ object ModuleFreshness {
      * [invalidate].
      */
     fun isModuleFresh(module: Module): Boolean {
-        cached(module)?.let { return it }
+        cached(freshnessCache, module.name)?.let { return it.value }
 
         val roots = ReadAction.compute<ModuleRoots, RuntimeException> { resolveRoots(module) }
         val newestSource = roots.sourceRoots.maxOfOrNull { newestMtimeBounded(it) } ?: 0L
         val newestClass = roots.outputRoot?.let { newestMtimeBounded(it) } ?: 0L
         val fresh = isFresh(newestSource, newestClass)
 
-        cache[module.name] = CacheEntry(System.currentTimeMillis(), fresh)
+        freshnessCache[module.name] = CacheEntry(System.currentTimeMillis(), fresh)
         return fresh
     }
 
     /**
-     * The newest mtime among [module]'s own source files, or 0 when it has none.
+     * The newest mtime among the sources of [module] a human edits, or null when there are none to read — an
+     * unknown, which callers must not spell the same way as "nothing has changed".
      *
      * A different question from [isModuleFresh]'s: that one asks whether the compiled output is current, this one
      * asks when the human last changed the code. [com.devomer.previewgallery.service.SnapshotVerifyStore] compares
      * it against when a verify started.
      *
-     * Source roots under the module's Gradle `build` directory are dropped, and that exclusion is the entire
-     * reason this is not a one-line call to [newestMtimeBounded] over [ModuleRootManager.getSourceRoots]: AGP
-     * registers `build/generated/…` as source roots, so a build writing `BuildConfig.java` would otherwise be
-     * indistinguishable from the user typing — the same confusion between build churn and an edit that made
-     * `PsiModificationTracker` unusable for this.
+     * Three things this is not, each of which was wrong once:
      *
-     * Unbounded, unlike [isModuleFresh]'s scan. [MAX_SCAN_DEPTH] exists for the enormous class-file tree a build
-     * produces, and a module's own source tree is nothing like that size; more to the point, a deep-package edit
-     * missed by a depth cap would let a verify result that no longer describes the code claim to be fresh, and
-     * that claim is the one thing this must never make.
+     * - **Not [ModuleRootManager.getSourceRoots] alone.** AGP registers `build/generated/…` as source roots, so a
+     *   build writing `BuildConfig.java` would be indistinguishable from the user typing — the same confusion
+     *   between build churn and an edit that made `PsiModificationTracker` unusable for this. Roots under the
+     *   module's Gradle build directory are dropped.
+     * - **Not the module's source roots only.** The `@PreviewTest` functions a verify measures live under
+     *   `src/screenshotTest`, which a project synced without `-Pandroid.experimental.enableScreenshotTest=true`
+     *   need not model as a source set at all — so no module has it as a source root and editing the snapshot
+     *   test itself would leave a completed run reading fresh. [SnapshotSourceScanner.probe] is reused rather
+     *   than reimplemented so the directory is found by exactly the rule that attributes its rows.
+     * - **Not bounded**, unlike [isModuleFresh]'s scan. [MAX_SCAN_DEPTH] exists for the enormous class-file tree
+     *   a build produces, and a source tree is nothing like that size; a deep-package edit missed by a depth cap
+     *   would let a verify result that no longer describes the code claim to be fresh.
+     *
+     * Cached for [CACHE_TTL_MS], because `PreviewTreeCellRenderer` asks per painted row inside Swing's own paint
+     * callback and `runVerify` repaints the tree the moment a run publishes — uncached, a failing module's rows
+     * would each walk its whole source tree on the EDT. [isModuleFresh] already accepts exactly this trade on
+     * exactly this data: the TTL self-corrects, so an edit is seen a few seconds later at worst.
      *
      * Callable off the EDT and outside a read action, exactly like [isModuleFresh]: the project-model half takes
-     * its own short read action and the filesystem walk that follows holds no lock. Deliberately uncached — its
-     * caller asks once per settled selection, not once per painted row, and a cache would have to be invalidated
-     * by the very edits this exists to notice.
+     * its own short read action and the filesystem walk that follows holds no lock.
+     *
+     * Two ceilings recorded rather than defended against. The comparison downstream is mtime against a wall
+     * clock, where the old one was mtime against mtime, so sources on a network mount served by a skewed clock
+     * read permanently stale or permanently fresh. And the build-directory exclusion is lexical: a module with a
+     * custom `layout.buildDirectory` defeats it and silently reproduces the original always-stale symptom. The
+     * platform's own generated-source flag on the source folder would not care where the build directory is, but
+     * it is not a like-for-like swap — a Gradle import does not put `JavaSourceRootProperties` on every root this
+     * has to judge — so it is noted here rather than half-built.
      */
-    fun newestModuleSourceMtime(module: Module): Long {
+    fun newestModuleSourceMtime(module: Module): Long? {
+        cached(sourceMtimeCache, module.name)?.let { return it.value }
+
         val roots = ReadAction.compute<ModuleRoots, RuntimeException> { resolveRoots(module) }
-        return newestSourceMtime(roots.sourceRoots, roots.outputRoot)
+        val newest = newestSourceMtime(
+            roots.sourceRoots + listOfNotNull(roots.snapshotSourceRoot),
+            roots.outputRoot,
+        )
+
+        sourceMtimeCache[module.name] = CacheEntry(System.currentTimeMillis(), newest)
+        return newest
     }
 
     /** The pure half of [newestModuleSourceMtime] — see its doc for why [buildOutputRoot]'s descendants are
-     *  excluded rather than scanned. */
-    internal fun newestSourceMtime(sourceRoots: List<File>, buildOutputRoot: File?): Long {
+     *  excluded rather than scanned, and why nothing found reads as null rather than as 0. */
+    internal fun newestSourceMtime(sourceRoots: List<File>, buildOutputRoot: File?): Long? {
         val excluded = buildOutputRoot?.toPath()
         return sourceRoots
             .filterNot { excluded != null && it.toPath().startsWith(excluded) }
             .maxOfOrNull { newestMtimeBounded(it, Int.MAX_VALUE) }
-            ?: 0L
+            ?.takeIf { it > 0L }
     }
 
     /**
-     * Drops the cached verdict for [module], if any. [RenderPipeline] calls this right after a successful
+     * Drops the cached verdicts for [module], if any. [RenderPipeline] calls this right after a successful
      * build, so a selection in the same module moments later (still inside [CACHE_TTL_MS]) re-derives
      * freshness from the just-updated output instead of replaying the pre-build "stale" verdict that triggered
      * that very build.
      */
     fun invalidate(module: Module) {
-        cache.remove(module.name)
+        freshnessCache.remove(module.name)
+        sourceMtimeCache.remove(module.name)
     }
 
     /** A few seconds: long enough that arrow-keying through several previews in one module hits the cache,
@@ -111,29 +137,37 @@ object ModuleFreshness {
      *  see that function's doc for the trade-off this accepts. */
     private const val MAX_SCAN_DEPTH = 8
 
-    private class CacheEntry(val computedAtMs: Long, val fresh: Boolean)
-    private class ModuleRoots(val sourceRoots: List<File>, val outputRoot: File?)
+    private class CacheEntry<T>(val computedAtMs: Long, val value: T)
+    private class ModuleRoots(val sourceRoots: List<File>, val outputRoot: File?, val snapshotSourceRoot: File?)
 
-    private val cache = ConcurrentHashMap<String, CacheEntry>()
+    private val freshnessCache = ConcurrentHashMap<String, CacheEntry<Boolean>>()
+    private val sourceMtimeCache = ConcurrentHashMap<String, CacheEntry<Long?>>()
 
     // Keyed by module name (like the rest of this plugin — see PreviewEntry.moduleName), not by the Module
     // instance: ModuleFreshness is an application-wide object, and holding Module references here would pin
     // them past project close.
-    private fun cached(module: Module): Boolean? {
-        val entry = cache[module.name] ?: return null
+    //
+    // Returns the entry rather than its value so a cached null — "this module has no source clock" — is still a
+    // hit, and does not walk the tree again on every painted row.
+    private fun <T> cached(cache: ConcurrentHashMap<String, CacheEntry<T>>, moduleName: String): CacheEntry<T>? {
+        val entry = cache[moduleName] ?: return null
         if (System.currentTimeMillis() - entry.computedAtMs > CACHE_TTL_MS) {
-            cache.remove(module.name)
+            cache.remove(moduleName)
             return null
         }
-        return entry.fresh
+        return entry
     }
 
-    /** Project-model reads only (the module root model, plus the already-cached Gradle sync data node) — no
-     *  filesystem access, so this is a short, cheap read action, not the multi-second walk that used to run
-     *  inside one. */
+    /** Project-model reads only (the module root model, the already-cached Gradle sync data node, and a VFS
+     *  lookup of two known child names) — no directory walking, so this is a short, cheap read action, not the
+     *  multi-second walk that used to run inside one. */
     private fun resolveRoots(module: Module): ModuleRoots {
-        val sourceRoots = ModuleRootManager.getInstance(module).sourceRoots.map { File(it.path) }
-        return ModuleRoots(sourceRoots, gradleBuildOutputDir(module))
+        val rootManager = ModuleRootManager.getInstance(module)
+        val sourceRoots = rootManager.sourceRoots.map { File(it.path) }
+        val snapshotSourceRoot = rootManager.contentRoots
+            .firstNotNullOfOrNull { SnapshotSourceScanner.probe(it) }
+            ?.let { File(it.path) }
+        return ModuleRoots(sourceRoots, gradleBuildOutputDir(module), snapshotSourceRoot)
     }
 
     /**

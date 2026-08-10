@@ -1,8 +1,14 @@
 package com.devomer.previewgallery.service
 
+import com.devomer.previewgallery.render.ModuleFreshness
 import com.devomer.previewgallery.render.SnapshotVerifyRunner
+import com.intellij.openapi.util.io.FileUtil
+import com.intellij.openapi.vfs.LocalFileSystem
+import com.intellij.openapi.vfs.VirtualFile
 import com.intellij.psi.util.PsiModificationTracker
+import com.intellij.testFramework.PsiTestUtil
 import com.intellij.testFramework.fixtures.BasePlatformTestCase
+import java.io.File
 
 /**
  * Needs a real [com.intellij.openapi.project.Project]: [SnapshotVerifyStore.isStale] resolves the run's module
@@ -14,6 +20,33 @@ import com.intellij.testFramework.fixtures.BasePlatformTestCase
  * and even across other test classes, so a shared module name would let one test observe another's leftovers.
  */
 class SnapshotVerifyStoreTest : BasePlatformTestCase() {
+
+    private lateinit var moduleDirectory: File
+    private lateinit var mainSourceRoot: VirtualFile
+
+    override fun setUp() {
+        super.setUp()
+        moduleDirectory = FileUtil.createTempDirectory("preview-gallery-verify-store", null)
+        val source = File(moduleDirectory, "src/main/kotlin/Widget.kt")
+        FileUtil.createParentDirs(source)
+        source.writeText("")
+        source.setLastModified(RUN_LAUNCHED_AT - 60_000)
+        mainSourceRoot = requireNotNull(
+            LocalFileSystem.getInstance().refreshAndFindFileByIoFile(File(moduleDirectory, "src/main")),
+        ) { "The temp source root must be visible in the VFS" }
+        PsiTestUtil.addSourceContentToRoots(module, mainSourceRoot)
+        ModuleFreshness.invalidate(module)
+    }
+
+    override fun tearDown() {
+        try {
+            PsiTestUtil.removeContentEntry(module, mainSourceRoot)
+            ModuleFreshness.invalidate(module)
+            FileUtil.delete(moduleDirectory)
+        } finally {
+            super.tearDown()
+        }
+    }
 
     private fun store() = SnapshotVerifyStore.getInstance(project)
 
@@ -113,16 +146,25 @@ class SnapshotVerifyStoreTest : BasePlatformTestCase() {
     }
 
     fun `test a project event that is not a source edit no longer makes a run stale`() {
-        // The PG20 gate bug: PsiModificationTracker is project-wide and moves for any change that can affect PSI,
-        // so a verify that writes into build/ for minutes always outran a stamp captured before it launched.
+        // The PG20 gate bug, end to end: PsiModificationTracker is project-wide and moves for any change that
+        // can affect PSI, so a verify that writes into build/ for minutes always outran a stamp captured before
+        // it launched. The module's sources here are real files on disk, older than the run — see setUp; with
+        // the fixture's in-memory roots this assertion would hold no matter what the code did.
         val tracker = PsiModificationTracker.getInstance(project)
         val before = tracker.modificationCount
-        val fresh = run(moduleName = module.name, ranAtMillis = System.currentTimeMillis())
+        val fresh = run(moduleName = module.name, ranAtMillis = RUN_LAUNCHED_AT)
 
         myFixture.tempDirFixture.createFile("build/outputs/screenshotTest-results/rendered.png", "not a png")
 
         assertTrue("expected the PSI counter to move on an event that is not an edit", tracker.modificationCount > before)
         assertFalse(store().isStale(fresh))
+    }
+
+    fun `test an edit to the module's sources after the run makes it stale`() {
+        File(moduleDirectory, "src/main/kotlin/Widget.kt").setLastModified(RUN_LAUNCHED_AT + 60_000)
+        ModuleFreshness.invalidate(module)
+
+        assertTrue(store().isStale(run(moduleName = module.name, ranAtMillis = RUN_LAUNCHED_AT)))
     }
 
     private fun resolve(
@@ -272,5 +314,11 @@ class SnapshotVerifyStoreTest : BasePlatformTestCase() {
     fun `test validateTask names the sibling of ReferenceRoots#updateTask`() {
         assertEquals("validateDebugScreenshotTest", SnapshotVerifyRunner.validateTask("Debug"))
         assertEquals("updateDebugScreenshotTest", ReferenceRoots.updateTask("Debug"))
+    }
+
+    private companion object {
+        /** A fixed point rather than the wall clock, so the source files this fixture writes sit on a known side
+         *  of it: far enough in the future that a real directory mtime created during the run is older. */
+        const val RUN_LAUNCHED_AT = 2_000_000_000_000L
     }
 }

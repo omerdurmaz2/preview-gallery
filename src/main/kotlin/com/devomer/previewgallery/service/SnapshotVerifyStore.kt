@@ -68,16 +68,20 @@ class SnapshotVerifyStore(private val project: Project) {
      * *cache* on that same counter and is right to — over-invalidating a cache costs a recompute, while
      * over-reporting staleness tells the user their code changed when it did not.
      *
-     * A null [newestSourceMillis] means the module is gone from the project model, so nothing can be compared;
-     * that reads stale rather than fresh, because the one thing this must never do is present an unverifiable
-     * verdict as a current one.
+     * A null [newestSourceMillis] means there is no source clock to compare against — the module is gone from
+     * the project model, or nothing readable was found under it. Either way nothing can be compared, and that
+     * reads stale rather than fresh, because the one thing this must never do is present an unverifiable verdict
+     * as a current one. "Nothing found" and "nothing changed" are deliberately not spelled the same way.
      *
      * Scoped to the module deliberately, where the counter was project-wide: spec D4's rule is that editing *the
-     * module* marks its run stale, and an edit in an unrelated module used to mark every run in the project.
-     * The accepted ceiling is the other direction — an edit in a module this one depends on does not mark it,
-     * and an edit still sitting unsaved in an editor buffer does not either, since Gradle measures what is on
-     * disk and the IDE saves before it launches. Upgrade path, if either ever matters: walk the module's
-     * dependencies here, and consult [com.intellij.openapi.fileEditor.FileDocumentManager]'s unsaved documents.
+     * module* marks its run stale, and an edit in an unrelated module used to mark every run in the project. The
+     * module's own `src/screenshotTest` counts as part of it even though no module has it as a source root — see
+     * [ModuleFreshness.newestModuleSourceMtime], without which editing the snapshot test itself left its run
+     * reading fresh. The accepted ceilings are the other direction: an edit in a module this one depends on does
+     * not mark it, and an edit still sitting unsaved in an editor buffer does not either, since Gradle measures
+     * what is on disk and the IDE saves before it launches. Upgrade path, if either ever matters: walk the
+     * module's dependencies here, and consult [com.intellij.openapi.fileEditor.FileDocumentManager]'s unsaved
+     * documents.
      */
     fun isStale(run: Run): Boolean = isStale(run, newestSourceMillis(run.moduleName))
 
