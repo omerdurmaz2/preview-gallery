@@ -1,17 +1,18 @@
 # Snapshot Testing — Feature Roadmap
 
-> **Status:** **F1, H1, F2 and F8 shipped** — Phase 13 (badge, snapshot rows, reference strip), Phase 14 (read the
+> **Status:** **F1, H1, F2, F8 and F7 shipped** — Phase 13 (badge, snapshot rows, reference strip), Phase 14 (read the
 > source set from the VFS, fix attribution), Phase 15 (refresh before the lookup, discover every build
-> variant's reference root, recover the index-fallback rows) and Phase 16 (the uncovered-only toggle and the
-> markdown report) and Phase 17 (the index served read-only over MCP). The manual gate against `hepsi-android`
-> passes: snapshots are listed, they hang under the previews they belong to, a reference directory changed from
-> a terminal is picked up without pressing Refresh, the toggle leaves the work queue on screen, and an agent
-> asking `list_previews` gets the same 854 uncovered composables the tree shows. Everything else below is still
-> backlog.
+> variant's reference root, recover the index-fallback rows), Phase 16 (the uncovered-only toggle and the
+> markdown report), Phase 17 (the index served read-only over MCP) and Phase 18 (snapshot health, in the export
+> and over MCP). The manual gate against `hepsi-android` passes: snapshots are listed, they hang under the
+> previews they belong to, a reference directory changed from a terminal is picked up without pressing Refresh,
+> the toggle leaves the work queue on screen, an agent asking `list_previews` gets the same 854 uncovered
+> composables the tree shows, and the health section names the `favorites` specimen it was designed around.
+> Everything else below is still backlog.
 >
 > Each remaining entry becomes its own session: brainstorm → design spec in `docs/superpowers/specs/`
-> → plan in `docs/superpowers/plans/` → implementation. Commit prefixes (`PG16-N`, …) are assigned when
-> a feature is planned, continuing from the last used phase (`PG15`).
+> → plan in `docs/superpowers/plans/` → implementation. Commit prefixes (`PG19-N`, …) are assigned when
+> a feature is planned, continuing from the last used phase (`PG18`).
 
 ## Priority order
 
@@ -19,9 +20,8 @@ Ranked for what to build next, not by theme. Effort is a rough order of magnitud
 
 | # | Item | Why it is here | Effort |
 |---|---|---|---|
-| 1 | **F7 · Degenerate golden detector** | Small, and it now has a real specimen: a preview in `favorites` carries a component's name while its body reconstructs the component's insides instead of calling it, so neither it nor its snapshot tests the thing they are named after. Whatever F8 serves an agent is only as good as this. | S |
-| 2 | **Spike, then F5 · Reference vs. live diff** | Highest ceiling of anything here, still gated on an unanswered AS-internal question. Run the spike early, decide after. | L |
-| 3 | **F6 · Gradle task runner** | Depends on F5's diff view to be worth the wiring. | L |
+| 1 | **Spike, then F5 · Reference vs. live diff** | Highest ceiling of anything here, still gated on an unanswered AS-internal question. Run the spike early, decide after. | L |
+| 2 | **F6 · Gradle task runner** | Depends on F5's diff view to be worth the wiring. | L |
 
 **Deferred:** F3 (the agent route supersedes it until proven otherwise) and F4 (waits on F3's writer). Both
 keep their sections below with the reasoning.
@@ -279,15 +279,35 @@ tree, and open F5's diff view on click. `update` gets the same treatment for reg
 - **Open:** the gate flag is project-specific — configurable, or detected? Never spawn a second Gradle
   daemon (spec goal G5).
 
-#### F7 · Degenerate golden detector
+#### F7 · Degenerate golden detector — **shipped (PG18)**
 
 **Goal:** catch snapshots that test nothing.
 
-Skill rule 4: modal bottom sheets render blank because the sheet starts collapsed, and a blank golden
-is worse than no test. `RenderedImageInspector` already inspects rendered images — run it over live
-renders and over committed reference PNGs, and warn on blank or single-colour results.
+Two checks rather than the one this entry sketched, and the one it did not sketch is the one that found
+everything. The blank-golden half is what the entry describes: `RenderedImageInspector.isBlank` run over the
+committed reference PNGs. Design added a second, the **name rule** — a row whose name claims a component its
+body never calls — because the specimen that motivated this feature renders a full, convincing PNG and no
+pixel check can see it.
 
-- **Hooks:** `RenderedImageInspector`, `PreviewRenderPanel`, tree badges
+Narrower than sketched in three ways, all deliberate (spec Non-Goals): reference PNGs only, not live renders;
+no tree badge and no new toolbar button; and the findings ride the existing coverage export as a `## Health`
+section rather than a second document, because "how healthy are this project's snapshots" is one question and
+two files each holding half the answer is how a number gets quoted without its caveat. Agents get the same
+findings through a `snapshot_health` MCP tool.
+
+**The calibration run is the entry's real result.** Against `hepsi-android`: **zero blank goldens** — a real
+answer, not a broken check — and **12 name findings, 9 real and 3 noise**. The nine include the specimen
+(`DeleteSelectedProductsDialog_Preview`, named after the dialog, showing `PrimusDialog`) *and its snapshot*,
+which copies the same mistake — exactly the failure mode the feature was designed around. The three false
+positives shared one shape: `@Preview` composables that serve as their own preview, carrying no
+`Preview`/`Snapshot` suffix, so the rule accused them of not calling themselves. PG18-10 tightened `stems()` to
+drop the full-length stem when no suffix was stripped, which removes that class without touching any of the
+nine. The check now reports 9 findings on this project.
+
+Worth knowing for whoever picks up F5: the half this entry is *named* after found nothing, and the half added
+during design found all of it. A blank golden is a real failure mode; it is just not this project's.
+
+- **Hooks:** `RenderedImageInspector` (called, never modified), `CoverageReportAction`, `ToolRegistry`
 - **Effort:** S · **Risk:** low
 - **Depends on:** F1 (to find the reference files)
 
