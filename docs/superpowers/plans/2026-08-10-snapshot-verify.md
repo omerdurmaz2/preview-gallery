@@ -471,8 +471,17 @@ class SnapshotVerifyRunner(private val project: Project) : Disposable {
 }
 ```
 
-Note `resolveTarget` builds `resultsDirectory` from `data.directoryToRunTask`, which is the **module's own**
-directory to invoke Gradle from — the same base `build/test-results/<task>/` hangs off.
+**Correction (found in review, after this plan was written).** An earlier draft of this note claimed
+`directoryToRunTask` is the module's own directory. It is **not** — it is the build root, which is exactly why
+the task path above has to be prefixed with `gradleIdentityPath` to become `:app:validateDebugScreenshotTest`.
+The module's own subproject directory is `gradleProjectDir`, and this repo documents the distinction after a
+`javap` verification in `render/ModuleFreshness.kt:126-132`, with the working precedent at
+`ModuleFreshness.gradleBuildOutputDir`.
+
+So `resultsDirectory` is built from **`data.gradleProjectDir`**, while `projectPath` stays
+`data.directoryToRunTask`. Using the latter for both would point every module in a multi-module project at the
+root project's build directory, where the results never exist — the reader would find nothing and every verify
+would report a build failure, silently and plausibly.
 
 - [ ] **Step 3: Compile**
 
