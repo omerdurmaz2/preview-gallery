@@ -93,6 +93,11 @@ class PreviewGalleryPanel(
 
     private var lastSelectedEntry: PreviewEntry? = null
 
+    /** Whether a covered preview shows its goldens instead of a live render. Sticky across selections (PG19 spec
+     *  D5): the workflow is arrowing down a package looking at committed images, and resetting per selection
+     *  would cost a click a row. An uncovered preview shows its live render and leaves the flag alone (D7). */
+    private var showReferenceForPreviews = false
+
     /** The label path (see [labelPathFor]) of every row expanded in the tree, captured just before a rebuild
      *  discards its node instances. Null means "nothing captured yet" — only true for the very first build —
      *  which is what makes [applyExpansionPolicy]'s module-level default apply exactly once instead of on every
@@ -197,6 +202,11 @@ class PreviewGalleryPanel(
         // in PreviewRenderPanel itself, not here) to update ComparisonViewList and re-render just that tab.
         renderPanel.onEphemeralProperties = { entry, override, point, onEdit ->
             ephemeralPickerBridge.showEphemeralPicker(entry, override, point, onEdit)
+        }
+        renderPanel.onToggleReference = { active ->
+            showReferenceForPreviews = active
+            renderPanel.referenceModeActive = active
+            routeSelection(deferReferenceLookup = true)
         }
 
         // The platform's own expand/collapse actions: same icons, tooltips and shortcuts as the Project view,
@@ -633,14 +643,21 @@ class PreviewGalleryPanel(
     }
 
     /**
-     * Routes whatever the tree has selected: a snapshot row to its reference images, everything else to
-     * [pipeline] — where a module, package or orphan-branch row lands as "nothing selected", exactly as before.
+     * Routes whatever the tree has selected: a row with goldens to show — a snapshot row, or a covered preview
+     * while the reference mode is on, [referenceRowsForSelection] is the one place that decides which — to its
+     * reference images, everything else to [pipeline] — where a module, package or orphan-branch row lands as
+     * "nothing selected", exactly as before.
      *
-     * The snapshot branch hands [pipeline] a null selection rather than the snapshot: a snapshot is never
-     * rendered (spec D8), and null is what a switch away from a preview already does — it cancels the debounced
-     * dispatch AND bumps the pipeline's generation, so a render still in flight can no longer publish over the
-     * strip. Going through the pipeline's own entry point rather than adding a "cancel" API is deliberate: the
-     * cancellation semantics then cannot drift from the preview-to-preview switch's.
+     * That branch hands [pipeline] a null selection rather than the row: neither a snapshot nor a covered
+     * preview showing goldens is ever rendered (spec D8), and null is what a switch away from a preview already
+     * does — it cancels the debounced dispatch AND bumps the pipeline's generation, so a render still in flight
+     * can no longer publish over the strip. Going through the pipeline's own entry point rather than adding a
+     * "cancel" API is deliberate: the cancellation semantics then cannot drift from the preview-to-preview
+     * switch's.
+     *
+     * `owner` is the row the strip is *about* — the entry [PreviewRenderPanel.showReference] labels its
+     * no-reference message with — and stays the snapshot itself on the snapshot path, so that path is
+     * byte-for-byte what it was.
      *
      * [deferReferenceLookup] is false only for [selectByLabelPathForTest], which needs the routing to have
      * finished by the time it returns — so it calls [ReferenceStripLoader.locate] and [ReferenceStripLoader.decode]
@@ -650,15 +667,16 @@ class PreviewGalleryPanel(
      * decode off the EDT and behind the selection debounce.
      */
     private fun routeSelection(deferReferenceLookup: Boolean) {
-        val snapshot = selectedSnapshotEntry()
-        if (snapshot != null) {
+        val rows = referenceRowsForSelection()
+        if (rows.isNotEmpty()) {
+            val owner = selectedSnapshotEntry() ?: selectedEntry() ?: return
             lastSelectedEntry = null
             pipeline.select(null)
             if (deferReferenceLookup) {
-                showReferenceImages(snapshot)
+                showReferenceImages(owner, rows)
             } else {
-                val located = referenceLoader.locate(listOf(snapshot))
-                publishReferences(snapshot, referenceLoader.decode(located), located.tasks)
+                val located = referenceLoader.locate(rows)
+                publishReferences(owner, referenceLoader.decode(located), located.tasks)
             }
             return
         }
@@ -678,15 +696,26 @@ class PreviewGalleryPanel(
         return (node.userObject as? PreviewNode.SnapshotLeaf)?.row as? PreviewEntry
     }
 
+    /** The rows whose goldens the current selection should show, or empty when it should render instead. The one
+     *  place that answers "reference or render", so [routeSelection] and [publishReferences]' staleness guard
+     *  cannot disagree about it. */
+    private fun referenceRowsForSelection(): List<PreviewEntry> {
+        val snapshot = selectedSnapshotEntry()
+        if (snapshot != null) return listOf(snapshot)
+        if (!showReferenceForPreviews) return emptyList()
+        return selectedEntry()?.snapshots.orEmpty()
+    }
+
     /**
-     * Shows [snapshot]'s committed reference PNGs (PG15 spec D3, PG13 spec D7), debounced exactly as a preview
-     * selection is.
+     * Shows [owner]'s committed reference PNGs (PG15 spec D3, PG13 spec D7) for [rows], debounced exactly as a
+     * preview selection is.
      *
-     * The debounce is the whole point of this method: arrow-keying down a preview's snapshot children fires one
-     * selection per row, and locating plus decoding device-resolution PNGs (~1080x2340, ~10 MB decoded, once per
-     * variant) for a row the user has already left is pure waste — [publishReferences]' guard only discards the
-     * *result*, after the work has run to completion. [RenderPipeline.DEBOUNCE_MS] is shared with the render path
-     * deliberately: both are "the user settled on a row", and they should not feel different.
+     * The debounce is the whole point of this method: arrow-keying down a preview's snapshot children, or across
+     * covered previews with the reference mode on, fires one selection per row, and locating plus decoding
+     * device-resolution PNGs (~1080x2340, ~10 MB decoded, once per variant) for a row the user has already left
+     * is pure waste — [publishReferences]' guard only discards the *result*, after the work has run to
+     * completion. [RenderPipeline.DEBOUNCE_MS] is shared with the render path deliberately: both are "the user
+     * settled on a row", and they should not feel different.
      *
      * Its own alarm, not the search field's: that one is cancelled on every keystroke, and a query typed while a
      * snapshot is selected must not drop the images (nor a selection drop a pending re-filter).
@@ -694,9 +723,9 @@ class PreviewGalleryPanel(
      * `coalesceBy` on the read action would not do this job — every row is a different snapshot id, so nothing
      * would coalesce; keying it on a panel-wide constant would cancel *and* still start each lookup.
      */
-    private fun showReferenceImages(snapshot: PreviewEntry) {
+    private fun showReferenceImages(owner: PreviewEntry, rows: List<PreviewEntry>) {
         referenceAlarm.cancelAllRequests()
-        referenceAlarm.addRequest({ loadReferences(snapshot) }, RenderPipeline.DEBOUNCE_MS)
+        referenceAlarm.addRequest({ loadReferences(owner, rows) }, RenderPipeline.DEBOUNCE_MS)
     }
 
     /**
@@ -707,11 +736,11 @@ class PreviewGalleryPanel(
      * calls holding the read lock across long work "a prime freeze suspect"): `ImageIO.read` on two
      * device-resolution PNGs is tens of milliseconds that would otherwise block every write action in the IDE.
      */
-    private fun loadReferences(snapshot: PreviewEntry) {
+    private fun loadReferences(owner: PreviewEntry, rows: List<PreviewEntry>) {
         val modality = ModalityState.defaultModalityState()
         AppExecutorUtil.getAppExecutorService().execute {
             val located = try {
-                referenceLoader.locate(listOf(snapshot))
+                referenceLoader.locate(rows)
             } catch (e: ProcessCanceledException) {
                 // The panel is gone, or a write action preempted the lookup. Nothing to publish and nothing to
                 // retry: the selection that would want this result is gone with it.
@@ -721,7 +750,7 @@ class PreviewGalleryPanel(
             ApplicationManager.getApplication().invokeLater(
                 {
                     if (disposalCheck.isDisposed) return@invokeLater
-                    publishReferences(snapshot, decoded, located.tasks)
+                    publishReferences(owner, decoded, located.tasks)
                 },
                 modality,
             )
@@ -729,16 +758,18 @@ class PreviewGalleryPanel(
     }
 
     /**
-     * EDT half of [showReferenceImages]. Dropped unless [snapshot] is *still* the selected row: arrow-keying down
-     * a preview's snapshot children starts one decode per row, and a slower earlier one must not land on top of a
-     * later selection — nor on top of a live render, if the user has moved back to a preview meanwhile. Re-reading
-     * the tree's own selection is the whole guard; no separate generation counter can disagree with it. [tasks]
-     * passes straight through to [PreviewRenderPanel.showReference] — it is assembled in `ReferenceStripLoader.locate`,
-     * the one place that already knows which roots exist.
+     * EDT half of [showReferenceImages]. Dropped unless the selection *still* wants [owner]'s goldens: arrow-keying
+     * down a preview's snapshot children starts one decode per row, and a slower earlier one must not land on top
+     * of a later selection — nor on top of a live render, if the user has moved back to a preview or switched the
+     * reference mode off meanwhile. Re-deriving the answer from [referenceRowsForSelection] is the whole guard; no
+     * separate generation counter can disagree with it.
      */
-    private fun publishReferences(snapshot: PreviewEntry, decoded: ReferenceStripLoader.Decoded, tasks: List<String>) {
-        if (selectedSnapshotEntry()?.id != snapshot.id) return
-        renderPanel.showReference(snapshot, decoded.images, decoded.skipped, tasks)
+    private fun publishReferences(owner: PreviewEntry, decoded: ReferenceStripLoader.Decoded, tasks: List<String>) {
+        val wanted = referenceRowsForSelection()
+        if (wanted.isEmpty()) return
+        val currentOwner = selectedSnapshotEntry() ?: selectedEntry()
+        if (currentOwner?.id != owner.id) return
+        renderPanel.showReference(owner, decoded.images, decoded.skipped, tasks)
     }
 
     /**
