@@ -76,6 +76,25 @@ class SnapshotHealthTest {
     }
 
     @Test
+    fun `the SideBarItemShimmer calibration finding, a preview that is its own component is not accused`() {
+        // hepsi-android calibration: SideBarItemShimmer is an @Preview composable whose body renders its
+        // own Column/Spacer/Box. It lands in the vocabulary only because a sibling row calls it, but its
+        // own name carries no Preview/Snapshot suffix, so that full name is an identity, not a claim.
+        val shimmer = testRow(
+            displayName = "SideBarItemShimmer",
+            functionName = "SideBarItemShimmer",
+            targets = listOf("Column", "Spacer", "Box"),
+        )
+        val caller = testRow(
+            displayName = "SideBarItemPreview",
+            functionName = "SideBarItemPreview",
+            targets = listOf("SideBarItemShimmer"),
+        )
+
+        assertEquals(emptyList<SnapshotHealth.NameFinding>(), SnapshotHealth.check(listOf(shimmer, caller)).findings)
+    }
+
+    @Test
     fun `a row with no resolved targets is skipped and counted, not accused`() {
         val row = testRow(displayName = "MysteryPreview", functionName = "MysteryPreview")
 
@@ -93,6 +112,12 @@ class SnapshotHealthTest {
             listOf("Foo", "Foo_Bar", "Foo_Bar_Default"),
             SnapshotHealth.stems("Foo_Bar_Default_Snapshot"),
         )
+    }
+
+    @Test
+    fun `stems drops the unsuffixed name's own full length, keeping shorter stems as real claims`() {
+        assertEquals(emptyList<String>(), SnapshotHealth.stems("SideBarItemShimmer"))
+        assertEquals(listOf("Foo"), SnapshotHealth.stems("Foo_Bar"))
     }
 
     @Test

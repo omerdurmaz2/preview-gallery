@@ -60,14 +60,20 @@ object SnapshotHealth {
      * `Foo_Bar_Default_Snapshot` yields `Foo`, `Foo_Bar` and `Foo_Bar_Default`, because a component named
      * `Foo_Bar` and one named `Foo` cannot be told apart from the name alone. A match on any of them clears
      * the row, which is the direction that fails safe.
+     *
+     * The row's own full name is dropped when no suffix was stripped: a name carrying no `Preview`/`Snapshot`
+     * suffix is the component's own declaration, not a claim about some other component that happens to share
+     * it. The `hepsi-android` calibration run's only false-positive class was exactly this shape —
+     * `SideBarItemShimmer`, `PremiumItemShimmer` and `ProductShowcaseShimmer` are `@Preview`-annotated
+     * components that serve as their own preview, present in the vocabulary only because other rows call
+     * them, and were being accused of not calling themselves.
      */
     internal fun stems(functionName: String): List<String> {
-        val trimmed = SUFFIXES.firstOrNull { functionName.endsWith(it) }
-            ?.let { functionName.removeSuffix(it) }
-            ?: functionName
+        val matchedSuffix = SUFFIXES.firstOrNull { functionName.endsWith(it) }
+        val trimmed = matchedSuffix?.let { functionName.removeSuffix(it) } ?: functionName
         if (trimmed.isEmpty()) return emptyList()
         val parts = trimmed.split('_').filter { it.isNotEmpty() }
-        if (parts.size <= 1) return listOf(trimmed)
-        return parts.indices.map { parts.take(it + 1).joinToString("_") }
+        val prefixes = if (parts.size <= 1) listOf(trimmed) else parts.indices.map { parts.take(it + 1).joinToString("_") }
+        return if (matchedSuffix == null) prefixes.dropLast(1) else prefixes
     }
 }
