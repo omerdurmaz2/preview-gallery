@@ -105,10 +105,10 @@ class SnapshotVerifyRunner(private val project: Project) : Disposable {
         val notifications = ExternalSystemProgressNotificationManager.getInstance()
         val taskIdForThisRun = AtomicReference<ExternalSystemTaskId?>(null)
         // onStart(ExternalSystemTaskId) is deprecated in favor of onStart(String, ExternalSystemTaskId), but its
-        // default body is the one every other onStart overload ultimately delegates to, so it is the one
-        // override guaranteed to fire regardless of which overload the platform's dispatcher calls directly —
-        // "fixing" the deprecation warning by overriding a newer overload instead would silently stop this run
-        // from ever being tracked.
+        // default body is the one every other onStart overload ultimately delegates to (verified with javap -c
+        // on ExternalSystemTaskNotificationListener), so it is the one override guaranteed to fire regardless of
+        // which overload the platform's dispatcher calls directly — "fixing" the deprecation warning by
+        // overriding a newer overload instead would silently stop this run from ever being tracked.
         @Suppress("OVERRIDE_DEPRECATION")
         val listener = object : ExternalSystemTaskNotificationListener {
             override fun onStart(id: ExternalSystemTaskId) = onTaskStarted(id, myGeneration, taskIdForThisRun)
@@ -129,6 +129,7 @@ class SnapshotVerifyRunner(private val project: Project) : Disposable {
                 ProgressExecutionMode.IN_BACKGROUND_ASYNC,
             )
         } catch (e: ProcessCanceledException) {
+            removeListener(notifications, listener)
             throw e
         } catch (e: Exception) {
             thisLogger().warn("Failed to start a verify for module '${module.name}'", e)
@@ -152,6 +153,17 @@ class SnapshotVerifyRunner(private val project: Project) : Disposable {
      * only the first such notification claim it: a second, unrelated Gradle task starting in this project while
      * this run is still in flight — a [BuildService] compile, or the user's own Gradle invocation — must not be
      * able to overwrite the task this run is actually tracking.
+     *
+     * The claim happens *before* the generation check below is allowed to cancel anything, not after. A run this
+     * service has already superseded keeps its listener registered for as long as its own Gradle task takes to
+     * finish — for a run superseded before its task ever started, that is the task's *entire* duration. If the
+     * generation check ran first, every unrelated [ExternalSystemTaskId] arriving during that whole window would
+     * get cancelled outright, including a [BuildService] compile or the user's own Gradle run — worse than the
+     * hijack this method exists to prevent. Claiming first caps the damage at one: a superseded run can cancel at
+     * most the single id it claims, and only when that id turns out to be its own late task rather than someone
+     * else's. The cost is a superseded run that claims a foreign id first: its own real task then never gets
+     * cancelled and runs to completion untracked. That is wasted work, not a cancelled build, and is the
+     * intended trade-off — do not reorder these two checks back the other way.
      */
     private fun onTaskStarted(
         id: ExternalSystemTaskId,
@@ -162,11 +174,8 @@ class SnapshotVerifyRunner(private val project: Project) : Disposable {
             if (id.type != ExternalSystemTaskType.EXECUTE_TASK) return
             if (id.projectSystemId != GradleConstants.SYSTEM_ID) return
             if (id.findProject() != project) return
-            if (generation.get() != myGeneration) {
-                cancelTaskId(id)
-                return
-            }
-            if (taskIdForThisRun.compareAndSet(null, id)) currentTaskId.set(id)
+            if (!taskIdForThisRun.compareAndSet(null, id)) return
+            if (generation.get() != myGeneration) cancelTaskId(id) else currentTaskId.set(id)
         } catch (e: ProcessCanceledException) {
             throw e
         } catch (e: Exception) {
