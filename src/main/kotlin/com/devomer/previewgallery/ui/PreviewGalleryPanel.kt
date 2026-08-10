@@ -10,9 +10,14 @@ import com.devomer.previewgallery.render.PreviewPickerBridge
 import com.devomer.previewgallery.render.RenderApiProbe
 import com.devomer.previewgallery.render.RenderPipeline
 import com.devomer.previewgallery.render.RenderState
+import com.devomer.previewgallery.render.SnapshotVerifyRunner
 import com.devomer.previewgallery.search.PreviewCoverageFilter
 import com.devomer.previewgallery.search.PreviewModuleFilter
+import com.devomer.previewgallery.service.ModuleDirectoryResolver
 import com.devomer.previewgallery.service.PreviewIndexService
+import com.devomer.previewgallery.service.ReferenceRoots
+import com.devomer.previewgallery.service.SnapshotVerifyResults
+import com.devomer.previewgallery.service.SnapshotVerifyStore
 import com.intellij.ide.CommonActionsManager
 import com.intellij.ide.DefaultTreeExpander
 import com.intellij.ide.TreeExpander
@@ -23,6 +28,8 @@ import com.intellij.openapi.application.ApplicationManager
 import com.intellij.openapi.application.ModalityState
 import com.intellij.openapi.application.ReadAction
 import com.intellij.openapi.fileEditor.OpenFileDescriptor
+import com.intellij.openapi.module.Module
+import com.intellij.openapi.module.ModuleUtilCore
 import com.intellij.openapi.progress.ProcessCanceledException
 import com.intellij.openapi.project.DumbService
 import com.intellij.openapi.project.Project
@@ -129,12 +136,23 @@ class PreviewGalleryPanel(
 
     private val referenceLoader = ReferenceStripLoader(project, parentDisposable, disposalCheck)
 
+    private val verifyAlarm = Alarm(Alarm.ThreadToUse.SWING_THREAD, parentDisposable)
+
+    /** True only while [runVerify]'s own completion callback is re-routing the selection to refresh what is on
+     *  screen (the badge, and later the verify images). [routeSelection]'s snapshot branch checks this before
+     *  calling [startVerify]: without it, that refresh call would re-enter the very branch that starts a verify
+     *  and schedule another one after every single completion — an unbounded loop the design's own risk table
+     *  assumes cannot happen ("the debounce plus one-run-at-a-time bounds it to one run per settled selection").
+     *  A real selection change, from the tree listener or from [applyFilter], never sets this. */
+    private var refreshingAfterVerify = false
+
     /** PG11-2: indexing a large project takes several dumb→smart transitions, and [reload]'s own
      *  `runWhenSmart` only rides the first one — so the tree used to cache whatever fraction of the index
      *  existed at that moment and stay that way until the user pressed Refresh. This reloads again, exactly
      *  like that button does, on every later pass that actually moved the index. See the tracker's own doc. */
     private val indexingTracker = IndexingCompletionTracker(project, parentDisposable) {
         PreviewIndexService.getInstance(project).refresh()
+        SnapshotVerifyStore.getInstance(project).markAllStale()
         reload()
     }
 
@@ -221,6 +239,7 @@ class PreviewGalleryPanel(
             CoverageFilterToggleAction(project) { applyFilter() },
             CoverageReportAction(project, { entries }, { orphanSnapshots }),
             McpServerAction(project),
+            VerifySnapshotsAction({ startVerify(selectedSnapshotEntry()) }, { verifyTarget() != null }),
             commonActions.createExpandAllAction(treeExpander, this),
             commonActions.createCollapseAllAction(treeExpander, this),
         )
@@ -676,6 +695,7 @@ class PreviewGalleryPanel(
             val owner = selectedSnapshotEntry() ?: selectedEntry() ?: return
             lastSelectedEntry = null
             pipeline.select(null)
+            if (!refreshingAfterVerify) startVerify(selectedSnapshotEntry())
             if (deferReferenceLookup) {
                 showReferenceImages(owner, rows)
             } else {
@@ -698,6 +718,77 @@ class PreviewGalleryPanel(
     private fun selectedSnapshotEntry(): PreviewEntry? {
         val node = tree.selectionPath?.lastPathComponent as? DefaultMutableTreeNode ?: return null
         return (node.userObject as? PreviewNode.SnapshotLeaf)?.row as? PreviewEntry
+    }
+
+    /**
+     * The module and build variant the selected row's snapshots would be verified for, or null when there is
+     * nothing to verify — no snapshot row selected, no module, or no reference root to name a variant.
+     *
+     * The variant comes from the reference roots rather than from a default (spec D6): the variant worth
+     * checking is the one whose goldens are committed, and a module with none has nothing to compare against.
+     */
+    private fun verifyTarget(): VerifyTarget? {
+        val snapshot = selectedSnapshotEntry() ?: return null
+        val moduleDirectory = ModuleDirectoryResolver.resolve(project, snapshot.file) ?: return null
+        val module = ModuleUtilCore.findModuleForFile(snapshot.file, project) ?: return null
+        val variant = ReferenceRoots.of(moduleDirectory).firstNotNullOfOrNull { it.buildVariant } ?: return null
+        return VerifyTarget(module, variant, snapshot.moduleName)
+    }
+
+    private class VerifyTarget(val module: Module, val buildVariant: String, val moduleName: String)
+
+    /**
+     * Starts a verify for [snapshot]'s module, debounced exactly as the reference lookup is.
+     *
+     * The debounce is what makes automatic verification survivable (spec D1): arrow-keying down a preview's
+     * snapshot children fires one selection per row, and a Gradle run per row is not a cost the user asked for.
+     * [RenderPipeline.DEBOUNCE_MS] is shared with the render and reference paths deliberately — all three mean
+     * "the user settled on this row".
+     */
+    private fun startVerify(snapshot: PreviewEntry?) {
+        verifyAlarm.cancelAllRequests()
+        if (snapshot == null) return
+        verifyAlarm.addRequest({ runVerify() }, RenderPipeline.DEBOUNCE_MS)
+    }
+
+    private fun runVerify() {
+        val target = verifyTarget() ?: return
+        val store = SnapshotVerifyStore.getInstance(project)
+        SnapshotVerifyRunner.getInstance(project).verify(target.module, target.buildVariant) { outcome, started ->
+            val results = if (started == null) {
+                emptyList()
+            } else {
+                SnapshotVerifyResults.read(started.resultsDirectory, started.startedAtMillis)
+            }
+            // A run that produced no results did not measure anything, whatever Gradle's exit status said: a
+            // compile failure and a clean pass are both "the task returned", and only the results tell them
+            // apart (spec D8). A task name that does not exist in Gradle lands here too — the spec's error
+            // table lists it separately, but telling it from a compile failure would mean parsing Gradle's
+            // output, and both answer the user the same way: nothing was measured.
+            val resolved = when {
+                outcome == SnapshotVerifyRunner.Outcome.NOT_RUN -> SnapshotVerifyRunner.Outcome.NOT_RUN
+                results.isEmpty() -> SnapshotVerifyRunner.Outcome.BUILD_FAILED
+                else -> SnapshotVerifyRunner.Outcome.RAN
+            }
+            store.put(
+                SnapshotVerifyStore.Run(
+                    moduleName = target.moduleName,
+                    outcome = resolved,
+                    results = results,
+                    ranAtMillis = started?.startedAtMillis ?: System.currentTimeMillis(),
+                ),
+            )
+            ApplicationManager.getApplication().invokeLater({
+                if (disposalCheck.isDisposed) return@invokeLater
+                tree.repaint()
+                refreshingAfterVerify = true
+                try {
+                    routeSelection(deferReferenceLookup = true)
+                } finally {
+                    refreshingAfterVerify = false
+                }
+            }, ModalityState.defaultModalityState())
+        }
     }
 
     /** The rows whose goldens the current selection should show, or empty when it should render instead. The one
