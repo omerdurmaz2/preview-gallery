@@ -1,18 +1,19 @@
 # Snapshot Testing — Feature Roadmap
 
-> **Status:** **F1, H1, F2, F8 and F7 shipped** — Phase 13 (badge, snapshot rows, reference strip), Phase 14 (read the
-> source set from the VFS, fix attribution), Phase 15 (refresh before the lookup, discover every build
-> variant's reference root, recover the index-fallback rows), Phase 16 (the uncovered-only toggle and the
-> markdown report), Phase 17 (the index served read-only over MCP) and Phase 18 (snapshot health, in the export
-> and over MCP). The manual gate against `hepsi-android` passes: snapshots are listed, they hang under the
-> previews they belong to, a reference directory changed from a terminal is picked up without pressing Refresh,
-> the toggle leaves the work queue on screen, an agent asking `list_previews` gets the same 854 uncovered
-> composables the tree shows, and the health section names the `favorites` specimen it was designed around.
-> Everything else below is still backlog.
+> **Status:** **F1, H1, F2, F8, F7 and F5's reference half shipped** — Phase 13 (badge, snapshot rows, reference
+> strip), Phase 14 (read the source set from the VFS, fix attribution), Phase 15 (refresh before the lookup,
+> discover every build variant's reference root, recover the index-fallback rows), Phase 16 (the uncovered-only
+> toggle and the markdown report), Phase 17 (the index served read-only over MCP), Phase 18 (snapshot health, in
+> the export and over MCP) and Phase 19 (a preview row shows its committed goldens). The manual gate against
+> `hepsi-android` passes: snapshots are listed, they hang under the previews they belong to, a reference
+> directory changed from a terminal is picked up without pressing Refresh, the toggle leaves the work queue on
+> screen, an agent asking `list_previews` gets the same 854 uncovered composables the tree shows, the health
+> section names the `favorites` specimen it was designed around, and a covered preview shows every covering
+> snapshot's goldens while the mode stays on across rows. Everything else below is still backlog.
 >
 > Each remaining entry becomes its own session: brainstorm → design spec in `docs/superpowers/specs/`
-> → plan in `docs/superpowers/plans/` → implementation. Commit prefixes (`PG19-N`, …) are assigned when
-> a feature is planned, continuing from the last used phase (`PG18`).
+> → plan in `docs/superpowers/plans/` → implementation. Commit prefixes (`PG20-N`, …) are assigned when
+> a feature is planned, continuing from the last used phase (`PG19`).
 
 ## Priority order
 
@@ -20,7 +21,7 @@ Ranked for what to build next, not by theme. Effort is a rough order of magnitud
 
 | # | Item | Why it is here | Effort |
 |---|---|---|---|
-| 1 | **Spike, then F5 · Reference vs. live diff** | Highest ceiling of anything here, still gated on an unanswered AS-internal question. Run the spike early, decide after. | L |
+| 1 | **Classloader spike, then F5's diff half** | The reference half shipped (PG19); the diff is all that is left, and it is still gated on one AS-internal question — can a plugin inject the `debugScreenshotTest` classes directory into `StudioModuleRenderContext`'s classloader? Run that spike before designing anything. | M |
 | 2 | **F6 · Gradle task runner** | Depends on F5's diff view to be worth the wiring. | L |
 
 **Deferred:** F3 (the agent route supersedes it until proven otherwise) and F4 (waits on F3's writer). Both
@@ -232,37 +233,47 @@ multipreview or generating a new one. Deliberately excludes the axes the consumi
 
 ### Theme 3 — Verification
 
-#### F5 · Reference vs. live diff, without Gradle
+#### F5 · Reference vs. live diff, without Gradle — **reference half shipped (PG19), diff half open**
 
 **Goal:** see whether a composable still matches its committed golden, in seconds instead of a task run.
 
-Load the committed PNG from `src/screenshotTestDebug/reference/` as a **Reference** tab beside the live
-render, and add a **Diff** tab (pixel difference overlay). The tab strip, zoom/pan view and image export
-already exist; what is missing is reference-file resolution (reference filenames carry a hash), synced
-zoom/pan across tabs, and the diff computation itself.
+**Shipped (PG19):** a preview row shows the committed goldens of every snapshot covering it, through a sticky
+mode toggle in the render pane. Not a tab beside the live render, as this entry sketched — a **mode**, reusing
+`RenderState.REFERENCE` and the strip the snapshot row already used, because a tab in `viewTabs` would have made
+the comparison-view machinery (per-tab overrides, close buttons, render generations) learn a "this tab is not a
+render" case. The lookup came out of `PreviewGalleryPanel` into `ReferenceStripLoader` on the way.
 
-Resolving *which* PNG belongs to *which* preview is the real work: the plugin renders the `main`
-`@Preview`, while the golden was produced from the `screenshotTest` function with its
-`PreviewComponent`/`PrimusTheme` wrapper — so a live-vs-golden diff is only apples-to-apples if the
-plugin renders the `screenshotTest` function itself.
+**Deliberately not built:** the diff, and with it the synced zoom this entry lists. Not for want of effort — the
+two images are not comparable. The plugin renders the `main` `@Preview`; the golden came from the
+`screenshotTest` function with its `PreviewComponent`/`PrimusTheme` wrapper, so they are *expected* to differ,
+and a UI inviting the comparison would present that difference as a regression.
+
+**What is left, and its one gate.** Making them comparable means rendering the `screenshotTest` function itself.
+The [spike](superpowers/specs/2026-08-10-screenshottest-render-spike.md) answered how close that is: module
+attribution, facet, build target, configuration and layoutlib inflation all succeed **without** the experimental
+flag — the composition then cannot load the snapshot class, because AS's `ClassFileFinder` calls the holder
+module ambiguous and falls back to main. The class file is on disk, already compiled. So the remaining question
+is narrow: **can a plugin inject the `debugScreenshotTest` classes directory into `StudioModuleRenderContext`'s
+classloader?** Answer that before designing the diff.
 
 - **Hooks:** `PreviewRenderPanel`, `ComparisonViewList`, `ZoomableRenderView`, `RenderImageExporter`
-- **Effort:** L · **Risk:** **high** — see the spike below
-- **Depends on:** F1 (for the preview → snapshot mapping)
-- **Open:** reference filename → preview mapping (`..._phone_<hash>_0.png`); tolerance for
-  antialiasing noise; what the diff shows when the two images differ in size.
+- **Effort:** M (diff half) · **Risk:** medium — the AS-internal unknown is now one named question, not a field
+- **Depends on:** F1 (for the preview → snapshot mapping), and the classloader spike
+- **Open:** whether the classes directory can be injected; tolerance for antialiasing noise; what the diff shows
+  when the two images differ in size.
+- **Known rough edge (accepted at the PG19 gate):** switching the mode *on* briefly shows "Nothing selected" with
+  an empty toolbar, because `pipeline.select(null)` publishes `IDLE` synchronously. Toggling off is smooth, so it
+  reads as asymmetric while arrow-scanning. Suppressing that publish is not a one-liner: `showReferenceStrip`
+  currently relies on it having cleared the comparison tabs, so it would first have to detach `renderScroll` from
+  `viewTabs` itself.
 
-> **Spike required before F5/F6.** The `screenshotTest` source set only enters the AGP model when
-> `-Pandroid.experimental.enableScreenshotTest=true` is set, and the reference project is synced without
-> it. Phase 14 (`docs/superpowers/specs/2026-07-31-snapshot-source-set-fallback-design.md`) sidesteps the
-> question by reading `src/screenshotTest` from the VFS rather than from the project model — note that its
-> own evidence section retracts the stronger claim that the index could not see those files. That covers
-> reading and parsing
-> the source; whether the plugin can resolve and render a `@PreviewTest` composable from that source set
-> through `RenderModelResolver` is **still unverified** — rendering through layoutlib is a different,
-> AS-internal question Phase 14 deliberately left untouched. Loading and displaying the reference PNG does
-> not depend on this; rendering the `screenshotTest` function live does. Run a Phase-0-style spike (as in
-> the plugin spec §10) before committing to a design.
+> **The original spike is answered — see [2026-08-10-screenshottest-render-spike.md](superpowers/specs/2026-08-10-screenshottest-render-spike.md).**
+> It asked whether the plugin can resolve and render a `@PreviewTest` composable from `src/screenshotTest`
+> through `RenderModelResolver` in a project synced without `-Pandroid.experimental.enableScreenshotTest=true`.
+> The answer is *almost*: everything up to the class load succeeds, and the flag turned out not to be the
+> obstacle — module attribution worked without it. What blocks the render is `ClassFileFinder` falling back to
+> the main module, so the compiled snapshot class (which is on disk) is not on the render classpath. The
+> follow-up question named in F5 above replaces this one; do not re-run this spike.
 
 #### F6 · Run the Gradle tasks and badge failures
 
