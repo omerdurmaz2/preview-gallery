@@ -38,6 +38,7 @@ import com.intellij.openapi.util.Disposer
 import com.intellij.openapi.vfs.VirtualFile
 import com.intellij.psi.search.FilenameIndex
 import com.intellij.psi.search.GlobalSearchScope
+import com.intellij.psi.util.PsiModificationTracker
 import com.intellij.ui.DoubleClickListener
 import com.intellij.ui.DocumentAdapter
 import com.intellij.ui.OnePixelSplitter
@@ -239,7 +240,7 @@ class PreviewGalleryPanel(
             CoverageFilterToggleAction(project) { applyFilter() },
             CoverageReportAction(project, { entries }, { orphanSnapshots }),
             McpServerAction(project),
-            VerifySnapshotsAction({ startVerify(selectedSnapshotEntry()) }, { verifyTarget() != null }),
+            VerifySnapshotsAction({ startVerify(selectedSnapshotEntry()) }, { selectedSnapshotEntry() != null }),
             commonActions.createExpandAllAction(treeExpander, this),
             commonActions.createCollapseAllAction(treeExpander, this),
         )
@@ -726,6 +727,11 @@ class PreviewGalleryPanel(
      *
      * The variant comes from the reference roots rather than from a default (spec D6): the variant worth
      * checking is the one whose goldens are committed, and a module with none has nothing to compare against.
+     *
+     * EDT-only, on purpose: it reads the tree's selection directly and touches the project model and the VFS
+     * ([ModuleDirectoryResolver.resolve], [ReferenceRoots.of]), relying on the EDT's own implicit read access
+     * rather than taking one explicitly. [runVerify] is its one caller, from [verifyAlarm]'s callback, which
+     * also runs on the EDT — do not call this from a toolbar `update()` poll or any other thread.
      */
     private fun verifyTarget(): VerifyTarget? {
         val snapshot = selectedSnapshotEntry() ?: return null
@@ -754,6 +760,9 @@ class PreviewGalleryPanel(
     private fun runVerify() {
         val target = verifyTarget() ?: return
         val store = SnapshotVerifyStore.getInstance(project)
+        // Captured before the task launches, not when it completes: an edit landing mid-run must make the
+        // result stale the instant it arrives, not read as fresh because the count moved before it was stamped.
+        val psiStamp = PsiModificationTracker.getInstance(project).modificationCount
         SnapshotVerifyRunner.getInstance(project).verify(target.module, target.buildVariant) { outcome, started ->
             val results = if (started == null) {
                 emptyList()
@@ -776,6 +785,7 @@ class PreviewGalleryPanel(
                     outcome = resolved,
                     results = results,
                     ranAtMillis = started?.startedAtMillis ?: System.currentTimeMillis(),
+                    psiStamp = psiStamp,
                 ),
             )
             ApplicationManager.getApplication().invokeLater({

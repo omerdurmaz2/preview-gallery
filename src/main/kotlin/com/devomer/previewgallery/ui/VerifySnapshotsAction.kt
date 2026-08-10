@@ -1,6 +1,7 @@
 package com.devomer.previewgallery.ui
 
 import com.devomer.previewgallery.PreviewGalleryBundle
+import com.devomer.previewgallery.render.SnapshotVerifyRunner
 import com.intellij.icons.AllIcons
 import com.intellij.openapi.actionSystem.ActionUpdateThread
 import com.intellij.openapi.actionSystem.AnAction
@@ -10,9 +11,11 @@ import com.intellij.openapi.project.DumbAware
 /**
  * Starts a verify for the selected row's module, superseding whatever run is in flight (spec D2).
  *
- * Not `DumbAware` by accident — it is, because the runner itself refuses while indexing and reports why; a
- * disabled button during indexing would say less. Hidden rather than disabled when there is nothing to verify,
- * matching this panel's own convention.
+ * `DumbAware`: [SnapshotVerifyRunner.verify] refuses outright while the project is indexing, logging at debug
+ * and reporting [SnapshotVerifyRunner.Outcome.NOT_RUN] rather than throwing — a disabled button here would say
+ * no more than an enabled one that quietly does nothing. Surfacing that refusal, and `NOT_RUN` in general, to
+ * the user is the display layer's job, not this action's. Hidden rather than disabled when there is nothing to
+ * verify, matching this panel's own convention.
  */
 class VerifySnapshotsAction(
     private val onVerify: () -> Unit,

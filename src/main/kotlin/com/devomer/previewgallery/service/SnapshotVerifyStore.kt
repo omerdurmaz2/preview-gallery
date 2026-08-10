@@ -4,6 +4,7 @@ import com.devomer.previewgallery.render.SnapshotVerifyRunner
 import com.intellij.openapi.components.Service
 import com.intellij.openapi.components.service
 import com.intellij.openapi.project.Project
+import com.intellij.psi.util.PsiModificationTracker
 import java.util.concurrent.ConcurrentHashMap
 
 /**
@@ -14,15 +15,18 @@ import java.util.concurrent.ConcurrentHashMap
  * silent; deleting also throws away minutes of Gradle over one keystroke.
  */
 @Service(Service.Level.PROJECT)
-class SnapshotVerifyStore {
+class SnapshotVerifyStore(private val project: Project) {
 
-    /** [stale] means the module's source changed after [ranAtMillis] — the results still describe a real run,
-     *  just not the code on disk now. */
+    /** [stale] is the coarse flag [markStale]/[markAllStale] set for an event too broad to compare against a PSI
+     *  count — a VFS change, a project reload. [psiStamp] is what catches the event those miss, an ordinary
+     *  edit: it is [PsiModificationTracker.getModificationCount] as it stood when the run was captured, and
+     *  [isStale] reads true the moment that count moves on, with no listener of its own to keep in step. */
     data class Run(
         val moduleName: String,
         val outcome: SnapshotVerifyRunner.Outcome,
         val results: List<SnapshotVerifyResults.SnapshotResult>,
         val ranAtMillis: Long,
+        val psiStamp: Long,
         val stale: Boolean = false,
     )
 
@@ -53,6 +57,13 @@ class SnapshotVerifyStore {
     fun markAllStale() {
         runs.replaceAll { _, run -> if (run.stale) run else run.copy(stale = true) }
     }
+
+    /** Whether [run]'s verdict no longer describes the code on disk (spec D4): either a coarse event marked it
+     *  explicitly, or an ordinary edit moved [PsiModificationTracker] past [Run.psiStamp] — the same counter
+     *  [PreviewIndexService] already keys its own cache on, so this reads a volatile field and needs no read
+     *  action, cheap enough to call once per visible row. */
+    fun isStale(run: Run): Boolean =
+        run.stale || run.psiStamp != PsiModificationTracker.getInstance(project).modificationCount
 
     companion object {
         fun getInstance(project: Project): SnapshotVerifyStore = project.service()
