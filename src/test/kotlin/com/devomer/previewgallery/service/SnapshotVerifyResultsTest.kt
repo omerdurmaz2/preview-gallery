@@ -1,6 +1,8 @@
 package com.devomer.previewgallery.service
 
 import org.junit.Assert.assertEquals
+import org.junit.Assert.assertFalse
+import org.junit.Assert.assertNotNull
 import org.junit.Assert.assertNull
 import org.junit.Rule
 import org.junit.Test
@@ -78,7 +80,78 @@ class SnapshotVerifyResultsTest {
 
         val results = SnapshotVerifyResults.read(tempFolder.root.toPath(), startedAtMillis = 0L, buildRoot = BUILD_ROOT)
 
-        assertEquals(SnapshotVerifyResults.Status.FAILED, results.single().status)
+        val result = results.single()
+        assertEquals(SnapshotVerifyResults.Status.FAILED, result.status)
+        assertEquals("images differ", result.failureSummary)
+        // No `Diff Image:` line means no diff path — the pane's own status-derived branch is what reports that.
+        assertNull(result.diffPath)
+    }
+
+    @Test
+    fun `the engine-wide file validate really writes parses its passing case, diff percent and all`() {
+        resultsFile("TEST-preview-screenshot-test-engine.xml", engineFileXml(REAL_PASSING_CASE))
+
+        val result = SnapshotVerifyResults.read(tempFolder.root.toPath(), 0L, BUILD_ROOT).single()
+
+        assertEquals("LiteProductCard_Selected_Snapshot", result.methodName)
+        assertEquals("small", result.variant)
+        assertEquals(SnapshotVerifyResults.Status.PASSED, result.status)
+        assertEquals(0.0, result.diffPercent ?: Double.NaN, 0.0)
+        assertNull(result.failureSummary)
+        assertNull(result.diffPath)
+        assertEquals(
+            "/repo/features/favorites/ui/src/screenshotTestDebug/reference/com/hepsiburada/ui/feature/" +
+                "favorites/screen/addproducts/AddProductsSnapshotsKt/LiteProductCard_Selected_Snapshot_small_72f29e0e_0.png",
+            result.goldenPath,
+        )
+    }
+
+    @Test
+    fun `the real failing case yields its diff path and its summary from the failure message`() {
+        resultsFile("TEST-preview-screenshot-test-engine.xml", engineFileXml(REAL_FAILING_CASE))
+
+        val result = SnapshotVerifyResults.read(tempFolder.root.toPath(), 0L, BUILD_ROOT).single()
+
+        assertEquals("RefreshFavoritesButton_Visible_Snapshot", result.methodName)
+        assertEquals("phone", result.variant)
+        assertEquals(SnapshotVerifyResults.Status.FAILED, result.status)
+        assertEquals(
+            "Size Mismatch. Reference image size: 840x168. Rendered image size: 371x168",
+            result.failureSummary,
+        )
+        assertEquals(
+            "/repo/features/favorites/ui/build/outputs/screenshotTest-results/preview/debug/diffs/com/" +
+                "hepsiburada/ui/feature/favorites/util/UtilSnapshotsKt/" +
+                "RefreshFavoritesButton_Visible_Snapshot_phone_eee23ffd_0.png",
+            result.diffPath,
+        )
+        // The message repeats both image paths as Expected:/Actual: lines; the properties stay authoritative.
+        assertEquals(
+            "/repo/features/favorites/ui/src/screenshotTestDebug/reference/com/hepsiburada/ui/feature/favorites/" +
+                "util/UtilSnapshotsKt/RefreshFavoritesButton_Visible_Snapshot_phone_eee23ffd_0.png",
+            result.goldenPath,
+        )
+        // A size mismatch measures no percentage at all, so there is none to report.
+        assertNull(result.diffPercent)
+    }
+
+    @Test
+    fun `a Diff Image line whose file was never written still yields the path`() {
+        // The gate's own case: a size mismatch names a diff image and leaves `diffs/` empty. Reporting the path
+        // is what lets the pane say the diff could not be read; silently nulling it would read as "no difference".
+        resultsFile("TEST-preview-screenshot-test-engine.xml", engineFileXml(REAL_FAILING_CASE))
+        val buildRoot = tempFolder.newFolder("repo")
+        File(
+            buildRoot,
+            "features/favorites/ui/build/outputs/screenshotTest-results/preview/debug/diffs/com/hepsiburada/" +
+                "ui/feature/favorites/util/UtilSnapshotsKt",
+        ).mkdirs()
+
+        val result = SnapshotVerifyResults.read(tempFolder.root.toPath(), 0L, buildRoot.toPath()).single()
+
+        val diffPath = result.diffPath
+        assertNotNull(diffPath)
+        assertFalse(File(diffPath.orEmpty()).exists())
     }
 
     @Test
@@ -168,9 +241,59 @@ class SnapshotVerifyResultsTest {
         assertNull(result.renderedPath)
     }
 
+    /** The engine-wide file `validate` writes: one `testsuite` holding every case in the module, where `update`
+     *  writes one file per facade class. Element and attributes copied from the gate's real run. Concatenated
+     *  rather than interpolated into a `trimIndent`ed template, which would leave the XML declaration indented. */
+    private fun engineFileXml(cases: String) = ENGINE_FILE_HEADER + cases + "</testsuite>\n"
+
     private companion object {
         /** Stands in for [com.devomer.previewgallery.render.SnapshotVerifyRunner.Started.buildRoot]: the
          *  directory Gradle was invoked from, deliberately unrelated to the results directory these tests read. */
         val BUILD_ROOT: Path = Path.of("/repo")
+
+        const val ENGINE_FILE_HEADER = """<?xml version='1.0' encoding='UTF-8'?>
+<testsuite name="Preview Screenshot Test Engine" tests="100" skipped="0" failures="1" errors="0" time="41.387" hostname="hb-dev-148" timestamp="2026-08-11T10:10:02">
+<properties>
+<property name="deviceId" value="Preview"/>
+<property name="deviceDisplayName" value="Preview"/>
+</properties>
+"""
+
+        /** Copied verbatim out of the gate's `TEST-preview-screenshot-test-engine.xml`, `system-out` and all. */
+        const val REAL_PASSING_CASE = """
+<testcase name="LiteProductCard_Selected_Snapshot_small_{widthDp=320}" classname="com.hepsiburada.ui.feature.favorites.screen.addproducts.AddProductsSnapshotsKt" time="0.047">
+<properties>
+<property name="PreviewScreenshot.diffPercent" value="0.0"/>
+<property name="PreviewScreenshot.previewName" value="small"/>
+<property name="PreviewScreenshot.methodName" value="LiteProductCard_Selected_Snapshot"/>
+<property name="PreviewScreenshot.refImagePath" value="features/favorites/ui/src/screenshotTestDebug/reference/com/hepsiburada/ui/feature/favorites/screen/addproducts/AddProductsSnapshotsKt/LiteProductCard_Selected_Snapshot_small_72f29e0e_0.png"/>
+<property name="PreviewScreenshot.newImagePath" value="features/favorites/ui/build/outputs/screenshotTest-results/preview/debug/rendered/com/hepsiburada/ui/feature/favorites/screen/addproducts/AddProductsSnapshotsKt/LiteProductCard_Selected_Snapshot_small_72f29e0e_0.png"/>
+</properties>
+
+<system-out><![CDATA[
+unique-id: [engine:preview-screenshot-test-engine]/[class:com.hepsiburada.ui.feature.favorites.screen.addproducts.AddProductsSnapshotsKt]/[method:LiteProductCard_Selected_Snapshot]
+display-name: LiteProductCard_Selected_Snapshot_small_{widthDp=320}
+]]></system-out>
+</testcase>
+"""
+
+        /** The one failure the gate produced, verbatim: no `diffPercent`, and the diff path only in the message. */
+        const val REAL_FAILING_CASE = """
+<testcase name="RefreshFavoritesButton_Visible_Snapshot_phone" classname="com.hepsiburada.ui.feature.favorites.util.UtilSnapshotsKt" time="0.006">
+<properties>
+<property name="PreviewScreenshot.previewName" value="phone"/>
+<property name="PreviewScreenshot.methodName" value="RefreshFavoritesButton_Visible_Snapshot"/>
+<property name="PreviewScreenshot.refImagePath" value="features/favorites/ui/src/screenshotTestDebug/reference/com/hepsiburada/ui/feature/favorites/util/UtilSnapshotsKt/RefreshFavoritesButton_Visible_Snapshot_phone_eee23ffd_0.png"/>
+<property name="PreviewScreenshot.newImagePath" value="features/favorites/ui/build/outputs/screenshotTest-results/preview/debug/rendered/com/hepsiburada/ui/feature/favorites/util/UtilSnapshotsKt/RefreshFavoritesButton_Visible_Snapshot_phone_eee23ffd_0.png"/>
+</properties>
+
+<failure message="Size Mismatch. Reference image size: 840x168. Rendered image size: 371x168&#xa;Expected: features/favorites/ui/src/screenshotTestDebug/reference/com/hepsiburada/ui/feature/favorites/util/UtilSnapshotsKt/RefreshFavoritesButton_Visible_Snapshot_phone_eee23ffd_0.png&#xa;Actual: features/favorites/ui/build/outputs/screenshotTest-results/preview/debug/rendered/com/hepsiburada/ui/feature/favorites/util/UtilSnapshotsKt/RefreshFavoritesButton_Visible_Snapshot_phone_eee23ffd_0.png&#xa;Diff Image: features/favorites/ui/build/outputs/screenshotTest-results/preview/debug/diffs/com/hepsiburada/ui/feature/favorites/util/UtilSnapshotsKt/RefreshFavoritesButton_Visible_Snapshot_phone_eee23ffd_0.png&#xa;" type="com.android.tools.screenshot.differ.ImageComparisonAssertionError"><![CDATA[com.android.tools.screenshot.differ.ImageComparisonAssertionError: Size Mismatch. Reference image size: 840x168. Rendered image size: 371x168
+Expected: features/favorites/ui/src/screenshotTestDebug/reference/com/hepsiburada/ui/feature/favorites/util/UtilSnapshotsKt/RefreshFavoritesButton_Visible_Snapshot_phone_eee23ffd_0.png
+Actual: features/favorites/ui/build/outputs/screenshotTest-results/preview/debug/rendered/com/hepsiburada/ui/feature/favorites/util/UtilSnapshotsKt/RefreshFavoritesButton_Visible_Snapshot_phone_eee23ffd_0.png
+Diff Image: features/favorites/ui/build/outputs/screenshotTest-results/preview/debug/diffs/com/hepsiburada/ui/feature/favorites/util/UtilSnapshotsKt/RefreshFavoritesButton_Visible_Snapshot_phone_eee23ffd_0.png
+
+]]></failure>
+</testcase>
+"""
     }
 }

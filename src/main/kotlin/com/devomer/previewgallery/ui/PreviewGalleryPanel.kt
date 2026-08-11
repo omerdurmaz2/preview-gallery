@@ -880,11 +880,18 @@ class PreviewGalleryPanel(
      *
      * Read at publish time, on the EDT, for the same reason [unmeasuredRun] is: the run this decode started
      * against may have been superseded, or gone stale, while the PNGs were being decoded off the EDT.
+     *
+     * [failure] is the task's own sentence about what went wrong, and this pane is where it goes (PG20-9). The
+     * tree badge stays the one word `differs`, because a row is a row; `Size Mismatch. Reference image size:
+     * 840x168. Rendered image size: 371x168` is what the user needs the moment they click that row, and it is
+     * also what explains the missing diff sitting next to it — a size mismatch names a diff image and writes
+     * none, so "diff could not be read" reads as a bug on its own and as an explanation beside this.
      */
-    private fun verifyMessage(moduleName: String, missing: List<String>): String? {
+    private fun verifyMessage(moduleName: String, missing: List<String>, failure: String?): String? {
         val store = SnapshotVerifyStore.getInstance(project)
         val run = store.forModule(moduleName)
         val parts = listOfNotNull(
+            failure,
             run?.takeIf { store.isStale(it) }?.let {
                 PreviewGalleryBundle.message("verify.staleResult", DateFormatUtil.formatPrettyDateTime(it.ranAtMillis))
             },
@@ -892,6 +899,16 @@ class PreviewGalleryPanel(
                 ?.let { PreviewGalleryBundle.message("render.referenceUnreadable", it.joinToString(", ")) },
         )
         return parts.takeIf { it.isNotEmpty() }?.joinToString(" · ")
+    }
+
+    /** What [verifyMessage] says about [result] itself: the task's failure sentence, plus the difference it
+     *  measured when it managed to measure one — a size mismatch never does, and reports no percentage at all. */
+    private fun failureText(result: SnapshotVerifyResults.SnapshotResult): String? {
+        if (result.status != SnapshotVerifyResults.Status.FAILED) return null
+        return listOfNotNull(
+            result.failureSummary,
+            result.diffPercent?.takeIf { it > 0.0 }?.let { PreviewGalleryBundle.message("verify.diffPercent", it) },
+        ).takeIf { it.isNotEmpty() }?.joinToString(" · ")
     }
 
     /**
@@ -916,8 +933,10 @@ class PreviewGalleryPanel(
      * [ReferenceStripLoader.decode]. A named path that no longer exists is reported rather than dropped: a strip
      * silently missing its diff would read as "no difference", which is the one thing it must never say by
      * accident. That includes a `FAILED` result whose own [SnapshotVerifyResults.SnapshotResult.diffPath] is null
-     * outright — [SnapshotVerifyResults]' own class doc marks that property name as assumed, not observed, from
-     * only a passing run, so a wrong assumption there must read as "diff missing", never as "no difference".
+     * outright: this `status`-derived branch is what kept the pane honest for the whole period the reader was
+     * looking for a property name that does not exist, and the gate proved it earns its place a second way — a
+     * size mismatch *does* name a diff image and then writes no file, so the named path and the written file are
+     * two separate things to be wrong about and both must land as "diff missing".
      */
     private fun decodeVerifyImages(result: SnapshotVerifyResults.SnapshotResult): Pair<List<ReferenceStripView.LabelledImage>, List<String>> {
         val sources = buildList {
@@ -957,7 +976,7 @@ class PreviewGalleryPanel(
                 if (disposalCheck.isDisposed) return@invokeLater
                 if (selectedSnapshotEntry()?.id != snapshot.id) return@invokeLater
                 if (unmeasuredRun(snapshot.moduleName) != null) return@invokeLater
-                renderPanel.showVerified(snapshot, images, verifyMessage(snapshot.moduleName, missing))
+                renderPanel.showVerified(snapshot, images, verifyMessage(snapshot.moduleName, missing, failureText(result)))
             }, modality)
         }
     }
@@ -967,7 +986,7 @@ class PreviewGalleryPanel(
      *  same trade-off, same reason: the test seam needs routing finished by the time it returns. */
     private fun publishVerifiedResultSynchronously(snapshot: PreviewEntry, result: SnapshotVerifyResults.SnapshotResult) {
         val (images, missing) = decodeVerifyImages(result)
-        renderPanel.showVerified(snapshot, images, verifyMessage(snapshot.moduleName, missing))
+        renderPanel.showVerified(snapshot, images, verifyMessage(snapshot.moduleName, missing, failureText(result)))
     }
 
     /** The rows whose goldens the current selection should show, or empty when it should render instead. The one
