@@ -4,7 +4,9 @@ import com.devomer.previewgallery.service.SnapshotSourceScanner
 import com.intellij.openapi.application.ReadAction
 import com.intellij.openapi.diagnostic.thisLogger
 import com.intellij.openapi.module.Module
+import com.intellij.openapi.progress.ProcessCanceledException
 import com.intellij.openapi.roots.ModuleRootManager
+import com.intellij.util.concurrency.AppExecutorUtil
 import org.jetbrains.plugins.gradle.util.GradleModuleData
 import org.jetbrains.plugins.gradle.util.GradleUtil
 import java.io.File
@@ -108,6 +110,58 @@ object ModuleFreshness {
         return newest
     }
 
+    /**
+     * [newestModuleSourceMtime]'s answer for a caller that must not wait for it: whatever is cached, expired or
+     * not, with a background refresh scheduled whenever the cached value is missing or past [CACHE_TTL_MS], and
+     * [onRefreshed] called once that refresh has landed.
+     *
+     * The paint path is the whole reason this exists. `PreviewTreeCellRenderer` asks whether a failing module's
+     * verdict is stale from inside Swing's per-row paint callback, and [newestModuleSourceMtime] walks that
+     * module's entire source tree — unbounded on purpose, see its own doc — the first time it is asked after the
+     * TTL lapses. On the EDT, once per repaint of a large module, that is a visible hitch.
+     *
+     * Serving the *expired* value rather than nothing is what keeps the badge steady: returning null every time the
+     * TTL lapsed would flicker a fresh verdict to "stale" once every [CACHE_TTL_MS], since
+     * [com.devomer.previewgallery.service.SnapshotVerifyStore.isStale] reads an unknown clock as stale. Only a cold
+     * cache reads unknown, and that is the safe direction — it overstates staleness for one paint, and
+     * [onRefreshed] corrects it.
+     *
+     * One walk per module at a time ([refreshingSourceMtime]): every painted row of a failing module asks this same
+     * question inside the same frame, and they must not each schedule their own walk.
+     */
+    fun cachedModuleSourceMtime(module: Module, onRefreshed: () -> Unit): Long? {
+        val entry = sourceMtimeCache[module.name]
+        if (entry == null || System.currentTimeMillis() - entry.computedAtMs > CACHE_TTL_MS) {
+            refreshSourceMtime(module, onRefreshed)
+        }
+        return entry?.value
+    }
+
+    /**
+     * Recomputes [module]'s source clock on the app executor and calls [onRefreshed] afterwards, at most one walk
+     * per module in flight. [newestModuleSourceMtime] does the work and the caching, so the two readers cannot
+     * disagree about what the clock means.
+     *
+     * [onRefreshed] is a `repaint()` in the only production caller, which Swing documents as safe from any thread;
+     * anything heavier belongs on the EDT by its own hop, not here. It fires whether or not the value changed —
+     * one extra repaint costs nothing, and comparing values here would mean caching them twice.
+     */
+    private fun refreshSourceMtime(module: Module, onRefreshed: () -> Unit) {
+        if (!refreshingSourceMtime.add(module.name)) return
+        AppExecutorUtil.getAppExecutorService().execute {
+            try {
+                if (!module.isDisposed) newestModuleSourceMtime(module)
+            } catch (e: ProcessCanceledException) {
+                thisLogger().debug("Source-clock refresh for '${module.name}' was cancelled", e)
+            } catch (e: Exception) {
+                thisLogger().warn("Failed to refresh the source clock for module '${module.name}'", e)
+            } finally {
+                refreshingSourceMtime.remove(module.name)
+            }
+            onRefreshed()
+        }
+    }
+
     /** The pure half of [newestModuleSourceMtime] — see its doc for why [buildOutputRoot]'s descendants are
      *  excluded rather than scanned, and why nothing found reads as null rather than as 0. */
     internal fun newestSourceMtime(sourceRoots: List<File>, buildOutputRoot: File?): Long? {
@@ -142,6 +196,7 @@ object ModuleFreshness {
 
     private val freshnessCache = ConcurrentHashMap<String, CacheEntry<Boolean>>()
     private val sourceMtimeCache = ConcurrentHashMap<String, CacheEntry<Long?>>()
+    private val refreshingSourceMtime = ConcurrentHashMap.newKeySet<String>()
 
     // Keyed by module name (like the rest of this plugin — see PreviewEntry.moduleName), not by the Module
     // instance: ModuleFreshness is an application-wide object, and holding Module references here would pin

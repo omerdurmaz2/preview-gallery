@@ -92,7 +92,7 @@ class PreviewTreeCellRenderer(private val project: Project? = null) : ColoredTre
                         it.methodName == node.row.indexed.functionName && it.status == SnapshotVerifyResults.Status.FAILED
                     }
                 ) {
-                    val label = if (store.isStale(verify)) {
+                    val label = if (store.isStale(verify) { tree.repaint() }) {
                         "${PreviewGalleryBundle.message("verify.differs")} · ${PreviewGalleryBundle.message("verify.stale")}"
                     } else {
                         PreviewGalleryBundle.message("verify.differs")

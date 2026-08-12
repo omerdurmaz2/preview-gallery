@@ -155,9 +155,19 @@ class SnapshotVerifyStore(private val project: Project) {
      */
     fun isStale(measurement: Measurement): Boolean = isStale(measurement, newestSourceMillis(measurement.moduleName))
 
+    /**
+     * [isStale] for a caller that must not block on a filesystem walk — the tree's per-row paint callback, and
+     * nothing else. Same rule and the same "an unknown clock reads stale" direction; only where the clock comes
+     * from differs. [onRefreshed] fires when the walk this call scheduled has landed, so the caller can ask again;
+     * see [ModuleFreshness.cachedModuleSourceMtime] for why an expired value is served rather than an unknown.
+     */
+    fun isStale(measurement: Measurement, onRefreshed: () -> Unit): Boolean =
+        isStale(measurement, moduleFor(measurement.moduleName)?.let { ModuleFreshness.cachedModuleSourceMtime(it, onRefreshed) })
+
     private fun newestSourceMillis(moduleName: String): Long? =
-        ModuleManager.getInstance(project).findModuleByName(moduleName)
-            ?.let { ModuleFreshness.newestModuleSourceMtime(it) }
+        moduleFor(moduleName)?.let { ModuleFreshness.newestModuleSourceMtime(it) }
+
+    private fun moduleFor(moduleName: String) = ModuleManager.getInstance(project).findModuleByName(moduleName)
 
     companion object {
         /**
