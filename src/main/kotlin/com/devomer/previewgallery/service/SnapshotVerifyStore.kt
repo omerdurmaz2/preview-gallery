@@ -50,7 +50,12 @@ class SnapshotVerifyStore(private val project: Project) {
 
     /** How the most recent run ended, whatever it did or did not measure. [SnapshotVerifyRunner.Outcome.RAN] means
      *  it produced results and so also replaced the [Measurement]; the other two mean it did not, and the display
-     *  owes the user that sentence next to whatever older measurement still stands. */
+     *  owes the user that sentence next to whatever older measurement still stands.
+     *
+     *  [atMillis] is when the run **ended**, deliberately unlike [Measurement.ranAtMillis], which is when its run
+     *  was launched. A measurement's stamp is compared against source mtimes and has to be the launch time to be
+     *  correct; an attempt's is only ever rendered, and a three-minute run reported as having happened three
+     *  minutes ago is simply a wrong sentence. The two must not converge. */
     data class Attempt(
         val outcome: SnapshotVerifyRunner.Outcome,
         val atMillis: Long,
@@ -74,12 +79,18 @@ class SnapshotVerifyStore(private val project: Project) {
      * passing the task UP-TO-DATE on a second run over unchanged sources. An earlier measurement going stale does
      * not change that either: a stale verdict is still the best one there is, and [isStale] is what says so at the
      * point it is shown.
+     *
+     * The two stamps are separate arguments because they are separate instants and the run between them takes
+     * minutes: [launchedAtMillis] is what [isStale] compares source mtimes against and is only ever read from the
+     * measurement, [finishedAtMillis] is what the display prints about the attempt. Passing one value for both
+     * makes the pane say a run that ended just now happened when it started.
      */
     fun record(
         moduleName: String,
         outcome: SnapshotVerifyRunner.Outcome,
         results: List<SnapshotVerifyResults.SnapshotResult>,
-        ranAtMillis: Long,
+        launchedAtMillis: Long,
+        finishedAtMillis: Long,
     ) {
         if (results.isEmpty()) {
             val ended = if (outcome == SnapshotVerifyRunner.Outcome.NOT_RUN) {
@@ -87,11 +98,11 @@ class SnapshotVerifyStore(private val project: Project) {
             } else {
                 SnapshotVerifyRunner.Outcome.BUILD_FAILED
             }
-            attempts[moduleName] = Attempt(ended, ranAtMillis)
+            attempts[moduleName] = Attempt(ended, finishedAtMillis)
             return
         }
-        attempts[moduleName] = Attempt(SnapshotVerifyRunner.Outcome.RAN, ranAtMillis)
-        measurements[moduleName] = Measurement(moduleName, results, ranAtMillis)
+        attempts[moduleName] = Attempt(SnapshotVerifyRunner.Outcome.RAN, finishedAtMillis)
+        measurements[moduleName] = Measurement(moduleName, results, launchedAtMillis)
     }
 
     fun measurementFor(moduleName: String): Measurement? = measurements[moduleName]

@@ -79,24 +79,28 @@ class SnapshotVerifyStoreTest : BasePlatformTestCase() {
         stale = stale,
     )
 
-    /** A run that measured something, which is the only kind that leaves a measurement behind. */
+    /** A run that measured something, which is the only kind that leaves a measurement behind. [finishedAtMillis]
+     *  defaults far enough past [launchedAtMillis] that a test asserting one can never be satisfied by the other. */
     private fun recordMeasuring(
         moduleName: String,
         methodName: String = "Widget_Default_Snapshot",
         status: SnapshotVerifyResults.Status = SnapshotVerifyResults.Status.PASSED,
-        ranAtMillis: Long = 0L,
+        launchedAtMillis: Long = 0L,
+        finishedAtMillis: Long = launchedAtMillis + RUN_DURATION,
     ) = store().record(
         moduleName = moduleName,
         outcome = SnapshotVerifyRunner.Outcome.RAN,
         results = results(methodName, status = status),
-        ranAtMillis = ranAtMillis,
+        launchedAtMillis = launchedAtMillis,
+        finishedAtMillis = finishedAtMillis,
     )
 
     private fun recordEmpty(
         moduleName: String,
         outcome: SnapshotVerifyRunner.Outcome = SnapshotVerifyRunner.Outcome.RAN,
-        ranAtMillis: Long = 1_000L,
-    ) = store().record(moduleName, outcome, emptyList(), ranAtMillis)
+        launchedAtMillis: Long = 1_000L,
+        finishedAtMillis: Long = launchedAtMillis + RUN_DURATION,
+    ) = store().record(moduleName, outcome, emptyList(), launchedAtMillis, finishedAtMillis)
 
     fun `test record then measurementFor round-trips`() {
         recordMeasuring(moduleName = "app.roundTrip")
@@ -188,7 +192,7 @@ class SnapshotVerifyStoreTest : BasePlatformTestCase() {
     }
 
     fun `test record stores the measurement and a RAN attempt for a run that produced results`() {
-        recordMeasuring(moduleName = "app.record.ran", ranAtMillis = 1_000L)
+        recordMeasuring(moduleName = "app.record.ran", launchedAtMillis = 1_000L)
 
         val stored = requireNotNull(store().measurementFor("app.record.ran"))
         assertEquals(results(), stored.results)
@@ -247,16 +251,33 @@ class SnapshotVerifyStoreTest : BasePlatformTestCase() {
         // The design flaw the split exists for. Second verify, sources unchanged: Gradle passes the task
         // UP-TO-DATE, the old XML fails the timestamp guard, and nothing is read. The module is clean, so it must
         // keep its verdict — and the attempt must still be on record, so the user is never told nothing happened.
-        recordMeasuring(moduleName = "app.upToDate", ranAtMillis = 500L)
+        recordMeasuring(moduleName = "app.upToDate", launchedAtMillis = 500L)
 
-        recordEmpty(moduleName = "app.upToDate", ranAtMillis = 1_000L)
+        recordEmpty(moduleName = "app.upToDate", launchedAtMillis = 1_000L)
 
         val kept = requireNotNull(store().measurementFor("app.upToDate")) { "the measurement must survive" }
         assertEquals(results(), kept.results)
         assertEquals(500L, kept.ranAtMillis)
         val attempt = requireNotNull(store().lastAttempt("app.upToDate")) { "the attempt must be recorded" }
         assertEquals(SnapshotVerifyRunner.Outcome.BUILD_FAILED, attempt.outcome)
-        assertEquals(1_000L, attempt.atMillis)
+        assertEquals(1_000L + RUN_DURATION, attempt.atMillis)
+    }
+
+    fun `test the attempt is stamped when the run ended and the measurement when it launched`() {
+        // A verify takes minutes. The measurement's stamp is compared against source mtimes and must stay the
+        // launch time; the attempt's is only ever rendered, and printing the launch time would tell the user a run
+        // that just finished happened three minutes ago. One value passed for both would satisfy neither
+        // assertion here.
+        recordMeasuring(moduleName = "app.stamps", launchedAtMillis = 500L, finishedAtMillis = 500L + RUN_DURATION)
+
+        assertEquals(500L, store().measurementFor("app.stamps")?.ranAtMillis)
+        assertEquals(500L + RUN_DURATION, store().lastAttempt("app.stamps")?.atMillis)
+    }
+
+    fun `test a run that measured nothing stamps its attempt when it ended, not when it launched`() {
+        recordEmpty(moduleName = "app.stamps.empty", launchedAtMillis = 500L, finishedAtMillis = 500L + RUN_DURATION)
+
+        assertEquals(500L + RUN_DURATION, store().lastAttempt("app.stamps.empty")?.atMillis)
     }
 
     fun `test a run that never started records its attempt and leaves the measurement standing`() {
@@ -272,11 +293,11 @@ class SnapshotVerifyStoreTest : BasePlatformTestCase() {
         recordMeasuring(moduleName = "app.replaced", methodName = "Widget_Old_Snapshot")
         recordEmpty(moduleName = "app.replaced", outcome = SnapshotVerifyRunner.Outcome.NOT_RUN)
 
-        recordMeasuring(moduleName = "app.replaced", methodName = "Widget_New_Snapshot", ranAtMillis = 2_000L)
+        recordMeasuring(moduleName = "app.replaced", methodName = "Widget_New_Snapshot", launchedAtMillis = 2_000L)
 
         assertEquals("Widget_New_Snapshot", store().measurementFor("app.replaced")?.results?.single()?.methodName)
         assertEquals(SnapshotVerifyRunner.Outcome.RAN, store().lastAttempt("app.replaced")?.outcome)
-        assertEquals(2_000L, store().lastAttempt("app.replaced")?.atMillis)
+        assertEquals(2_000L + RUN_DURATION, store().lastAttempt("app.replaced")?.atMillis)
     }
 
     fun `test a stale measurement is kept rather than replaced by a run that measured nothing`() {
@@ -294,9 +315,9 @@ class SnapshotVerifyStoreTest : BasePlatformTestCase() {
         // What the deleted `explicit` flag was buying: a run that measured nothing always leaves something on
         // record, so a button press can never look like a broken button. Who asked is no longer a distinction the
         // store makes, because it no longer decides which of the two facts to lose.
-        recordEmpty(moduleName = "app.attemptOnly", ranAtMillis = 1_000L)
+        recordEmpty(moduleName = "app.attemptOnly", launchedAtMillis = 1_000L)
         recordMeasuring(moduleName = "app.attemptAfterMeasurement")
-        recordEmpty(moduleName = "app.attemptAfterMeasurement", ranAtMillis = 1_000L)
+        recordEmpty(moduleName = "app.attemptAfterMeasurement", launchedAtMillis = 1_000L)
 
         assertEquals(SnapshotVerifyRunner.Outcome.BUILD_FAILED, store().lastAttempt("app.attemptOnly")?.outcome)
         assertEquals(SnapshotVerifyRunner.Outcome.BUILD_FAILED, store().lastAttempt("app.attemptAfterMeasurement")?.outcome)
@@ -306,10 +327,10 @@ class SnapshotVerifyStoreTest : BasePlatformTestCase() {
     fun `test two runs with the same inputs are stored identically now that no flag says who asked`() {
         // The `explicit` parameter used to make these two diverge, and that divergence was the bug: it decided
         // which of the two facts to lose rather than keeping both.
-        recordMeasuring(moduleName = "app.sameInputs.a", ranAtMillis = 500L)
-        recordEmpty(moduleName = "app.sameInputs.a", ranAtMillis = 1_000L)
-        recordMeasuring(moduleName = "app.sameInputs.b", ranAtMillis = 500L)
-        recordEmpty(moduleName = "app.sameInputs.b", ranAtMillis = 1_000L)
+        recordMeasuring(moduleName = "app.sameInputs.a", launchedAtMillis = 500L)
+        recordEmpty(moduleName = "app.sameInputs.a", launchedAtMillis = 1_000L)
+        recordMeasuring(moduleName = "app.sameInputs.b", launchedAtMillis = 500L)
+        recordEmpty(moduleName = "app.sameInputs.b", launchedAtMillis = 1_000L)
 
         assertEquals(
             store().measurementFor("app.sameInputs.a")?.results,
@@ -342,5 +363,10 @@ class SnapshotVerifyStoreTest : BasePlatformTestCase() {
         /** A fixed point rather than the wall clock, so the source files this fixture writes sit on a known side
          *  of it: far enough in the future that a real directory mtime created during the run is older. */
         const val RUN_LAUNCHED_AT = 2_000_000_000_000L
+
+        /** How long the runs in this class take, so a measurement's launch stamp and its attempt's end stamp are
+         *  never the same number — a fix that collapsed the two back into one value would fail here. Three
+         *  minutes is what the real task takes. */
+        const val RUN_DURATION = 180_000L
     }
 }

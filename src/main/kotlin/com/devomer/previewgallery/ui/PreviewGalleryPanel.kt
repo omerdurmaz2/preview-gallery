@@ -828,11 +828,13 @@ class PreviewGalleryPanel(
             } else {
                 SnapshotVerifyResults.read(started.resultsDirectory, started.startedAtMillis, started.buildRoot)
             }
+            val now = System.currentTimeMillis()
             store.record(
                 moduleName = target.moduleName,
                 outcome = outcome,
                 results = results,
-                ranAtMillis = started?.startedAtMillis ?: System.currentTimeMillis(),
+                launchedAtMillis = started?.startedAtMillis ?: now,
+                finishedAtMillis = now,
             )
             showVerifyOutcome(target.moduleName)
         }
