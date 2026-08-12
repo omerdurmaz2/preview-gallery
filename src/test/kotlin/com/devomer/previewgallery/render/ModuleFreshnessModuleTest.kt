@@ -6,6 +6,8 @@ import com.intellij.openapi.vfs.VirtualFile
 import com.intellij.testFramework.PsiTestUtil
 import com.intellij.testFramework.fixtures.BasePlatformTestCase
 import java.io.File
+import java.util.concurrent.CountDownLatch
+import java.util.concurrent.TimeUnit
 
 /**
  * Exercises [ModuleFreshness.isModuleFresh], [ModuleFreshness.newestModuleSourceMtime] and
@@ -102,6 +104,38 @@ class ModuleFreshnessModuleTest : BasePlatformTestCase() {
         ModuleFreshness.invalidate(module)
 
         assertEquals(NEWER_MTIME, requireNotNull(ModuleFreshness.newestModuleSourceMtime(module)))
+    }
+
+    fun `test the non-blocking source clock reads unknown while cold and the real mtime once the refresh lands`() {
+        val refreshed = CountDownLatch(1)
+
+        assertNull(
+            "a cold cache must not walk the tree on the caller's thread",
+            ModuleFreshness.cachedModuleSourceMtime(module) { refreshed.countDown() },
+        )
+        assertTrue("the background refresh did not land", refreshed.await(10, TimeUnit.SECONDS))
+
+        assertEquals(OLDER_MTIME, requireNotNull(ModuleFreshness.cachedModuleSourceMtime(module) {}))
+    }
+
+    fun `test the non-blocking source clock serves the expired value rather than unknown`() {
+        assertEquals(OLDER_MTIME, requireNotNull(ModuleFreshness.newestModuleSourceMtime(module)))
+        writeOnDisk("src/main/kotlin/com/example/Widget.kt", NEWER_MTIME)
+        ModuleFreshness.expireCachesForTest(module)
+        val refreshed = CountDownLatch(1)
+
+        assertEquals(
+            "an expired entry must still be served, or the badge flickers once every TTL",
+            OLDER_MTIME,
+            requireNotNull(ModuleFreshness.cachedModuleSourceMtime(module) { refreshed.countDown() }),
+        )
+        assertTrue("the background refresh did not land", refreshed.await(10, TimeUnit.SECONDS))
+
+        assertEquals(
+            "the refresh behind the expired value must land the new mtime",
+            NEWER_MTIME,
+            requireNotNull(ModuleFreshness.cachedModuleSourceMtime(module) {}),
+        )
     }
 
     private companion object {

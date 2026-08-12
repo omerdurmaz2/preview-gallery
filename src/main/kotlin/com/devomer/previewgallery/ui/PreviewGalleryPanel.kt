@@ -449,6 +449,22 @@ class PreviewGalleryPanel(
     @TestOnly
     fun navigateToSelectionForTest(): Boolean = navigateToSelection()
 
+    /** Arms the verify alarm exactly as the toolbar action and the selection listener do, so the debounce rules can
+     *  be asserted without a 400 ms wait. Deliberately does not fire the run — [runVerifyForTest] is for that. */
+    @TestOnly
+    internal fun verifyForTest(force: Boolean) = startVerify(selectedSnapshotEntry(), force)
+
+    /** How many verify runs are currently armed on [verifyAlarm]: 1 after a request that stands, 0 after one that
+     *  was cancelled or declined. */
+    @get:TestOnly
+    internal val pendingVerifyRequestsForTest: Int get() = verifyAlarm.activeRequestCount
+
+    /** Fires the run the alarm would fire, on the calling thread. [SnapshotVerifyRunner] refuses synchronously
+     *  while the project is indexing, and [runVerify] answers a missing target synchronously, so both of those
+     *  paths complete before this returns. */
+    @TestOnly
+    internal fun runVerifyForTest(force: Boolean) = runVerify(force)
+
     /** Whether [searchField] currently holds a query the tree should filter/expand for. [PreviewSearchFilter]
      *  trims the query before matching, so a single stray space filters nothing — this must agree with that
      *  trimming (`isNotBlank`, not `isNotEmpty`), or a whitespace-only query would force-expand the entire

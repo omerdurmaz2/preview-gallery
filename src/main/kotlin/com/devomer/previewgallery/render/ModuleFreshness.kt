@@ -7,6 +7,7 @@ import com.intellij.openapi.module.Module
 import com.intellij.openapi.progress.ProcessCanceledException
 import com.intellij.openapi.roots.ModuleRootManager
 import com.intellij.util.concurrency.AppExecutorUtil
+import org.jetbrains.annotations.TestOnly
 import org.jetbrains.plugins.gradle.util.GradleModuleData
 import org.jetbrains.plugins.gradle.util.GradleUtil
 import java.io.File
@@ -198,6 +199,15 @@ object ModuleFreshness {
     fun invalidate(module: Module) {
         freshnessCache.remove(module.name)
         sourceMtimeCache.remove(module.name)
+    }
+
+    /** Ages [module]'s cached verdicts past [CACHE_TTL_MS] without waiting for it, so the serve-while-expired
+     *  branch of [cachedModuleSourceMtime] can be asserted. Deliberately not [invalidate], which *drops* the entry
+     *  — the whole point of that branch is what happens to an entry that still exists and is merely old. */
+    @TestOnly
+    internal fun expireCachesForTest(module: Module) {
+        sourceMtimeCache.computeIfPresent(module.name) { _, entry -> CacheEntry(0L, entry.value) }
+        freshnessCache.computeIfPresent(module.name) { _, entry -> CacheEntry(0L, entry.value) }
     }
 
     /** A few seconds: long enough that arrow-keying through several previews in one module hits the cache,

@@ -6,6 +6,7 @@ import com.intellij.openapi.components.Service
 import com.intellij.openapi.components.service
 import com.intellij.openapi.module.ModuleManager
 import com.intellij.openapi.project.Project
+import org.jetbrains.annotations.TestOnly
 import java.util.concurrent.ConcurrentHashMap
 
 /**
@@ -108,6 +109,16 @@ class SnapshotVerifyStore(private val project: Project) {
     fun measurementFor(moduleName: String): Measurement? = measurements[moduleName]
 
     fun lastAttempt(moduleName: String): Attempt? = attempts[moduleName]
+
+    /** Drops every measurement and attempt this project-level service holds, so a test that recorded one for the
+     *  light fixture's real module cannot leak it into a later test — `BasePlatformTestCase` reuses one light
+     *  project (and so this same service instance) for the whole run, the same reuse [resetFilterToggles] exists
+     *  to undo for the toolbar toggles. */
+    @TestOnly
+    internal fun clearForTest() {
+        measurements.clear()
+        attempts.clear()
+    }
 
     /** The result for one snapshot function and variant, or null when this module has no measurement, or the
      *  measurement has no entry for it — a snapshot added since the run is exactly that case, and it must read as

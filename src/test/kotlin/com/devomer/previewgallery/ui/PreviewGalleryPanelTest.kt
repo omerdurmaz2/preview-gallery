@@ -1,18 +1,28 @@
 package com.devomer.previewgallery.ui
 
+import com.devomer.previewgallery.PreviewGalleryBundle
 import com.devomer.previewgallery.model.PreviewEntry
+import com.devomer.previewgallery.render.ModuleFreshness
 import com.devomer.previewgallery.render.RenderResultView
 import com.devomer.previewgallery.render.RenderState
+import com.devomer.previewgallery.render.SnapshotVerifyRunner
 import com.devomer.previewgallery.service.PreviewIndexService
+import com.devomer.previewgallery.service.SnapshotVerifyResults
+import com.devomer.previewgallery.service.SnapshotVerifyStore
 import com.devomer.previewgallery.withExcludedRoot
 import com.intellij.openapi.application.WriteAction
 import com.intellij.openapi.fileEditor.FileEditorManager
 import com.intellij.openapi.util.Disposer
+import com.intellij.openapi.util.io.FileUtil
+import com.intellij.openapi.vfs.LocalFileSystem
+import com.intellij.testFramework.DumbModeTestUtils
 import com.intellij.testFramework.LightProjectDescriptor
 import com.intellij.testFramework.PlatformTestUtil
+import com.intellij.testFramework.PsiTestUtil
 import com.intellij.testFramework.fixtures.BasePlatformTestCase
 import java.awt.image.BufferedImage
 import java.io.ByteArrayOutputStream
+import java.io.File
 import java.io.IOException
 import javax.imageio.ImageIO
 
@@ -20,6 +30,7 @@ class PreviewGalleryPanelTest : BasePlatformTestCase() {
 
     override fun tearDown() {
         try {
+            SnapshotVerifyStore.getInstance(project).clearForTest()
             resetFilterToggles(project)
         } finally {
             super.tearDown()
@@ -540,6 +551,178 @@ class PreviewGalleryPanelTest : BasePlatformTestCase() {
         }
         val file = myFixture.tempDirFixture.createFile("$directory/$name")
         WriteAction.runAndWait<IOException> { file.setBinaryContent(bytes) }
+    }
+
+    private fun passingResult(methodName: String) = SnapshotVerifyResults.SnapshotResult(
+        methodName = methodName,
+        variant = "phone",
+        status = SnapshotVerifyResults.Status.PASSED,
+        goldenPath = null,
+        renderedPath = null,
+        diffPath = null,
+    )
+
+    fun `test a non-forced verify does not cancel an explicit one armed inside the debounce`() {
+        projectWithSnapshot()
+        // needsVerify must read false for the automatic call below, or its own "nothing to do" branch leaves one
+        // request armed too and the assertion could not tell the fix from the bug it covers — the fixture's
+        // temp:// source roots read as an unknown clock (always stale) on their own, so a real, disk-backed root
+        // older than the run is registered just for this test. Registered before the panel selects anything: a
+        // root change rebuilds the tree, and a snapshot selection is not restored across a rebuild.
+        val moduleDirectory = FileUtil.createTempDirectory("preview-gallery-verify-debounce", null)
+        val sourceFile = File(moduleDirectory, "src/main/kotlin/Widget.kt")
+        FileUtil.createParentDirs(sourceFile)
+        sourceFile.writeText("")
+        val ranAt = System.currentTimeMillis()
+        sourceFile.setLastModified(ranAt - 60_000)
+        val sourceRoot = requireNotNull(
+            LocalFileSystem.getInstance().refreshAndFindFileByIoFile(File(moduleDirectory, "src/main")),
+        ) { "The temp source root must be visible in the VFS" }
+        PsiTestUtil.addSourceContentToRoots(module, sourceRoot)
+        ModuleFreshness.invalidate(module)
+        try {
+            val panel = panel()
+            panel.reloadSynchronously()
+            panel.selectByLabelPathForTest("WidgetPreview", "Widget_Default_Snapshot")
+            SnapshotVerifyStore.getInstance(project).record(
+                moduleName = module.name,
+                outcome = SnapshotVerifyRunner.Outcome.RAN,
+                results = listOf(passingResult("Widget_Default_Snapshot")),
+                launchedAtMillis = ranAt,
+                finishedAtMillis = ranAt,
+            )
+
+            panel.verifyForTest(force = true)
+            assertEquals(1, panel.pendingVerifyRequestsForTest)
+
+            panel.verifyForTest(force = false)
+
+            assertEquals(
+                "an automatic verify must not cancel the run the user asked for",
+                1,
+                panel.pendingVerifyRequestsForTest,
+            )
+        } finally {
+            PsiTestUtil.removeContentEntry(module, sourceRoot)
+            ModuleFreshness.invalidate(module)
+            FileUtil.delete(moduleDirectory)
+        }
+    }
+
+    fun `test an explicit verify with no committed goldens says so instead of nothing`() {
+        projectWithSnapshot()
+        val panel = panel()
+        panel.reloadSynchronously()
+        panel.selectByLabelPathForTest("WidgetPreview", "Widget_Default_Snapshot")
+
+        panel.runVerifyForTest(force = true)
+
+        assertEquals(
+            PreviewGalleryBundle.message("verify.nothingToVerify"),
+            panel.renderMessageForTest,
+        )
+    }
+
+    fun `test an automatic verify with no committed goldens leaves the no-reference pane alone`() {
+        projectWithSnapshot()
+        val panel = panel()
+        panel.reloadSynchronously()
+        panel.selectByLabelPathForTest("WidgetPreview", "Widget_Default_Snapshot")
+
+        panel.runVerifyForTest(force = false)
+
+        assertEquals(
+            "the automatic path must not overwrite the pane's own instruction",
+            "No reference images — run the update…ScreenshotTest task for this module.",
+            panel.renderMessageForTest,
+        )
+    }
+
+    private fun projectWithSnapshotAndGolden() {
+        projectWithSnapshot()
+        referencePng(
+            "src/screenshotTestDebug/reference/com/example/WidgetSnapshotsKt",
+            "Widget_Default_Snapshot_phone_eee23ffd_0.png",
+        )
+    }
+
+    fun `test a verify pressed while the project is indexing records that it did not run`() {
+        projectWithSnapshotAndGolden()
+        val panel = panel()
+        panel.reloadSynchronously()
+        panel.selectByLabelPathForTest("WidgetPreview", "Widget_Default_Snapshot")
+
+        DumbModeTestUtils.runInDumbModeSynchronously(project) {
+            panel.runVerifyForTest(force = true)
+        }
+
+        val attempt = requireNotNull(SnapshotVerifyStore.getInstance(project).lastAttempt(module.name))
+        assertEquals(SnapshotVerifyRunner.Outcome.NOT_RUN, attempt.outcome)
+    }
+
+    fun `test a snapshot row whose module never ran a verify shows the outcome, not a silent strip`() {
+        projectWithSnapshotAndGolden()
+        val panel = panel()
+        panel.reloadSynchronously()
+        SnapshotVerifyStore.getInstance(project).record(
+            moduleName = module.name,
+            outcome = SnapshotVerifyRunner.Outcome.NOT_RUN,
+            results = emptyList(),
+            launchedAtMillis = System.currentTimeMillis(),
+            finishedAtMillis = System.currentTimeMillis(),
+        )
+
+        panel.selectByLabelPathForTest("WidgetPreview", "Widget_Default_Snapshot")
+
+        assertEquals(PreviewGalleryBundle.message("verify.notRun"), panel.renderMessageForTest)
+    }
+
+    private fun pngOnDisk(name: String): String {
+        val directory = FileUtil.createTempDirectory("preview-gallery-verify", null)
+        val file = File(directory, name)
+        ImageIO.write(BufferedImage(2, 2, BufferedImage.TYPE_INT_ARGB), "png", file)
+        Disposer.register(testRootDisposable) { FileUtil.delete(directory) }
+        return file.path
+    }
+
+    private fun failingResultWithImagesOnDisk(methodName: String) = SnapshotVerifyResults.SnapshotResult(
+        methodName = methodName,
+        variant = "phone",
+        status = SnapshotVerifyResults.Status.FAILED,
+        goldenPath = pngOnDisk("golden.png"),
+        renderedPath = pngOnDisk("rendered.png"),
+        diffPath = pngOnDisk("diff.png"),
+    )
+
+    fun `test an UP-TO-DATE second verify keeps the measurement and says the attempt measured nothing`() {
+        projectWithSnapshotAndGolden()
+        val panel = panel()
+        panel.reloadSynchronously()
+        val store = SnapshotVerifyStore.getInstance(project)
+        val launched = System.currentTimeMillis()
+        store.record(
+            moduleName = module.name,
+            outcome = SnapshotVerifyRunner.Outcome.RAN,
+            results = listOf(failingResultWithImagesOnDisk("Widget_Default_Snapshot")),
+            launchedAtMillis = launched,
+            finishedAtMillis = launched,
+        )
+        store.record(
+            moduleName = module.name,
+            outcome = SnapshotVerifyRunner.Outcome.RAN,
+            results = emptyList(),
+            launchedAtMillis = launched,
+            finishedAtMillis = launched + 1_000,
+        )
+
+        panel.selectByLabelPathForTest("WidgetPreview", "Widget_Default_Snapshot")
+
+        assertNotNull("the earlier measurement must survive a run that measured nothing", store.measurementFor(module.name))
+        val message = requireNotNull(panel.renderMessageForTest)
+        assertTrue(
+            "expected the attempt's own sentence beside the older measurement, got: $message",
+            message.contains("measured nothing"),
+        )
     }
 
     fun `test selecting a snapshot leaves the preview selection empty`() {
