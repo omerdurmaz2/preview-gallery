@@ -817,7 +817,7 @@ class PreviewGalleryPanel(
         verifyAlarm.addRequest(
             {
                 forcedVerifyPending = false
-                runVerify()
+                runVerify(force)
             },
             RenderPipeline.DEBOUNCE_MS,
         )
@@ -839,8 +839,12 @@ class PreviewGalleryPanel(
         return store.isStale(measurement)
     }
 
-    private fun runVerify() {
-        val target = verifyTarget() ?: return
+    private fun runVerify(force: Boolean) {
+        val target = verifyTarget()
+        if (target == null) {
+            if (force) reportNothingToVerify()
+            return
+        }
         val store = SnapshotVerifyStore.getInstance(project)
         verifyInFlightModule = target.moduleName
         SnapshotVerifyRunner.getInstance(project).verify(target.module, target.buildVariant) { outcome, started ->
@@ -859,6 +863,22 @@ class PreviewGalleryPanel(
             )
             showVerifyOutcome(target.moduleName)
         }
+    }
+
+    /**
+     * What an explicit Verify says when [verifyTarget] found nothing to run: no snapshot row selected, no module the
+     * project model resolves, or — the case that actually reaches a user — no committed golden to name a build
+     * variant with.
+     *
+     * The automatic path deliberately stays silent here, because the pane this replaces already says the useful
+     * half (`render.noReference` names the task that would create the goldens). A button press has to answer, so
+     * this message keeps that instruction and adds why nothing ran. Nothing is recorded in
+     * [SnapshotVerifyStore]: an attempt is what a run reports, and no run was launched — a persistent `Not verified`
+     * would outlive the press and hide the more useful sentence for good.
+     */
+    private fun reportNothingToVerify() {
+        val snapshot = selectedSnapshotEntry() ?: return
+        renderPanel.showVerified(snapshot, emptyList(), PreviewGalleryBundle.message("verify.nothingToVerify"))
     }
 
     /** Puts what [moduleName]'s run just recorded on screen: the badge via a repaint, the pane via the same
