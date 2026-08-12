@@ -158,6 +158,13 @@ class PreviewGalleryPanel(
      *  clear is conditional — by then this field already names the newer run's module, and must keep doing so. */
     private var verifyInFlightModule: String? = null
 
+    /** True while an explicit Verify is armed on [verifyAlarm] and has not fired yet. The automatic path calls
+     *  [startVerify] on every selection change and used to cancel that request on its way past — and then declined
+     *  to re-arm, because [needsVerify] is false for exactly the module whose standing measurement the user was
+     *  asking to refresh. The press vanished without a word. EDT-only, like every other field here: set and cleared
+     *  in [startVerify] and in the alarm's own callback, so a forced run never outlives the request it belongs to. */
+    private var forcedVerifyPending = false
+
     /** PG11-2: indexing a large project takes several dumb→smart transitions, and [reload]'s own
      *  `runWhenSmart` only rides the first one — so the tree used to cache whatever fraction of the index
      *  existed at that moment and stay that way until the user pressed Refresh. This reloads again, exactly
@@ -794,12 +801,26 @@ class PreviewGalleryPanel(
      * so the run always happens. It carries nothing further: [SnapshotVerifyStore.record] stores an attempt for
      * every run, so a button press that measures nothing still says so without this path having to tell the store
      * who asked.
+     *
+     * A pending forced request outranks the automatic path outright: [forcedVerifyPending] makes a non-forced call
+     * return before it cancels anything. The run that then fires is still about whatever row is selected when the
+     * alarm expires, exactly as it always was — [runVerify] reads the selection, not this argument — so the
+     * user-visible rule is "the press is honoured", not "the press is pinned to a row".
      */
     private fun startVerify(snapshot: PreviewEntry?, force: Boolean) {
+        if (!force && forcedVerifyPending) return
         verifyAlarm.cancelAllRequests()
+        forcedVerifyPending = false
         if (snapshot == null) return
         if (!force && !needsVerify(snapshot.moduleName)) return
-        verifyAlarm.addRequest({ runVerify() }, RenderPipeline.DEBOUNCE_MS)
+        forcedVerifyPending = force
+        verifyAlarm.addRequest(
+            {
+                forcedVerifyPending = false
+                runVerify()
+            },
+            RenderPipeline.DEBOUNCE_MS,
+        )
     }
 
     /**
