@@ -162,7 +162,10 @@ class SnapshotVerifyStore(private val project: Project) {
      * see [ModuleFreshness.cachedModuleSourceMtime] for why an expired value is served rather than an unknown.
      */
     fun isStale(measurement: Measurement, onRefreshed: () -> Unit): Boolean =
-        isStale(measurement, moduleFor(measurement.moduleName)?.let { ModuleFreshness.cachedModuleSourceMtime(it, onRefreshed) })
+        isStale(
+            measurement,
+            moduleFor(measurement.moduleName)?.let { ModuleFreshness.cachedModuleSourceMtime(it, onRefreshed) },
+        )
 
     private fun newestSourceMillis(moduleName: String): Long? =
         moduleFor(moduleName)?.let { ModuleFreshness.newestModuleSourceMtime(it) }

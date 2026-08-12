@@ -145,20 +145,29 @@ object ModuleFreshness {
      * [onRefreshed] is a `repaint()` in the only production caller, which Swing documents as safe from any thread;
      * anything heavier belongs on the EDT by its own hop, not here. It fires whether or not the value changed —
      * one extra repaint costs nothing, and comparing values here would mean caching them twice.
+     *
+     * The outer `try` guards the submission itself, not just the walk: if [AppExecutorUtil]'s shared pool ever
+     * rejects the task instead of running it, the marker this added to [refreshingSourceMtime] must still come
+     * out, or this module's clock would freeze for the rest of the IDE session.
      */
     private fun refreshSourceMtime(module: Module, onRefreshed: () -> Unit) {
         if (!refreshingSourceMtime.add(module.name)) return
-        AppExecutorUtil.getAppExecutorService().execute {
-            try {
-                if (!module.isDisposed) newestModuleSourceMtime(module)
-            } catch (e: ProcessCanceledException) {
-                thisLogger().debug("Source-clock refresh for '${module.name}' was cancelled", e)
-            } catch (e: Exception) {
-                thisLogger().warn("Failed to refresh the source clock for module '${module.name}'", e)
-            } finally {
-                refreshingSourceMtime.remove(module.name)
+        try {
+            AppExecutorUtil.getAppExecutorService().execute {
+                try {
+                    if (!module.isDisposed) newestModuleSourceMtime(module)
+                } catch (e: ProcessCanceledException) {
+                    thisLogger().debug("Source-clock refresh for '${module.name}' was cancelled", e)
+                } catch (e: Exception) {
+                    thisLogger().warn("Failed to refresh the source clock for module '${module.name}'", e)
+                } finally {
+                    refreshingSourceMtime.remove(module.name)
+                }
+                onRefreshed()
             }
-            onRefreshed()
+        } catch (e: Exception) {
+            refreshingSourceMtime.remove(module.name)
+            thisLogger().warn("Failed to submit the source-clock refresh for module '${module.name}'", e)
         }
     }
 
@@ -177,6 +186,14 @@ object ModuleFreshness {
      * build, so a selection in the same module moments later (still inside [CACHE_TTL_MS]) re-derives
      * freshness from the just-updated output instead of replaying the pre-build "stale" verdict that triggered
      * that very build.
+     *
+     * Recorded rather than defended against: a [refreshSourceMtime] walk already running when this is called can
+     * still land afterwards and write its pre-invalidate value back into [sourceMtimeCache], undoing this call for
+     * up to [CACHE_TTL_MS]. Bounded twice over — [newestSourceMtime] already excludes the build output root the
+     * invalidating build just wrote to, so the value such a walk resurrects is ordinarily what a fresh walk would
+     * have produced anyway, and even on the rare miss, the next TTL expiry re-derives from disk again. A
+     * generation counter bumped here and checked before every write in [refreshSourceMtime] would close the
+     * window; more machinery than a race this narrow and this self-correcting justifies.
      */
     fun invalidate(module: Module) {
         freshnessCache.remove(module.name)
