@@ -1,19 +1,22 @@
 # Snapshot Testing — Feature Roadmap
 
-> **Status:** **F1, H1, F2, F8, F7 and F5's reference half shipped** — Phase 13 (badge, snapshot rows, reference
-> strip), Phase 14 (read the source set from the VFS, fix attribution), Phase 15 (refresh before the lookup,
-> discover every build variant's reference root, recover the index-fallback rows), Phase 16 (the uncovered-only
-> toggle and the markdown report), Phase 17 (the index served read-only over MCP), Phase 18 (snapshot health, in
-> the export and over MCP) and Phase 19 (a preview row shows its committed goldens). The manual gate against
-> `hepsi-android` passes: snapshots are listed, they hang under the previews they belong to, a reference
+> **Status:** **F1, H1, F2, F8, F7, F6 and F5's reference half shipped** — Phase 13 (badge, snapshot rows,
+> reference strip), Phase 14 (read the source set from the VFS, fix attribution), Phase 15 (refresh before the
+> lookup, discover every build variant's reference root, recover the index-fallback rows), Phase 16 (the
+> uncovered-only toggle and the markdown report), Phase 17 (the index served read-only over MCP), Phase 18
+> (snapshot health, in the export and over MCP), Phase 19 (a preview row shows its committed goldens) and
+> Phase 20 (a snapshot row runs the project's own `validate` task and shows what it found). The manual gate
+> against `hepsi-android` passes: snapshots are listed, they hang under the previews they belong to, a reference
 > directory changed from a terminal is picked up without pressing Refresh, the toggle leaves the work queue on
 > screen, an agent asking `list_previews` gets the same 854 uncovered composables the tree shows, the health
-> section names the `favorites` specimen it was designed around, and a covered preview shows every covering
-> snapshot's goldens while the mode stays on across rows. Everything else below is still backlog.
+> section names the `favorites` specimen it was designed around, a covered preview shows every covering
+> snapshot's goldens while the mode stays on across rows, and a deliberately corrupted golden comes back as
+> `differs` with its reference, rendered and diff images and the engine's own `0.111% different`. Everything
+> else below is still backlog.
 >
 > Each remaining entry becomes its own session: brainstorm → design spec in `docs/superpowers/specs/`
-> → plan in `docs/superpowers/plans/` → implementation. Commit prefixes (`PG20-N`, …) are assigned when
-> a feature is planned, continuing from the last used phase (`PG19`).
+> → plan in `docs/superpowers/plans/` → implementation. Commit prefixes (`PG21-N`, …) are assigned when
+> a feature is planned, continuing from the last used phase (`PG20`).
 
 ## Priority order
 
@@ -21,8 +24,8 @@ Ranked for what to build next, not by theme. Effort is a rough order of magnitud
 
 | # | Item | Why it is here | Effort |
 |---|---|---|---|
-| 1 | **Classloader spike, then F5's diff half** | The reference half shipped (PG19); the diff is all that is left, and it is still gated on one AS-internal question — can a plugin inject the `debugScreenshotTest` classes directory into `StudioModuleRenderContext`'s classloader? Run that spike before designing anything. | M |
-| 2 | **F6 · Gradle task runner** | Depends on F5's diff view to be worth the wiring. | L |
+| 1 | **F5's diff half** | The reference half shipped (PG19) and the classloader spike answered its blocker: the seam is the plugin's and the whole chain composes out of public API. What it buys over F6 is speed — seconds instead of a Gradle run — at the cost of an unproven pixel-comparability question, so its own first phase is a calibration, not a UI. | M |
+| 2 | **H2 · Close what PG20's gate left open** | Two verify checks were never run after the last model fix, two silent paths are known and unfixed, and a source-tree walk still runs unbounded on the EDT behind a 5 s cache. Small, and it is the price of having shipped F6 through a gate that found four real bugs. | S |
 
 **Deferred:** F3 (the agent route supersedes it until proven otherwise) and F4 (waits on F3's writer). Both
 keep their sections below with the reasoning.
@@ -275,20 +278,67 @@ classloader?** Answer that before designing the diff.
 > the main module, so the compiled snapshot class (which is on disk) is not on the render classpath. The
 > follow-up question named in F5 above replaces this one; do not re-run this spike.
 
-#### F6 · Run the Gradle tasks and badge failures
+#### F6 · Run the Gradle tasks and badge failures — **shipped (PG20)**
 
-**Goal:** drive `update` / `validate` from the gallery and surface results where the previews live.
+**Goal:** drive `validate` from the gallery and surface results where the previews live.
 
-Run `:<module>:validateDebugScreenshotTest -Pandroid.experimental.enableScreenshotTest=true` for the
-selected module, parse `build/reports/screenshotTest/preview/debug/`, badge failing previews red in the
-tree, and open F5's diff view on click. `update` gets the same treatment for regenerating references.
+**The dependency this entry asserted was wrong.** It said F6 "depends on F5's diff view to be worth the wiring".
+It does not: the task already writes the rendered images, the diff images, and a machine-readable JUnit result
+carrying the function name, the variant and both image paths per snapshot — everything a diff view would have had
+to compute. Removing that false dependency is what let F6 ship first, and it turned out to be the better order,
+because F6's answer is exact by construction while F5's still has to prove it is comparable at all.
 
-- **Hooks:** `BuildService`, `ModuleFreshness`, `PreviewTreeCellRenderer`, F5's diff view
-- **Effort:** L · **Risk:** medium (report format is not a stable API — parse the diff PNGs on disk
-  rather than scraping the HTML if possible)
-- **Depends on:** F1, F5
-- **Open:** the gate flag is project-specific — configurable, or detected? Never spawn a second Gradle
-  daemon (spec goal G5).
+**Shipped narrower than sketched:** `validate` only, never `update` — the plugin does not write reference images,
+and regenerating a golden stays the human's deliberate act at a terminal. Results are read from the JUnit XML
+rather than the HTML report, as this entry hoped. Selecting a snapshot row runs the module's task behind the
+same debounce the render and reference paths use; a toolbar action forces one and supersedes whatever is in
+flight.
+
+**The gate is where this feature was actually built.** Four bugs survived every review and only a real run found
+them, which is worth recording for the next feature that touches Gradle output:
+
+1. The XML's image paths are **relative to the build root**, and the code read them with `File(path)`. Every
+   decode failed. Invisible to tests, whose paths were absolute by construction.
+2. `PsiModificationTracker` is a "something that could affect PSI happened" counter, not an edit counter —
+   measured: writing one file under `build/outputs` moved it by 5, a real edit by 3. A verify's own Gradle run
+   outran the stamp taken before it launched, so every run was born stale.
+3. `PreviewScreenshot.diffImagePath` **exists only on a pixel-difference failure**. A size mismatch produces no
+   diff image, omits the property, and names the path only inside the `<failure>` message. The reader was written
+   against the property alone, having only ever seen a passing `update` run.
+4. The store conflated **the last measurement** with **the last attempt**, so an attempt that measured nothing —
+   a cancellation, an UP-TO-DATE second run, an indexing refusal — erased a good verdict. Three separate fixes
+   only chose which fact to lose before the model was split.
+
+- **Hooks:** `BuildService`'s external-system shape (mirrored, not shared — see the debt below), `ModuleFreshness`,
+  `PreviewTreeCellRenderer`, `ReferenceStripView`
+- **Effort:** M as built · **Risk:** realised — see the four above
+- **Debt:** `SnapshotVerifyRunner` duplicates ~120 lines of `BuildService`'s single-flight, generation-guard and
+  listener-lifetime machinery. It was left duplicated deliberately, but the copies have since diverged and the
+  same task-id ownership bug had to be fixed in both. A shared `internal ExternalSystemRunner` would make "at most
+  one of our external-system tasks in flight" a plugin-wide invariant rather than a per-class one.
+- **Open:** `validate` fails the build when a snapshot differs, so a failed Gradle run is the normal failing case
+  — anything reading its exit status must not treat that as an error.
+
+#### H2 · Close what PG20's gate left open
+
+**Goal:** finish the verification F6's gate started, and pay down what it deliberately deferred.
+
+Two gate checks were never run after the final model fix: an **UP-TO-DATE second verify** must keep the badge and
+report that the last attempt measured nothing, and **pressing Verify during indexing** must produce a visible
+message. Both are now expected to pass; neither is observed.
+
+Two silent paths are known and unfixed. `runVerify` starts `verifyTarget() ?: return`, so a Verify on a module
+with snapshot tests but no committed goldens records nothing and says nothing — fixing it naively replaces the
+useful "run `updateDebugScreenshotTest`" pane with a bare "Not verified", so it needs a wording decision rather
+than a guard. And `startVerify` cancels the pending alarm before the `needsVerify` check, so a selection change
+inside the debounce silently drops an explicit Verify.
+
+One performance ceiling: `ModuleFreshness.newestModuleSourceMtime` walks a module's source tree **unbounded** and
+runs from Swing's per-row paint callback, behind a 5 s TTL cache. `isModuleFresh` caps its own walk at
+`MAX_SCAN_DEPTH`; this one does not. Amortised, not removed.
+
+- **Effort:** S · **Risk:** low
+- **Depends on:** nothing
 
 #### F7 · Degenerate golden detector — **shipped (PG18)**
 
