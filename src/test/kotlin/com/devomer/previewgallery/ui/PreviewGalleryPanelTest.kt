@@ -562,25 +562,45 @@ class PreviewGalleryPanelTest : BasePlatformTestCase() {
         diffPath = null,
     )
 
-    fun `test a non-forced verify does not cancel an explicit one armed inside the debounce`() {
-        projectWithSnapshot()
-        // needsVerify must read false for the automatic call below, or its own "nothing to do" branch leaves one
-        // request armed too and the assertion could not tell the fix from the bug it covers — the fixture's
-        // temp:// source roots read as an unknown clock (always stale) on their own, so a real, disk-backed root
-        // older than the run is registered just for this test. Registered before the panel selects anything: a
-        // root change rebuilds the tree, and a snapshot selection is not restored across a rebuild.
+    /**
+     * Registers a real, disk-backed source root for [module], with an mtime 60 seconds older than
+     * [aheadOfMillis], for the duration of [block] — then removes it.
+     *
+     * Real and disk-backed rather than the fixture's own `temp://` roots: those have no mtime at all, so
+     * [ModuleFreshness.newestModuleSourceMtime] reads an unknown clock, which
+     * [SnapshotVerifyStore.isStale] always treats as stale. A caller of this helper needs the opposite —
+     * `isStale` reading false for a measurement recorded at [aheadOfMillis] — to tell "a pending request
+     * survived untouched" apart from "it was cancelled and immediately replaced by an equivalent one," which
+     * differ only in which underlying request is armed, never in the resulting count alone.
+     *
+     * Registered, and torn down, around [block] rather than in `setUp`/`tearDown`: [PsiTestUtil.addSourceContentToRoots]
+     * fires a root-changed event that rebuilds the tree, and a snapshot selection — unlike a preview's — is never
+     * restored across a rebuild, so [block] must do its own selecting only after this root is already in place.
+     */
+    private fun <T> withOlderSourceRoot(aheadOfMillis: Long, block: () -> T): T {
         val moduleDirectory = FileUtil.createTempDirectory("preview-gallery-verify-debounce", null)
         val sourceFile = File(moduleDirectory, "src/main/kotlin/Widget.kt")
         FileUtil.createParentDirs(sourceFile)
         sourceFile.writeText("")
-        val ranAt = System.currentTimeMillis()
-        sourceFile.setLastModified(ranAt - 60_000)
+        sourceFile.setLastModified(aheadOfMillis - 60_000)
         val sourceRoot = requireNotNull(
             LocalFileSystem.getInstance().refreshAndFindFileByIoFile(File(moduleDirectory, "src/main")),
         ) { "The temp source root must be visible in the VFS" }
         PsiTestUtil.addSourceContentToRoots(module, sourceRoot)
         ModuleFreshness.invalidate(module)
         try {
+            return block()
+        } finally {
+            PsiTestUtil.removeContentEntry(module, sourceRoot)
+            ModuleFreshness.invalidate(module)
+            FileUtil.delete(moduleDirectory)
+        }
+    }
+
+    fun `test a non-forced verify does not cancel an explicit one armed inside the debounce`() {
+        projectWithSnapshot()
+        val ranAt = System.currentTimeMillis()
+        withOlderSourceRoot(ranAt) {
             val panel = panel()
             panel.reloadSynchronously()
             panel.selectByLabelPathForTest("WidgetPreview", "Widget_Default_Snapshot")
@@ -602,10 +622,6 @@ class PreviewGalleryPanelTest : BasePlatformTestCase() {
                 1,
                 panel.pendingVerifyRequestsForTest,
             )
-        } finally {
-            PsiTestUtil.removeContentEntry(module, sourceRoot)
-            ModuleFreshness.invalidate(module)
-            FileUtil.delete(moduleDirectory)
         }
     }
 
