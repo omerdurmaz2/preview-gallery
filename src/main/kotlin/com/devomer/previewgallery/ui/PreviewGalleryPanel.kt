@@ -821,7 +821,10 @@ class PreviewGalleryPanel(
      * A pending forced request outranks the automatic path outright: [forcedVerifyPending] makes a non-forced call
      * return before it cancels anything. The run that then fires is still about whatever row is selected when the
      * alarm expires, exactly as it always was — [runVerify] reads the selection, not this argument — so the
-     * user-visible rule is "the press is honoured", not "the press is pinned to a row".
+     * user-visible rule is "the press is honoured", not "the press is pinned to a row". That rule has one silent
+     * edge: if the selection has moved off the snapshot row entirely by the time the alarm fires, [runVerify]'s own
+     * [reportNothingToVerify] finds no selected snapshot to report to either, and returns without a word — the
+     * press is then neither honoured nor answered, only dropped, because there is no longer a row left to answer.
      */
     private fun startVerify(snapshot: PreviewEntry?, force: Boolean) {
         if (!force && forcedVerifyPending) return

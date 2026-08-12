@@ -6,6 +6,7 @@ import com.devomer.previewgallery.render.ModuleFreshness
 import com.devomer.previewgallery.render.RenderResultView
 import com.devomer.previewgallery.render.RenderState
 import com.devomer.previewgallery.render.SnapshotVerifyRunner
+import com.devomer.previewgallery.search.testRow
 import com.devomer.previewgallery.service.PreviewIndexService
 import com.devomer.previewgallery.service.SnapshotVerifyResults
 import com.devomer.previewgallery.service.SnapshotVerifyStore
@@ -25,6 +26,8 @@ import java.io.ByteArrayOutputStream
 import java.io.File
 import java.io.IOException
 import javax.imageio.ImageIO
+import javax.swing.JTree
+import javax.swing.tree.DefaultMutableTreeNode
 
 class PreviewGalleryPanelTest : BasePlatformTestCase() {
 
@@ -599,8 +602,7 @@ class PreviewGalleryPanelTest : BasePlatformTestCase() {
 
     fun `test a non-forced verify does not cancel an explicit one armed inside the debounce`() {
         projectWithSnapshot()
-        val ranAt = System.currentTimeMillis()
-        withOlderSourceRoot(ranAt) {
+        withOlderSourceRoot(RUN_LAUNCHED_AT) {
             val panel = panel()
             panel.reloadSynchronously()
             panel.selectByLabelPathForTest("WidgetPreview", "Widget_Default_Snapshot")
@@ -608,8 +610,8 @@ class PreviewGalleryPanelTest : BasePlatformTestCase() {
                 moduleName = module.name,
                 outcome = SnapshotVerifyRunner.Outcome.RAN,
                 results = listOf(passingResult("Widget_Default_Snapshot")),
-                launchedAtMillis = ranAt,
-                finishedAtMillis = ranAt,
+                launchedAtMillis = RUN_LAUNCHED_AT,
+                finishedAtMillis = RUN_LAUNCHED_AT,
             )
 
             panel.verifyForTest(force = true)
@@ -621,6 +623,55 @@ class PreviewGalleryPanelTest : BasePlatformTestCase() {
                 "an automatic verify must not cancel the run the user asked for",
                 1,
                 panel.pendingVerifyRequestsForTest,
+            )
+        }
+    }
+
+    /**
+     * [PreviewTreeCellRenderer]'s failing-row badge reads its staleness through
+     * [ModuleFreshness.cachedModuleSourceMtime] rather than the blocking [SnapshotVerifyStore.isStale] overload —
+     * the fix that took the unbounded source-tree walk off Swing's own paint callback. A cold cache therefore
+     * reads unknown (stale) on the very first paint rather than resolving synchronously, and the walk this test's
+     * disk-backed, older-than-the-run source root would otherwise satisfy only lands afterward. Reverting to the
+     * blocking overload makes both assertions fail: the walk runs inline, finds the root older than the run, and
+     * the badge reads plain `differs` with the cache already warm by the time this method returns.
+     */
+    fun `test the failing badge reads staleness from the cache instead of walking the source tree on the paint thread`() {
+        withOlderSourceRoot(RUN_LAUNCHED_AT) {
+            SnapshotVerifyStore.getInstance(project).record(
+                moduleName = module.name,
+                outcome = SnapshotVerifyRunner.Outcome.RAN,
+                results = listOf(
+                    SnapshotVerifyResults.SnapshotResult(
+                        methodName = "Widget_Default_Snapshot",
+                        variant = "phone",
+                        status = SnapshotVerifyResults.Status.FAILED,
+                        goldenPath = null,
+                        renderedPath = null,
+                        diffPath = null,
+                    ),
+                ),
+                launchedAtMillis = RUN_LAUNCHED_AT,
+                finishedAtMillis = RUN_LAUNCHED_AT,
+            )
+            val row = testRow(functionName = "Widget_Default_Snapshot", moduleName = module.name, isSnapshotTest = true)
+            val renderer = PreviewTreeCellRenderer(project)
+
+            renderer.getTreeCellRendererComponent(
+                JTree(),
+                DefaultMutableTreeNode(PreviewNode.SnapshotLeaf(row)),
+                false,
+                false,
+                true,
+                0,
+                false,
+            )
+
+            val badge = renderer.iterator().asSequence().joinToString("")
+            assertTrue(badge, badge.contains("differs · stale"))
+            assertNull(
+                "the badge must not have walked the source tree synchronously on the paint thread",
+                ModuleFreshness.cachedModuleSourceMtime(module) {},
             )
         }
     }
@@ -649,7 +700,7 @@ class PreviewGalleryPanelTest : BasePlatformTestCase() {
 
         assertEquals(
             "the automatic path must not overwrite the pane's own instruction",
-            "No reference images — run the update…ScreenshotTest task for this module.",
+            PreviewGalleryBundle.message("render.noReference"),
             panel.renderMessageForTest,
         )
     }
@@ -1082,5 +1133,10 @@ class PreviewGalleryPanelTest : BasePlatformTestCase() {
 
     private companion object {
         const val SHOW_REFERENCE_TITLE = "Show committed reference images"
+
+        /** A fixed point rather than the wall clock, so a directory `FileUtil.createParentDirs` stamps with
+         *  "now" reads older than a run recorded here, the same technique and the same reason as
+         *  `SnapshotVerifyStoreTest.RUN_LAUNCHED_AT`. */
+        const val RUN_LAUNCHED_AT = 2_000_000_000_000L
     }
 }

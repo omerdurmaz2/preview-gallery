@@ -144,8 +144,11 @@ object ModuleFreshness {
      * disagree about what the clock means.
      *
      * [onRefreshed] is a `repaint()` in the only production caller, which Swing documents as safe from any thread;
-     * anything heavier belongs on the EDT by its own hop, not here. It fires whether or not the value changed —
-     * one extra repaint costs nothing, and comparing values here would mean caching them twice.
+     * anything heavier belongs on the EDT by its own hop, not here. It fires only on the path that actually
+     * recomputed the value — not when [module] was disposed out from under this, and not when the walk itself
+     * threw — since firing it on either of those would just repaint onto the still-cold entry and let
+     * [cachedModuleSourceMtime] schedule the same walk again on the very next paint, looping instead of
+     * correcting.
      *
      * The outer `try` guards the submission itself, not just the walk: if [AppExecutorUtil]'s shared pool ever
      * rejects the task instead of running it, the marker this added to [refreshingSourceMtime] must still come
@@ -156,7 +159,10 @@ object ModuleFreshness {
         try {
             AppExecutorUtil.getAppExecutorService().execute {
                 try {
-                    if (!module.isDisposed) newestModuleSourceMtime(module)
+                    if (!module.isDisposed) {
+                        newestModuleSourceMtime(module)
+                        onRefreshed()
+                    }
                 } catch (e: ProcessCanceledException) {
                     thisLogger().debug("Source-clock refresh for '${module.name}' was cancelled", e)
                 } catch (e: Exception) {
@@ -164,7 +170,6 @@ object ModuleFreshness {
                 } finally {
                     refreshingSourceMtime.remove(module.name)
                 }
-                onRefreshed()
             }
         } catch (e: Exception) {
             refreshingSourceMtime.remove(module.name)
@@ -201,13 +206,14 @@ object ModuleFreshness {
         sourceMtimeCache.remove(module.name)
     }
 
-    /** Ages [module]'s cached verdicts past [CACHE_TTL_MS] without waiting for it, so the serve-while-expired
+    /** Ages [module]'s cached source clock past [CACHE_TTL_MS] without waiting for it, so the serve-while-expired
      *  branch of [cachedModuleSourceMtime] can be asserted. Deliberately not [invalidate], which *drops* the entry
-     *  — the whole point of that branch is what happens to an entry that still exists and is merely old. */
+     *  — the whole point of that branch is what happens to an entry that still exists and is merely old. Scoped
+     *  to [sourceMtimeCache] alone: [cachedModuleSourceMtime] is the only reader this seam exists for, and
+     *  [freshnessCache] backs the unrelated [isModuleFresh], with no test needing it aged too. */
     @TestOnly
     internal fun expireCachesForTest(module: Module) {
         sourceMtimeCache.computeIfPresent(module.name) { _, entry -> CacheEntry(0L, entry.value) }
-        freshnessCache.computeIfPresent(module.name) { _, entry -> CacheEntry(0L, entry.value) }
     }
 
     /** A few seconds: long enough that arrow-keying through several previews in one module hits the cache,

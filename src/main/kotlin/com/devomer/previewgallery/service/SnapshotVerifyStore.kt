@@ -112,8 +112,15 @@ class SnapshotVerifyStore(private val project: Project) {
 
     /** Drops every measurement and attempt this project-level service holds, so a test that recorded one for the
      *  light fixture's real module cannot leak it into a later test — `BasePlatformTestCase` reuses one light
-     *  project (and so this same service instance) for the whole run, the same reuse [resetFilterToggles] exists
-     *  to undo for the toolbar toggles. */
+     *  project (and so this same service instance) for the whole run, the same reuse `resetFilterToggles` exists
+     *  to undo for the toolbar toggles.
+     *
+     *  Called from `tearDown`, not `setUp`: sufficient only because `PreviewGalleryPanelTest` is currently the one
+     *  test class that records under the real `module.name` — `SnapshotVerifyStoreTest` keys its own records by
+     *  made-up per-test names, and `PreviewTreeCellRendererTest` constructs its renderer with no `Project` at all,
+     *  so it never reaches this store. `tearDown` only protects tests that run *after* this class's own; a future
+     *  test class that also records under the fixture module, and that can run earlier in the suite, would need
+     *  to call this from its own `setUp` instead. */
     @TestOnly
     internal fun clearForTest() {
         measurements.clear()
