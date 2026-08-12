@@ -709,9 +709,9 @@ class PreviewGalleryPanel(
      * `BUILD_FAILED` message with a plain golden that made a run that never measured anything look like a clean
      * pass. Funnelling both through the one alarm removes that second *trigger* — there is only one scheduled
      * decode per selection again — but a single trigger can still straddle two [SnapshotVerifyStore] generations
-     * (a decode started against a stale `RAN` run, the store updated to `NOT_RUN` before that decode's own
-     * `invokeLater` lands); [decodeVerifyResult] and [publishReferences] both re-check [unmeasuredRun] at publish
-     * time for exactly that reason, rather than trusting the branch [loadReferences] took when it was scheduled.
+     * (a decode started before a run finished, landing after it); [decodeVerifyResult] and [publishReferences]
+     * both re-read the store's measurement and attempt at publish time for exactly that reason, rather than
+     * trusting the branch [loadReferences] took when it was scheduled.
      * [deferReferenceLookup] = false mirrors the same choice inline, via [verifiableResult] — but deliberately
      * without [startVerify]: that seam exists to run the publish path synchronously, and arming a Gradle run
      * behind a 400 ms alarm is the one thing a synchronous test path must not leave behind.
@@ -791,33 +791,34 @@ class PreviewGalleryPanel(
      * computing, is not asked for again.
      *
      * [force] is the toolbar action ([VerifySnapshotsAction]) — the user asking directly. It skips [needsVerify]
-     * so the run always happens, and travels on to [SnapshotVerifyStore.resolve] as `explicit`, which is what
-     * makes a run that measured nothing still say so: a button press that publishes nothing and changes nothing
-     * on screen is indistinguishable from a broken button.
+     * so the run always happens. It carries nothing further: [SnapshotVerifyStore.record] stores an attempt for
+     * every run, so a button press that measures nothing still says so without this path having to tell the store
+     * who asked.
      */
     private fun startVerify(snapshot: PreviewEntry?, force: Boolean) {
         verifyAlarm.cancelAllRequests()
         if (snapshot == null) return
         if (!force && !needsVerify(snapshot.moduleName)) return
-        verifyAlarm.addRequest({ runVerify(explicit = force) }, RenderPipeline.DEBOUNCE_MS)
+        verifyAlarm.addRequest({ runVerify() }, RenderPipeline.DEBOUNCE_MS)
     }
 
     /**
      * Whether the automatic path still owes [moduleName] a verify: false while one is already in flight for it
      * (cancelling that to re-ask the identical question is pure loss), and false when the store already holds a
-     * run that measured something and still describes the code on disk.
+     * measurement that still describes the code on disk.
      *
-     * A [SnapshotVerifyRunner.Outcome.NOT_RUN] or [SnapshotVerifyRunner.Outcome.BUILD_FAILED] run is deliberately
-     * *not* an answer to keep: those are the states worth retrying once the user comes back to the row.
+     * Keyed off the measurement, not the last attempt: an attempt that measured nothing is exactly the state worth
+     * retrying once the user comes back to the row, and a module whose measurement still stands has already
+     * answered the question however that attempt ended.
      */
     private fun needsVerify(moduleName: String): Boolean {
         if (verifyInFlightModule == moduleName) return false
         val store = SnapshotVerifyStore.getInstance(project)
-        val run = store.forModule(moduleName) ?: return true
-        return run.outcome != SnapshotVerifyRunner.Outcome.RAN || store.isStale(run)
+        val measurement = store.measurementFor(moduleName) ?: return true
+        return store.isStale(measurement)
     }
 
-    private fun runVerify(explicit: Boolean) {
+    private fun runVerify() {
         val target = verifyTarget() ?: return
         val store = SnapshotVerifyStore.getInstance(project)
         verifyInFlightModule = target.moduleName
@@ -827,59 +828,84 @@ class PreviewGalleryPanel(
             } else {
                 SnapshotVerifyResults.read(started.resultsDirectory, started.startedAtMillis, started.buildRoot)
             }
-            SnapshotVerifyStore.resolve(
+            store.record(
                 moduleName = target.moduleName,
                 outcome = outcome,
                 results = results,
                 ranAtMillis = started?.startedAtMillis ?: System.currentTimeMillis(),
-                previous = store.forModule(target.moduleName),
-                explicit = explicit,
-            )?.let(store::put)
-            ApplicationManager.getApplication().invokeLater({
-                if (verifyInFlightModule == target.moduleName) verifyInFlightModule = null
-                if (disposalCheck.isDisposed) return@invokeLater
-                tree.repaint()
-                refreshingAfterVerify = true
-                try {
-                    routeSelection(deferReferenceLookup = true)
-                } finally {
-                    refreshingAfterVerify = false
-                }
-            }, ModalityState.defaultModalityState())
+            )
+            showVerifyOutcome(target.moduleName)
         }
     }
 
-    /**
-     * The stored run for [moduleName] when one exists and it did **not** [SnapshotVerifyRunner.Outcome.RAN] — the
-     * one predicate that decides whether a snapshot's outcome, rather than its (possibly nonexistent) per-row
-     * result, is what the render pane owes the user. [SnapshotVerifyRunner.Outcome.NOT_RUN] (indexing, or the
-     * module is not part of a linked Gradle project) and [SnapshotVerifyRunner.Outcome.BUILD_FAILED] (the task ran
-     * but wrote no results) both mean nothing was measured, and a plain golden shown with no comment would read as
-     * a clean pass that never happened — the exact failure PG20-5's carried-forward requirement forbids. Shared by
-     * [verifiableResult] and [publishReferences] so the two publish paths can never disagree about which one owns
-     * a given module's outcome message.
-     */
-    private fun unmeasuredRun(moduleName: String): SnapshotVerifyStore.Run? =
-        SnapshotVerifyStore.getInstance(project).forModule(moduleName)?.takeIf { it.outcome != SnapshotVerifyRunner.Outcome.RAN }
+    /** Puts what [moduleName]'s run just recorded on screen: the badge via a repaint, the pane via the same
+     *  selection route a fresh selection takes. Hops to the EDT itself — the runner's callback arrives on
+     *  whatever thread Gradle finished on. */
+    private fun showVerifyOutcome(moduleName: String) {
+        ApplicationManager.getApplication().invokeLater({
+            if (verifyInFlightModule == moduleName) verifyInFlightModule = null
+            if (disposalCheck.isDisposed) return@invokeLater
+            tree.repaint()
+            refreshingAfterVerify = true
+            try {
+                routeSelection(deferReferenceLookup = true)
+            } finally {
+                refreshingAfterVerify = false
+            }
+        }, ModalityState.defaultModalityState())
+    }
 
-    private fun verifyOutcomeMessage(run: SnapshotVerifyStore.Run): String =
-        if (run.outcome == SnapshotVerifyRunner.Outcome.NOT_RUN) {
+    /**
+     * [moduleName]'s last attempt when it measured nothing — [SnapshotVerifyRunner.Outcome.NOT_RUN] (indexing, or
+     * the module is not part of a linked Gradle project) or [SnapshotVerifyRunner.Outcome.BUILD_FAILED] (the task
+     * ran but wrote no results).
+     *
+     * It never hides a measurement any more; it is only ever an extra sentence beside one. Where there is no
+     * measurement to show for the selected row, that sentence is the whole answer — a plain golden published with
+     * no comment would read as a clean pass that never happened, the exact failure PG20-5's carried-forward
+     * requirement forbids. Shared by [verifyMessage] and [publishReferences] so no two publish paths can disagree
+     * about what a module's last attempt did.
+     */
+    private fun unmeasuredAttempt(moduleName: String): SnapshotVerifyStore.Attempt? =
+        SnapshotVerifyStore.getInstance(project).lastAttempt(moduleName)
+            ?.takeIf { it.outcome != SnapshotVerifyRunner.Outcome.RAN }
+
+    /** What a row with nothing measured for it says on its own. */
+    private fun verifyOutcomeMessage(attempt: SnapshotVerifyStore.Attempt): String =
+        if (attempt.outcome == SnapshotVerifyRunner.Outcome.NOT_RUN) {
             PreviewGalleryBundle.message("verify.notRun")
         } else {
             PreviewGalleryBundle.message("verify.buildFailed")
         }
+
+    /** What the same attempt says when a measurement *is* on screen: when it was, and that what is shown predates
+     *  it — so the older verdict is never presented as the answer to the run that just finished. */
+    private fun lastAttemptMessage(attempt: SnapshotVerifyStore.Attempt): String {
+        val at = DateFormatUtil.formatPrettyDateTime(attempt.atMillis)
+        return if (attempt.outcome == SnapshotVerifyRunner.Outcome.NOT_RUN) {
+            PreviewGalleryBundle.message("verify.lastAttemptNotRun", at)
+        } else {
+            PreviewGalleryBundle.message("verify.lastAttemptMeasuredNothing", at)
+        }
+    }
 
     /**
      * The text [PreviewRenderPanel.showVerified] shows above a verified snapshot's images: which of them could
      * not be read, and — the part that stops this pane from being the one place in the feature that overstates
      * confidence — that the run behind them no longer describes the code on disk, with the time it ran (spec D4).
      *
-     * A stale `RAN` run still publishes its golden, rendered and diff, because a verdict that *was* true is worth
+     * A stale measurement still publishes its golden, rendered and diff, because a verdict that *was* true is worth
      * more than none; what it must never do is publish them looking freshly measured. The tree says `stale` only
      * on a failing row, so without this a snapshot that passed before the edit reads as passing after it.
      *
-     * Read at publish time, on the EDT, for the same reason [unmeasuredRun] is: the run this decode started
-     * against may have been superseded, or gone stale, while the PNGs were being decoded off the EDT.
+     * [unmeasuredAttempt] is the second half of the same rule and the one the gate cost three fixes to get right:
+     * the run that just finished may have measured nothing while these images come from an older one that did.
+     * Both sentences are shown, because both are true — the measurement is never dropped for the attempt, and the
+     * attempt is never swallowed by the measurement. The timestamp in the staleness sentence is the
+     * measurement's, deliberately; the attempt carries its own.
+     *
+     * Read at publish time, on the EDT: the measurement this decode started against may have been superseded, or
+     * gone stale, and the attempt may have changed, while the PNGs were being decoded off the EDT.
      *
      * [failure] is the task's own sentence about what went wrong, and this pane is where it goes (PG20-9). The
      * tree badge stays the one word `differs`, because a row is a row; `Size Mismatch. Reference image size:
@@ -889,12 +915,13 @@ class PreviewGalleryPanel(
      */
     private fun verifyMessage(moduleName: String, missing: List<String>, failure: String?): String? {
         val store = SnapshotVerifyStore.getInstance(project)
-        val run = store.forModule(moduleName)
+        val measurement = store.measurementFor(moduleName)
         val parts = listOfNotNull(
             failure,
-            run?.takeIf { store.isStale(it) }?.let {
+            measurement?.takeIf { store.isStale(it) }?.let {
                 PreviewGalleryBundle.message("verify.staleResult", DateFormatUtil.formatPrettyDateTime(it.ranAtMillis))
             },
+            unmeasuredAttempt(moduleName)?.let(::lastAttemptMessage),
             missing.takeIf { it.isNotEmpty() }
                 ?.let { PreviewGalleryBundle.message("render.referenceUnreadable", it.joinToString(", ")) },
         )
@@ -912,20 +939,21 @@ class PreviewGalleryPanel(
     }
 
     /**
-     * [snapshot]'s own result from its module's last [SnapshotVerifyRunner.Outcome.RAN] run, or null when there is
-     * none to show — no run yet, a run that did not [SnapshotVerifyRunner.Outcome.RAN] ([unmeasuredRun] answers
-     * that), or a `RAN` run with no entry for this method (added since the run; must read as unknown, not passed,
-     * per [SnapshotVerifyStore.resultFor]'s own doc).
+     * [snapshot]'s own result from its module's last measurement, or null when there is none to show — no
+     * measurement yet, or one with no entry for this method (added since the run; must read as unknown, not
+     * passed, per [SnapshotVerifyStore.resultFor]'s own doc).
+     *
+     * Deliberately does not consult the last attempt: a measurement that stands is worth showing whether or not
+     * the run after it managed to measure anything, and [verifyMessage] is where the two are said together.
      *
      * Prefers a `FAILED` result over a `PASSED` one for the same method: a row is one function (the tree badge's
      * own rule), but the render pane is one image set, and a function with a `phone` failure and a `small` pass
      * must show the failure's evidence, not silently pick whichever variant the XML read order put first.
      */
     private fun verifiableResult(snapshot: PreviewEntry): SnapshotVerifyResults.SnapshotResult? {
-        val run = SnapshotVerifyStore.getInstance(project).forModule(snapshot.moduleName) ?: return null
-        if (run.outcome != SnapshotVerifyRunner.Outcome.RAN) return null
-        return run.results.firstOrNull { it.methodName == snapshot.indexed.functionName && it.status == SnapshotVerifyResults.Status.FAILED }
-            ?: run.results.firstOrNull { it.methodName == snapshot.indexed.functionName }
+        val measurement = SnapshotVerifyStore.getInstance(project).measurementFor(snapshot.moduleName) ?: return null
+        return measurement.results.firstOrNull { it.methodName == snapshot.indexed.functionName && it.status == SnapshotVerifyResults.Status.FAILED }
+            ?: measurement.results.firstOrNull { it.methodName == snapshot.indexed.functionName }
     }
 
     /**
@@ -963,11 +991,14 @@ class PreviewGalleryPanel(
 
     /**
      * Background half of the verify-image path (PG20-5): runs [decodeVerifyImages] on the same executor
-     * [loadReferences] uses for the plain path, then publishes on the EDT behind the same three-part guard
-     * [publishReferences] uses — [disposalCheck], "is this still the selected row", and [unmeasuredRun] — so a
-     * slower decode for a row the user has already left cannot land on top of a later selection, and a decode
-     * started against a since-superseded `RAN` run cannot land on top of the `NOT_RUN`/`BUILD_FAILED` message a
-     * newer run replaced it with.
+     * [loadReferences] uses for the plain path, then publishes on the EDT behind the same guard
+     * [publishReferences] uses — [disposalCheck] and "is this still the selected row" — so a slower decode for a
+     * row the user has already left cannot land on top of a later selection.
+     *
+     * It does *not* drop the publish when the module's last attempt measured nothing, which it used to: these
+     * images come from a measurement, that attempt replaced no measurement, and dropping them here is precisely
+     * how a good verdict disappeared behind "nothing was measured" at the gate. [verifyMessage] reads both facts
+     * at publish time and says both.
      */
     private fun decodeVerifyResult(snapshot: PreviewEntry, result: SnapshotVerifyResults.SnapshotResult, modality: ModalityState) {
         AppExecutorUtil.getAppExecutorService().execute {
@@ -975,7 +1006,6 @@ class PreviewGalleryPanel(
             ApplicationManager.getApplication().invokeLater({
                 if (disposalCheck.isDisposed) return@invokeLater
                 if (selectedSnapshotEntry()?.id != snapshot.id) return@invokeLater
-                if (unmeasuredRun(snapshot.moduleName) != null) return@invokeLater
                 renderPanel.showVerified(snapshot, images, verifyMessage(snapshot.moduleName, missing, failureText(result)))
             }, modality)
         }
@@ -1082,14 +1112,13 @@ class PreviewGalleryPanel(
      * the row list [publishReferences] was called with against a fresh [referenceRowsForSelection], not just the
      * owner id.
      *
-     * Reached on the snapshot path even when [loadReferences] found no verify result to prefer — no run yet, or a
-     * `RAN` run with nothing for this method — but also, deliberately, on a run whose outcome was not `RAN`
-     * ([unmeasuredRun]): that module has nothing measured, and this is where [owner]'s plain goldens (if any) get
-     * decided whether to show. When it is a `NOT_RUN`/`BUILD_FAILED` module ([owner] itself, not a preview shown
-     * via the reference mode — checked by `snapshot?.id == owner.id`), [decoded.images] still publishes, just
-     * through [PreviewRenderPanel.showVerified] instead of [PreviewRenderPanel.showReference], so the outcome
-     * message rides along with whatever goldens are committed rather than either one silently winning over the
-     * other.
+     * Reached on the snapshot path only when [loadReferences] found no measured result for this row — no
+     * measurement for the module yet, or one with nothing for this method. That row has nothing measured, and
+     * this is where [owner]'s plain goldens (if any) get decided whether to show. When the module's last attempt
+     * measured nothing too ([unmeasuredAttempt], and for [owner] itself rather than a preview shown via the
+     * reference mode — checked by `snapshot?.id == owner.id`), [decoded.images] still publishes, just through
+     * [PreviewRenderPanel.showVerified] instead of [PreviewRenderPanel.showReference], so the outcome message
+     * rides along with whatever goldens are committed rather than either one silently winning over the other.
      */
     private fun publishReferences(owner: PreviewEntry, decoded: ReferenceStripLoader.Decoded, tasks: List<String>) {
         val wanted = referenceRowsForSelection()
@@ -1097,7 +1126,7 @@ class PreviewGalleryPanel(
         val snapshot = selectedSnapshotEntry()
         val currentOwner = snapshot ?: selectedEntry()
         if (currentOwner?.id != owner.id) return
-        val unmeasured = if (snapshot?.id == owner.id) unmeasuredRun(owner.moduleName) else null
+        val unmeasured = if (snapshot?.id == owner.id) unmeasuredAttempt(owner.moduleName) else null
         if (unmeasured != null) {
             renderPanel.showVerified(owner, decoded.images, verifyOutcomeMessage(unmeasured))
             return

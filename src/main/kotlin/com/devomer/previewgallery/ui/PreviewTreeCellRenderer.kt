@@ -87,7 +87,7 @@ class PreviewTreeCellRenderer(private val project: Project? = null) : ColoredTre
                 // Matched on methodName alone, not variant: a row is one function, and a function whose `phone`
                 // variant differs is worth flagging regardless of what `small` did.
                 val store = project?.let { SnapshotVerifyStore.getInstance(it) }
-                val verify = store?.forModule(node.row.moduleName)
+                val verify = store?.measurementFor(node.row.moduleName)
                 if (store != null && verify != null && verify.results.any {
                         it.methodName == node.row.indexed.functionName && it.status == SnapshotVerifyResults.Status.FAILED
                     }
