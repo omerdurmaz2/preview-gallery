@@ -3,18 +3,25 @@ package com.devomer.previewgallery.ui
 import com.devomer.previewgallery.PreviewGalleryBundle
 import com.devomer.previewgallery.model.PreviewEntry
 import com.devomer.previewgallery.model.PreviewSourceLocation
+import com.devomer.previewgallery.model.ReferenceImage
+import com.devomer.previewgallery.model.RenderOutcome
 import com.devomer.previewgallery.render.BuildService
 import com.devomer.previewgallery.render.EphemeralPickerBridge
+import com.devomer.previewgallery.render.ImageDiff
 import com.devomer.previewgallery.render.LiveRenderer
+import com.devomer.previewgallery.render.ModuleFreshness
 import com.devomer.previewgallery.render.PreviewPickerBridge
 import com.devomer.previewgallery.render.RenderApiProbe
 import com.devomer.previewgallery.render.RenderPipeline
 import com.devomer.previewgallery.render.RenderState
+import com.devomer.previewgallery.render.ScreenshotTestClassLoader
+import com.devomer.previewgallery.render.ScreenshotTestClasses
 import com.devomer.previewgallery.render.SnapshotVerifyRunner
 import com.devomer.previewgallery.search.PreviewCoverageFilter
 import com.devomer.previewgallery.search.PreviewModuleFilter
 import com.devomer.previewgallery.service.ModuleDirectoryResolver
 import com.devomer.previewgallery.service.PreviewIndexService
+import com.devomer.previewgallery.service.ReferenceImageLocator
 import com.devomer.previewgallery.service.ReferenceRoots
 import com.devomer.previewgallery.service.SnapshotVerifyResults
 import com.devomer.previewgallery.service.SnapshotVerifyStore
@@ -55,6 +62,7 @@ import java.awt.BorderLayout
 import java.awt.event.KeyAdapter
 import java.awt.event.KeyEvent
 import java.awt.event.MouseEvent
+import java.awt.image.BufferedImage
 import java.io.File
 import java.io.IOException
 import javax.imageio.ImageIO
@@ -259,6 +267,7 @@ class PreviewGalleryPanel(
             CoverageReportAction(project, { entries }, { orphanSnapshots }),
             McpServerAction(project),
             VerifySnapshotsAction({ startVerify(selectedSnapshotEntry(), force = true) }, { selectedSnapshotEntry() != null }),
+            CompareLiveRenderAction({ compareLiveRender() }, { selectedSnapshotEntry() != null }),
             commonActions.createExpandAllAction(treeExpander, this),
             commonActions.createCollapseAllAction(treeExpander, this),
         )
@@ -990,6 +999,126 @@ class PreviewGalleryPanel(
         return parts.takeIf { it.isNotEmpty() }?.joinToString(" · ")
     }
 
+    /**
+     * Renders the selected snapshot's composable through the IDE's own pipeline and publishes how far it is from
+     * the committed golden, and from the image Gradle's last `validate` run drew (spec D2 — the second number is
+     * what tells a bad first number apart from a stale golden).
+     *
+     * The `phone` variant on both sides (spec D3). The project's `@SnapshotPreviews` multipreview draws `phone`
+     * and a 320dp `small`, each with its own golden, and a `phone` render measured against a `small` golden would
+     * report a difference that means nothing. When the render turns out to be the other variant, the images differ
+     * in size and [ImageDiff] says so rather than inventing a percentage — that is the detector, not an oversight.
+     *
+     * The EDT half below gathers what only the EDT can read (the selection, the project model, the VFS — exactly
+     * what [verifyTarget] gathers and for the same reason); [compareOffEdt] then does every remaining step —
+     * freshness, the render, both PNG decodes and the measurement — off the EDT, and the result is published back
+     * behind [disposalCheck] and "is this still the selected row", exactly as [decodeVerifyResult] publishes.
+     */
+    private fun compareLiveRender() {
+        val snapshot = selectedSnapshotEntry() ?: return
+        val moduleDirectory = ModuleDirectoryResolver.resolve(project, snapshot.file) ?: return
+        val roots = ReferenceRoots.of(moduleDirectory)
+        val variant = roots.firstNotNullOfOrNull { it.buildVariant } ?: return
+        val module = ModuleUtilCore.findModuleForFile(snapshot.file, project) ?: return
+        val golden = ReferenceImageLocator.locate(snapshot, roots).firstOrNull { it.variant == PHONE_VARIANT }
+        val modality = ModalityState.defaultModalityState()
+        AppExecutorUtil.getAppExecutorService().execute {
+            val message = compareOffEdt(snapshot, module, File(moduleDirectory.path), variant, golden)
+            ApplicationManager.getApplication().invokeLater({
+                if (disposalCheck.isDisposed) return@invokeLater
+                if (selectedSnapshotEntry()?.id != snapshot.id) return@invokeLater
+                renderPanel.showVerified(snapshot, message.images, message.text)
+            }, modality)
+        }
+    }
+
+    /**
+     * The off-EDT body of [compareLiveRender]. Every early return already carries the sentence the user needs —
+     * which Gradle task to run, or that no golden is committed — so nothing here fails silently the way a bare
+     * `return` elsewhere in this file would.
+     *
+     * The Gradle-rendered comparison is additive, never load-bearing: a module that was never verified has no
+     * [SnapshotVerifyStore] entry, [SnapshotVerifyStore.resultFor] answers null, the Gradle image stays null, and
+     * the method falls through to the `compare.resultGoldenOnly` message — the golden comparison computed just
+     * above is untouched by the second one's absence.
+     */
+    private fun compareOffEdt(
+        snapshot: PreviewEntry,
+        module: Module,
+        moduleDirectory: File,
+        variant: String,
+        golden: ReferenceImage?,
+    ): ComparisonPublish {
+        val classesDirectory = ScreenshotTestClasses.directoryFor(moduleDirectory, variant)
+        when (ScreenshotTestClasses.stateOf(classesDirectory, ModuleFreshness.newestModuleSourceMtime(module))) {
+            is ScreenshotTestClasses.State.Missing ->
+                return ComparisonPublish(
+                    emptyList(),
+                    PreviewGalleryBundle.message("compare.notCompiled", SnapshotVerifyRunner.validateTask(variant)),
+                )
+            is ScreenshotTestClasses.State.Stale ->
+                return ComparisonPublish(
+                    emptyList(),
+                    PreviewGalleryBundle.message("compare.stale", SnapshotVerifyRunner.validateTask(variant)),
+                )
+            is ScreenshotTestClasses.State.Ready -> Unit
+        }
+        if (golden == null) {
+            return ComparisonPublish(emptyList(), PreviewGalleryBundle.message("compare.noGolden"))
+        }
+        val wrapper = ScreenshotTestClassLoader.wrapperFor(classesDirectory)
+            ?: return ComparisonPublish(emptyList(), PreviewGalleryBundle.message("compare.renderFailed"))
+        val outcome = LiveRenderer(project).render(snapshot, override = null, moduleWrapper = wrapper)
+        if (outcome !is RenderOutcome.Success) {
+            return ComparisonPublish(emptyList(), PreviewGalleryBundle.message("compare.renderFailed"))
+        }
+        thisLogger().debug("Compare: rendered ${outcome.image.width}x${outcome.image.height} for ${snapshot.indexed.composableFqn}")
+
+        val goldenImage = decodeImage(golden.file.path)
+            ?: return ComparisonPublish(emptyList(), PreviewGalleryBundle.message("compare.noGolden"))
+        val gradleImage = SnapshotVerifyStore.getInstance(project)
+            .resultFor(snapshot.moduleName, snapshot.indexed.functionName, PHONE_VARIANT)
+            ?.renderedPath
+            ?.let(::decodeImage)
+
+        val goldenComparison = formatComparison(ImageDiff.compare(outcome.image, goldenImage))
+        val text = if (gradleImage != null) {
+            val gradleComparison = formatComparison(ImageDiff.compare(outcome.image, gradleImage))
+            PreviewGalleryBundle.message("compare.result", goldenComparison, gradleComparison)
+        } else {
+            PreviewGalleryBundle.message("compare.resultGoldenOnly", goldenComparison)
+        }
+
+        val images = buildList {
+            add(ReferenceStripView.LabelledImage(PreviewGalleryBundle.message("verify.golden"), goldenImage))
+            if (gradleImage != null) add(ReferenceStripView.LabelledImage("Gradle", gradleImage))
+            add(ReferenceStripView.LabelledImage("live", outcome.image))
+        }
+        return ComparisonPublish(images, text)
+    }
+
+    /** [ImageDiff.Result] into the sentence [compareOffEdt] shows: a formatted percentage for a measured pair, or
+     *  both sizes — never a percentage — for a pair [ImageDiff] refused to average because they differ in size. */
+    private fun formatComparison(result: ImageDiff.Result): String = when (result) {
+        is ImageDiff.Result.Measured ->
+            PreviewGalleryBundle.message("compare.percent", String.format("%.3f", result.percent))
+        is ImageDiff.Result.SizeMismatch ->
+            PreviewGalleryBundle.message("compare.sizeMismatch", result.left, result.right)
+    }
+
+    /** A PNG that fails to decode reads as absent, exactly as [decodeVerifyImages] already treats an unreadable
+     *  reference image — [compareOffEdt] drops the comparison that image would have fed rather than failing it. */
+    private fun decodeImage(path: String): BufferedImage? = try {
+        ImageIO.read(File(path))
+    } catch (e: IOException) {
+        thisLogger().warn("Could not read image $path", e)
+        null
+    }
+
+    /** [compareLiveRender]'s publish payload — the strip images in golden/Gradle/live order, and the message shown
+     *  above them — carried from [compareOffEdt] on the background executor to the EDT unchanged. */
+    private class ComparisonPublish(val images: List<ReferenceStripView.LabelledImage>, val text: String)
+
     /** What [verifyMessage] says about [result] itself: the task's failure sentence, plus the difference it
      *  measured when it managed to measure one — a size mismatch never does, and reports no percentage at all. */
     private fun failureText(result: SnapshotVerifyResults.SnapshotResult): String? {
@@ -1321,6 +1450,10 @@ class PreviewGalleryPanel(
 
     private companion object {
         const val SEARCH_DEBOUNCE_MS = 150
+
+        /** The multipreview's own `@Preview(name = "phone")` — one word that is also the `variant` a verify's
+         *  results XML carries and the segment [ReferenceImageLocator] reads out of a golden's file name. */
+        const val PHONE_VARIANT = "phone"
     }
 }
 
