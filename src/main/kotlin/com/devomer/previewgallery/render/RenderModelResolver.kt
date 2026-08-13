@@ -75,7 +75,19 @@ class RenderModelResolver {
         class Failed(val message: String, val detail: String?) : RenderModelResult
     }
 
-    fun resolve(entry: PreviewEntry, project: Project, override: ViewOverride? = null): RenderModelResult =
+    /**
+     * PG22-3: [moduleWrapper], when non-null, wraps the [AndroidFacetRenderModelModule] this method would
+     * otherwise build directly — the seam a `screenshotTest` classpath injection composes onto (see
+     * [ScreenshotTestClassLoader]). A null wrapper (every caller before this task, and `Original`'s own render)
+     * reproduces the exact pre-PG22-3 path: [resolveUnderReadAction] builds the same
+     * [AndroidFacetRenderModelModule] either way.
+     */
+    fun resolve(
+        entry: PreviewEntry,
+        project: Project,
+        override: ViewOverride? = null,
+        moduleWrapper: RenderModuleWrapper? = null,
+    ): RenderModelResult =
         try {
             // The config-aware element is fetched FIRST, lock-free (see [findConfigAwareElement]): its finder is a
             // suspend function that acquires its OWN (smart) read access, and calling it while we already hold the
@@ -85,7 +97,7 @@ class RenderModelResolver {
             // applies the already-fetched element's own @Preview configuration.
             val configAware = findConfigAwareElement(entry, project)
             ReadAction.compute<RenderModelResult, RuntimeException> {
-                resolveUnderReadAction(entry, project, configAware, override)
+                resolveUnderReadAction(entry, project, configAware, override, moduleWrapper)
             }
         } catch (e: ProcessCanceledException) {
             throw e // Never swallow cancellation — the platform relies on it propagating.
@@ -102,6 +114,7 @@ class RenderModelResolver {
         project: Project,
         configAware: SingleComposePreviewElementInstance<*>?,
         override: ViewOverride?,
+        moduleWrapper: RenderModuleWrapper? = null,
     ): RenderModelResult {
         // U1: module → AndroidFacet → AndroidBuildTargetReference → AndroidFacetRenderModelModule.
         // PG11-1: the facet is resolved through [AndroidModuleResolver], not `AndroidFacet.getInstance(module)`
@@ -113,7 +126,8 @@ class RenderModelResolver {
         val facet = AndroidModuleResolver.androidFacet(module)
             ?: return RenderModelResult.NoFacet
         val buildTarget = AndroidBuildTargetReference.from(facet, entry.file)
-        val renderModule = AndroidFacetRenderModelModule(buildTarget)
+        val renderModule = moduleWrapper?.invoke(AndroidFacetRenderModelModule(buildTarget))
+            ?: AndroidFacetRenderModelModule(buildTarget)
 
         // The Configuration (device, theme, locale, target SDK) derived from the composable's own source file.
         // Keyed on the *facet's* module, which is what AS's own updatePreviewsAndRefresh does

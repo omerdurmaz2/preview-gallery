@@ -73,13 +73,21 @@ class LiveRenderer(
      * plugin-owned override for one comparison copy — forwarded to [RenderModelResolver.resolve] unchanged.
      * `null`, or a default ([ViewOverride.isDefault]), override reproduces the exact config-aware path; applying
      * a non-default override's values onto the `Configuration` is not wired up yet (a later task).
+     *
+     * [moduleWrapper] (PG22-3) is forwarded to [RenderModelResolver.resolve] unchanged and applied there, before
+     * [renderResolved] ever sees the resolved model — this method has nothing else to do for it. `null` (every
+     * caller before this task) reproduces today's render exactly.
      */
-    fun render(entry: PreviewEntry, override: ViewOverride? = null): RenderOutcome {
+    fun render(
+        entry: PreviewEntry,
+        override: ViewOverride? = null,
+        moduleWrapper: RenderModuleWrapper? = null,
+    ): RenderOutcome {
         if (!isAvailable()) {
             return RenderOutcome.Unsupported("Live rendering is unavailable on this IDE build")
         }
         return try {
-            when (val result = resolver.resolve(entry, project, override)) {
+            when (val result = resolver.resolve(entry, project, override, moduleWrapper)) {
                 is RenderModelResult.NoFacet ->
                     RenderOutcome.Unsupported("Module '${entry.moduleName}' has no Android facet")
                 is RenderModelResult.Failed ->
