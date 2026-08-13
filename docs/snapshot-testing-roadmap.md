@@ -1,22 +1,25 @@
 # Snapshot Testing — Feature Roadmap
 
-> **Status:** **F1, H1, F2, F8, F7, F6 and F5's reference half shipped** — Phase 13 (badge, snapshot rows,
+> **Status:** **F1, H1, F2, F8, F7, F6, H2 and F5's reference half shipped** — Phase 13 (badge, snapshot rows,
 > reference strip), Phase 14 (read the source set from the VFS, fix attribution), Phase 15 (refresh before the
 > lookup, discover every build variant's reference root, recover the index-fallback rows), Phase 16 (the
 > uncovered-only toggle and the markdown report), Phase 17 (the index served read-only over MCP), Phase 18
-> (snapshot health, in the export and over MCP), Phase 19 (a preview row shows its committed goldens) and
-> Phase 20 (a snapshot row runs the project's own `validate` task and shows what it found). The manual gate
+> (snapshot health, in the export and over MCP), Phase 19 (a preview row shows its committed goldens),
+> Phase 20 (a snapshot row runs the project's own `validate` task and shows what it found) and Phase 21 (that
+> feature's own hardening, H2). The manual gate
 > against `hepsi-android` passes: snapshots are listed, they hang under the previews they belong to, a reference
 > directory changed from a terminal is picked up without pressing Refresh, the toggle leaves the work queue on
 > screen, an agent asking `list_previews` gets the same 854 uncovered composables the tree shows, the health
 > section names the `favorites` specimen it was designed around, a covered preview shows every covering
 > snapshot's goldens while the mode stays on across rows, and a deliberately corrupted golden comes back as
-> `differs` with its reference, rendered and diff images and the engine's own `0.111% different`. Everything
-> else below is still backlog.
+> `differs` with its reference, rendered and diff images and the engine's own `0.111% different`, an explicit
+> Verify survives a selection change, a module with no goldens is told why nothing ran, and a second verify of an
+> unchanged module answers from the results the up-to-date task did not rewrite. **F5's diff half is all that is
+> left.**
 >
 > Each remaining entry becomes its own session: brainstorm → design spec in `docs/superpowers/specs/`
-> → plan in `docs/superpowers/plans/` → implementation. Commit prefixes (`PG21-N`, …) are assigned when
-> a feature is planned, continuing from the last used phase (`PG20`).
+> → plan in `docs/superpowers/plans/` → implementation. Commit prefixes (`PG22-N`, …) are assigned when
+> a feature is planned, continuing from the last used phase (`PG21`).
 
 ## Priority order
 
@@ -25,7 +28,6 @@ Ranked for what to build next, not by theme. Effort is a rough order of magnitud
 | # | Item | Why it is here | Effort |
 |---|---|---|---|
 | 1 | **F5's diff half** | The reference half shipped (PG19) and the classloader spike answered its blocker: the seam is the plugin's and the whole chain composes out of public API. What it buys over F6 is speed — seconds instead of a Gradle run — at the cost of an unproven pixel-comparability question, so its own first phase is a calibration, not a UI. | M |
-| 2 | **H2 · Close what PG20's gate left open** | Two verify checks were never run after the last model fix, two silent paths are known and unfixed, and a source-tree walk still runs unbounded on the EDT behind a 5 s cache. Small, and it is the price of having shipped F6 through a gate that found four real bugs. | S |
 
 **Deferred:** F3 (the agent route supersedes it until proven otherwise) and F4 (waits on F3's writer). Both
 keep their sections below with the reasoning.
@@ -319,26 +321,56 @@ them, which is worth recording for the next feature that touches Gradle output:
 - **Open:** `validate` fails the build when a snapshot differs, so a failed Gradle run is the normal failing case
   — anything reading its exit status must not treat that as an error.
 
-#### H2 · Close what PG20's gate left open
+#### H2 · Close what PG20's gate left open — **shipped (PG21)**
 
 **Goal:** finish the verification F6's gate started, and pay down what it deliberately deferred.
 
-Two gate checks were never run after the final model fix: an **UP-TO-DATE second verify** must keep the badge and
-report that the last attempt measured nothing, and **pressing Verify during indexing** must produce a visible
-message. Both are now expected to pass; neither is observed.
+Everything this entry listed is closed, and the gate that closed it found a fifth thing worth more than the other
+four put together.
 
-Two silent paths are known and unfixed. `runVerify` starts `verifyTarget() ?: return`, so a Verify on a module
-with snapshot tests but no committed goldens records nothing and says nothing — fixing it naively replaces the
-useful "run `updateDebugScreenshotTest`" pane with a bare "Not verified", so it needs a wording decision rather
-than a guard. And `startVerify` cancels the pending alarm before the `needsVerify` check, so a selection change
-inside the debounce silently drops an explicit Verify.
+- **The two silent paths.** `startVerify` cancelled the debounce alarm before it knew whether it would re-arm, so a
+  selection change inside the window dropped an explicit Verify — and dropped it precisely because `needsVerify` is
+  false for the module whose standing answer the user was asking to refresh. A `forcedVerifyPending` flag now makes
+  a pending forced request outrank the automatic path. `runVerify`'s `verifyTarget() ?: return` got the wording
+  decision this entry asked for rather than a guard: nothing is recorded (an attempt is what a *run* reports, and no
+  run was launched), the automatic path stays silent because the pane it would overwrite already names the
+  `update…ScreenshotTest` task, and only a button press answers — with a sentence that keeps that instruction.
+- **The performance ceiling.** The walk is still unbounded, deliberately: a depth cap would let a deep-package edit
+  read as "nothing changed", which is the one direction this must never be wrong in.
+  `ModuleFreshness.cachedModuleSourceMtime` serves the cached value — expired or not, null only when cold — and
+  revalidates on the app executor, so the paint path touches no filesystem at all. An unknown clock still reads
+  stale, which is the safe direction, corrected one repaint later. The blocking reader stays for `needsVerify` and
+  `verifyMessage`, where a cold-cache unknown would launch a needless Gradle run or claim the code changed the
+  instant after a verify measured it.
+- **The two unrun gate checks both pass**, and both are now tests as well as observations. The indexing test cannot
+  isolate `DumbService`'s refusal from the "not a linked Gradle project" one — both report `NOT_RUN` and a light
+  fixture's module is never Gradle-linked — so the manual gate is what distinguishes them.
 
-One performance ceiling: `ModuleFreshness.newestModuleSourceMtime` walks a module's source tree **unbounded** and
-runs from Swing's per-row paint callback, behind a 5 s TTL cache. `isModuleFresh` caps its own walk at
-`MAX_SCAN_DEPTH`; this one does not. Amortised, not removed.
+**The fifth thing.** The first Verify press of the gate said *"Verify did not complete — nothing was measured"* on a
+module whose snapshots all pass. The Gradle daemon log said `BUILD SUCCESSFUL in 15s`: the task was **UP-TO-DATE**,
+wrote no new XML, and `SnapshotVerifyResults.read`'s timestamp guard discarded the results already on disk. That
+guard exists so an older run is never shown as this one's answer — but an up-to-date check *is* Gradle's proof that
+the task's inputs are unchanged, so those results describe the code as it stands. The runner now carries the build's
+exit status and `readForRun` falls back to the unfiltered read when the build succeeded and nothing was rewritten
+(PG21-8). This was PG20 behaviour, not a PG21 regression, and it was the *common* case rather than an edge one: any
+module already validated — by CI, by a terminal, by the run a minute ago — answered that way until something
+changed. A six-second verify was being thrown away every time.
 
-- **Effort:** S · **Risk:** low
-- **Depends on:** nothing
+Worth knowing for the next feature: **two of the tests written for this entry passed with their own fix reverted**,
+and only the final review's revert-and-re-run caught them. One was a fixture whose parent directories carried a
+`now` mtime that defeated the very staleness it was arranging; the other never exercised the call site it existed
+for. A test phase that is not revert-checked is a test phase that has not run.
+
+- **Built:** `PreviewGalleryPanel` (`forcedVerifyPending`, `runVerify(force)`, `reportNothingToVerify`),
+  `ModuleFreshness.cachedModuleSourceMtime`, `SnapshotVerifyStore.isStale(measurement, onRefreshed)`,
+  `SnapshotVerifyRunner`'s exit-status pass-through, `SnapshotVerifyResults.readForRun`
+- **Plan:** `docs/superpowers/plans/2026-08-12-snapshot-verify-hardening.md`
+- **Effort:** S as scoped, M as built (PG21-1..10, 543 → 556 tests) · **Risk:** realised only in the tests
+- **Ceilings recorded rather than defended against:** a background source-clock refresh in flight when
+  `ModuleFreshness.invalidate` runs can write its pre-invalidate value back for up to the 5 s TTL (upgrade path: a
+  generation counter); and a module whose snapshot tests were all deleted makes the task `NO-SOURCE`, so
+  `readForRun` reads results for functions that no longer exist — shown as stale, because the deletion moves the
+  module's source clock past the run.
 
 #### F7 · Degenerate golden detector — **shipped (PG18)**
 
