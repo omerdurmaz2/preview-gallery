@@ -76,9 +76,12 @@ object SnapshotVerifyResults {
      * Every snapshot result in [resultsDirectory], ignoring files last modified before [startedAtMillis], with
      * every image path resolved against [buildRoot].
      *
-     * The timestamp guard is not defensive tidiness. The same directory can hold results from an `update` the
-     * human ran by hand at a terminal, and reading those would present someone else's older run as this verify's
-     * answer — stale data shown as fresh, which is the failure this project keeps designing against (spec D7).
+     * The timestamp guard is not defensive tidiness. [resultsDirectory] is per-task
+     * ([com.devomer.previewgallery.render.SnapshotVerifyRunner] builds it from the task name itself), so the only
+     * thing it can hold besides this run's own output is an earlier run of this *same* `validate` task — a
+     * previous IDE session, CI, or the human running it by hand at a terminal. Reading one of those would present
+     * that older run as this verify's answer — stale data shown as fresh, which is the failure this project keeps
+     * designing against (spec D7).
      *
      * [buildRoot] is not tidiness either. The task writes `refImagePath` and `newImagePath` **relative to the
      * directory Gradle was invoked from**, e.g. `features/favorites/ui/src/screenshotTestDebug/reference/….png`.
