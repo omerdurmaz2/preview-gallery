@@ -8,6 +8,7 @@ import com.android.tools.rendering.api.RenderModelModule
 import com.android.tools.rendering.classloading.ClassTransform
 import com.android.tools.rendering.classloading.ModuleClassLoaderManager
 import com.intellij.openapi.diagnostic.thisLogger
+import com.intellij.openapi.progress.ProcessCanceledException
 import org.jetbrains.android.uipreview.StudioModuleClassLoaderManager
 import java.io.File
 
@@ -40,8 +41,12 @@ typealias RenderModuleWrapper = (RenderModelModule) -> RenderModelModule
  *    a public static factory that needs nothing else. [injectingContext] uses that rather than the original
  *    `AndroidBuildTargetReference` the caller already held, because [RenderModuleWrapper] only ever receives the
  *    already-built [RenderModelModule] — the exact reference used to construct it is not recoverable from that.
- *    Whether a freshly derived [BuildTargetReference] behaves identically to the original for classpath resolution
- *    is one of the things only a real render can show, not this compile.
+ *    This is not a guess: `StudioModuleRenderContext.Companion.forModule(Module)` — Android Studio's own factory
+ *    for the same context type — compiles to exactly `new StudioModuleRenderContext(BuildTargetReference.Companion
+ *    .gradleOnly(module))` (confirmed by `javap -c`), the identical derivation used here. And it converges on the
+ *    same target as the original per-entry `AndroidBuildTargetReference.from(facet, entry.file)`:
+ *    `GradleBuildSystemFilePreviewServices` ignores the file parameter, and `getIdeaModule()` compiles to
+ *    `getFacet().getModule()` — same facet, same module, same target either way.
  *
  * A **private** loader per render, released when the render ends: a shared loader carrying `screenshotTest`
  * classes would leak test classes into the class cache every ordinary `@Preview` render then reuses. That is why
@@ -55,6 +60,8 @@ internal object ScreenshotTestClassLoader {
 
     fun wrapperFor(classesDirectory: File): RenderModuleWrapper? = try {
         buildWrapper(classesDirectory)
+    } catch (e: ProcessCanceledException) {
+        throw e // Never swallow cancellation — the platform relies on it propagating.
     } catch (e: Exception) {
         thisLogger().warn("Could not compose a screenshotTest class loader for $classesDirectory", e)
         null
@@ -66,7 +73,7 @@ internal object ScreenshotTestClassLoader {
     private fun buildWrapper(classesDirectory: File): RenderModuleWrapper = { module ->
         object : RenderModelModule by module {
             override fun getClassLoaderProvider(privateClassLoader: Boolean): RenderModelModule.ClassLoaderProvider =
-                getClassLoaderProviderFor(module, classesDirectory)
+                getClassLoaderProviderFor(module, classesDirectory, privateClassLoader)
         }
     }
 
@@ -76,23 +83,53 @@ internal object ScreenshotTestClassLoader {
      * `getClassLoader` — the parent [ClassLoader] and both [ClassTransform]s — is forwarded unchanged into
      * [StudioModuleClassLoaderManager.getPrivate]; only `onNewModuleClassLoader` has nowhere to go, matching
      * `AndroidFacetRenderModelModule`'s own `getClassLoaderProvider` lambda shape confirmed by `javap`.
+     *
+     * This call happens well after [wrapperFor] returned — Android Studio's own pipeline invokes it, so
+     * [wrapperFor]'s guard does not cover it. Guarded here on its own: a failure building the private loader falls
+     * back to [module]'s own, real `getClassLoaderProvider(privateClassLoader)`, which is exactly today's
+     * behaviour — the render proceeds on the ordinary classpath and fails to find the snapshot class the same way
+     * it does now, rather than failing the whole render.
      */
     private fun getClassLoaderProviderFor(
         module: RenderModelModule,
         classesDirectory: File,
+        privateClassLoader: Boolean,
     ): RenderModelModule.ClassLoaderProvider = object : RenderModelModule.ClassLoaderProvider {
         override fun getClassLoader(
             parent: ClassLoader?,
             additionalProjectTransformation: ClassTransform,
             additionalNonProjectTransformation: ClassTransform,
             onNewModuleClassLoader: Runnable,
-        ): ModuleClassLoaderManager.Reference<*> =
-            StudioModuleClassLoaderManager.get().getPrivate(
+        ): ModuleClassLoaderManager.Reference<*> {
+            try {
+                return StudioModuleClassLoaderManager.get().getPrivate(
+                    parent,
+                    injectingContext(module, classesDirectory),
+                    additionalProjectTransformation,
+                    additionalNonProjectTransformation,
+                )
+            } catch (e: ProcessCanceledException) {
+                throw e // Never swallow cancellation — the platform relies on it propagating.
+            } catch (e: Exception) {
+                thisLogger().warn(
+                    "Could not build a private screenshotTest class loader for $classesDirectory; " +
+                        "rendering with the ordinary classpath instead",
+                    e,
+                )
+            } catch (e: LinkageError) {
+                thisLogger().warn(
+                    "The private class-loader API is incompatible with this IDE build; " +
+                        "rendering with the ordinary classpath instead",
+                    e,
+                )
+            }
+            return module.getClassLoaderProvider(privateClassLoader).getClassLoader(
                 parent,
-                injectingContext(module, classesDirectory),
                 additionalProjectTransformation,
                 additionalNonProjectTransformation,
+                onNewModuleClassLoader,
             )
+        }
     }
 
     private fun injectingContext(module: RenderModelModule, classesDirectory: File): StudioModuleRenderContext =
@@ -106,9 +143,27 @@ internal object ScreenshotTestClassLoader {
      * injected directory holds only the `screenshotTest` classes, and every `main` class the composable touches
      * still comes from the ordinary classpath. Kotlin file facades (`UtilSnapshotsKt`) and
      * `ComposableSingletons$…` classes are ordinary entries here; no special casing.
+     *
+     * This runs when Android Studio's own loader asks for [fqcn], long after [wrapperFor] returned, so it is
+     * guarded on its own too: a read failure returns null exactly like a genuine miss, so the real loader answers
+     * for that one class instead of the whole render failing.
      */
     private fun classFileFor(fqcn: String, classesDirectory: File): ClassContent? {
         val file = File(classesDirectory, fqcn.replace('.', '/') + ".class")
-        return if (file.isFile) ClassContent.loadFromFile(file) else null
+        if (!file.isFile) return null
+        return try {
+            ClassContent.loadFromFile(file)
+        } catch (e: ProcessCanceledException) {
+            throw e // Never swallow cancellation — the platform relies on it propagating.
+        } catch (e: Exception) {
+            thisLogger().warn("Could not read $file; the ordinary loader will answer for $fqcn instead", e)
+            null
+        } catch (e: LinkageError) {
+            thisLogger().warn(
+                "The class-content read API is incompatible with this IDE build; the ordinary loader will answer for $fqcn instead",
+                e,
+            )
+            null
+        }
     }
 }
