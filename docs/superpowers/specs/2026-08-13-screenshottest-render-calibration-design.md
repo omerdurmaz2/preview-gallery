@@ -62,6 +62,12 @@ against a `small` golden would produce a large number that means nothing — and
 disagree", which it would not be. The calibration fixes `phone` on both sides. Matching every variant is the diff
 UI's problem, not the measurement's.
 
+The instance is selected by the `@Preview` `name` the multipreview declares, which is also the `variant` string in
+the results XML and in the golden's file name — one vocabulary across all three. If the resolver turns out to yield
+a single instance for a multipreview rather than one per `@Preview`, **that is a finding to record and stop on**,
+not something to work around by rendering whatever came back: a render whose variant is unknown cannot be compared
+against a variant-specific golden.
+
 **D4 · An explicit action, not automatic.** The measurement runs when a button is pressed on a selected snapshot
 row. A false alarm the user triggered is a data point; a false alarm that arrives on its own accumulates behind
 them. Automatic triggering is step 3 above, and it is gated on this phase reading green.
@@ -71,6 +77,11 @@ and must not be older than the module's sources. When it is missing or stale, no
 names the task to run (`validate<Variant>ScreenshotTest`). The staleness comparison reuses
 `ModuleFreshness.newestModuleSourceMtime`, which PG21 already shaped for exactly this question. A number derived
 from stale classes is a wrong number, and this phase exists to produce a right one.
+
+Concretely: the classes side of that comparison is the **newest** `.class` file under the directory, not the
+directory's own mtime. A directory's timestamp moves when an entry is added or removed and stays put when a file
+is overwritten in place, which is the common case for a recompile — exactly the mistake `ModuleFreshness`'
+own bounded scan documents.
 
 **D6 · The engine's own metric.** Size equality is a precondition; the measurement itself is the share of
 differing pixels, reported as a percentage — the same vocabulary the Android screenshot engine uses in its own
