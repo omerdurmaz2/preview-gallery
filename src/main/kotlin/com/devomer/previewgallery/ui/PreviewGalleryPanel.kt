@@ -1013,13 +1013,20 @@ class PreviewGalleryPanel(
      * what [verifyTarget] gathers and for the same reason); [compareOffEdt] then does every remaining step —
      * freshness, the render, both PNG decodes and the measurement — off the EDT, and the result is published back
      * behind [disposalCheck] and "is this still the selected row", exactly as [decodeVerifyResult] publishes.
+     *
+     * The three EDT-side lookups below can each fail on their own — no module directory, no reference root naming
+     * a variant, no project-model [Module] — and [reportCompareUnavailable] is what keeps every one of them
+     * answering rather than the button silently doing nothing, the same rule [reportNothingToVerify] already holds
+     * for [runVerify]'s own `force` path. Only the very first line stays silent: with no row selected there is no
+     * pane left to publish into.
      */
     private fun compareLiveRender() {
         val snapshot = selectedSnapshotEntry() ?: return
-        val moduleDirectory = ModuleDirectoryResolver.resolve(project, snapshot.file) ?: return
+        val moduleDirectory = ModuleDirectoryResolver.resolve(project, snapshot.file)
+            ?: return reportCompareUnavailable(snapshot)
         val roots = ReferenceRoots.of(moduleDirectory)
-        val variant = roots.firstNotNullOfOrNull { it.buildVariant } ?: return
-        val module = ModuleUtilCore.findModuleForFile(snapshot.file, project) ?: return
+        val variant = roots.firstNotNullOfOrNull { it.buildVariant } ?: return reportCompareUnavailable(snapshot)
+        val module = ModuleUtilCore.findModuleForFile(snapshot.file, project) ?: return reportCompareUnavailable(snapshot)
         val golden = ReferenceImageLocator.locate(snapshot, roots).firstOrNull { it.variant == PHONE_VARIANT }
         val modality = ModalityState.defaultModalityState()
         AppExecutorUtil.getAppExecutorService().execute {
@@ -1030,6 +1037,13 @@ class PreviewGalleryPanel(
                 renderPanel.showVerified(snapshot, message.images, message.text)
             }, modality)
         }
+    }
+
+    /** What [compareLiveRender] says when its own EDT-side lookups found nothing to compare — the module directory,
+     *  the build variant, or the project-model [Module] the render needs. Mirrors [reportNothingToVerify]: the
+     *  press is always answered, never silently dropped. */
+    private fun reportCompareUnavailable(snapshot: PreviewEntry) {
+        renderPanel.showVerified(snapshot, emptyList(), PreviewGalleryBundle.message("compare.unavailable"))
     }
 
     /**
@@ -1075,7 +1089,10 @@ class PreviewGalleryPanel(
         thisLogger().debug("Compare: rendered ${outcome.image.width}x${outcome.image.height} for ${snapshot.indexed.composableFqn}")
 
         val goldenImage = decodeImage(golden.file.path)
-            ?: return ComparisonPublish(emptyList(), PreviewGalleryBundle.message("compare.noGolden"))
+            ?: return ComparisonPublish(
+                emptyList(),
+                PreviewGalleryBundle.message("compare.goldenUnreadable", golden.file.path),
+            )
         val gradleImage = SnapshotVerifyStore.getInstance(project)
             .resultFor(snapshot.moduleName, snapshot.indexed.functionName, PHONE_VARIANT)
             ?.renderedPath
