@@ -170,6 +170,80 @@ class SnapshotVerifyResultsTest {
     }
 
     @Test
+    fun `readForRun falls back to the results on disk when a successful build rewrote nothing`() {
+        val startedAtMillis = 10_000_000L
+        val file = resultsFile(
+            "TEST-preview-screenshot-test-engine.xml",
+            passingCaseXml("UpToDate_Snapshot", "phone", "/g/uptodate.png", "/r/uptodate.png"),
+        )
+        file.setLastModified(startedAtMillis - 60_000)
+
+        val results = SnapshotVerifyResults.readForRun(
+            tempFolder.root.toPath(),
+            startedAtMillis,
+            BUILD_ROOT,
+            buildSucceeded = true,
+        )
+
+        // Plain read() sees nothing newer than startedAtMillis and returns empty; only the fallback to an
+        // unfiltered read recovers the up-to-date task's own answer.
+        assertEquals(listOf("UpToDate_Snapshot"), results.map { it.methodName })
+    }
+
+    @Test
+    fun `readForRun still returns nothing when a failed build rewrote nothing`() {
+        val startedAtMillis = 10_000_000L
+        val file = resultsFile(
+            "TEST-preview-screenshot-test-engine.xml",
+            passingCaseXml("UpToDate_Snapshot", "phone", "/g/uptodate.png", "/r/uptodate.png"),
+        )
+        file.setLastModified(startedAtMillis - 60_000)
+
+        val results = SnapshotVerifyResults.readForRun(
+            tempFolder.root.toPath(),
+            startedAtMillis,
+            BUILD_ROOT,
+            buildSucceeded = false,
+        )
+
+        // An unguarded fallback (one that ignores buildSucceeded) would return "UpToDate_Snapshot" here too — a
+        // failed build proves nothing about an unrewritten result, so the guard must still hold.
+        assertEquals(emptyList<String>(), results.map { it.methodName })
+    }
+
+    @Test
+    fun `readForRun returns a rewritten result exactly once, whatever the build outcome`() {
+        val startedAtMillis = 10_000_000L
+        val file = resultsFile(
+            "TEST-preview-screenshot-test-engine.xml",
+            passingCaseXml("Fresh_Snapshot", "phone", "/g/fresh.png", "/r/fresh.png"),
+        )
+        file.setLastModified(startedAtMillis + 60_000)
+
+        val succeeded = SnapshotVerifyResults.readForRun(tempFolder.root.toPath(), startedAtMillis, BUILD_ROOT, buildSucceeded = true)
+        val failed = SnapshotVerifyResults.readForRun(tempFolder.root.toPath(), startedAtMillis, BUILD_ROOT, buildSucceeded = false)
+
+        // A readForRun that always appended the unfiltered fallback, instead of only reaching for it when the
+        // guarded read came back empty, would return "Fresh_Snapshot" twice here.
+        assertEquals(listOf("Fresh_Snapshot"), succeeded.map { it.methodName })
+        assertEquals(listOf("Fresh_Snapshot"), failed.map { it.methodName })
+    }
+
+    @Test
+    fun `readForRun on an absent results directory yields an empty list for either build outcome`() {
+        val missing = Path.of(tempFolder.root.absolutePath, "does-not-exist")
+
+        assertEquals(
+            emptyList<SnapshotVerifyResults.SnapshotResult>(),
+            SnapshotVerifyResults.readForRun(missing, 0L, BUILD_ROOT, buildSucceeded = true),
+        )
+        assertEquals(
+            emptyList<SnapshotVerifyResults.SnapshotResult>(),
+            SnapshotVerifyResults.readForRun(missing, 0L, BUILD_ROOT, buildSucceeded = false),
+        )
+    }
+
+    @Test
     fun `a malformed file is skipped while its sibling still parses`() {
         resultsFile("TEST-broken.xml", "not xml at all <<<")
         resultsFile("TEST-ok.xml", passingCaseXml("Ok_Snapshot", "phone", "/g/ok.png", "/r/ok.png"))

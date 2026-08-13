@@ -866,11 +866,11 @@ class PreviewGalleryPanel(
         }
         val store = SnapshotVerifyStore.getInstance(project)
         verifyInFlightModule = target.moduleName
-        SnapshotVerifyRunner.getInstance(project).verify(target.module, target.buildVariant) { outcome, started ->
+        SnapshotVerifyRunner.getInstance(project).verify(target.module, target.buildVariant) { outcome, started, succeeded ->
             val results = if (started == null) {
                 emptyList()
             } else {
-                SnapshotVerifyResults.read(started.resultsDirectory, started.startedAtMillis, started.buildRoot)
+                SnapshotVerifyResults.readForRun(started.resultsDirectory, started.startedAtMillis, started.buildRoot, succeeded)
             }
             val now = System.currentTimeMillis()
             store.record(

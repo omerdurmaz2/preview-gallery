@@ -99,6 +99,37 @@ object SnapshotVerifyResults {
             .flatMap { readFile(it, buildRoot) }
     }
 
+    /**
+     * [read], plus the one case its timestamp guard was never meant to defeat: a successful build that rewrote
+     * nothing at all.
+     *
+     * A successful build that wrote no new results means Gradle found the task's inputs unchanged — an
+     * up-to-date check is exactly the guarantee that the results already on disk describe the code as it stands.
+     * The guard in [read] exists to stop *someone else's* older run being presented as this verify's answer (spec
+     * D7); it was never meant to discard this run's own answer, which is what it does when the task is up to
+     * date. So when [read] comes back empty and [buildSucceeded] is true, this falls back to every result on
+     * disk, unfiltered by time, and treats that as this run's own.
+     *
+     * The guard still holds where it earns its place: when the build **failed**, an unrewritten result proves
+     * nothing, and the caller is told nothing was measured.
+     *
+     * **The ceiling, recorded rather than defended against:** a module whose snapshot tests were all deleted
+     * makes the task `NO-SOURCE`, the build succeeds, and this fallback then reads results for functions that no
+     * longer exist. [SnapshotVerifyStore.isStale] catches the edit that removed them (the module's source clock
+     * moves past the run), so it is shown as a stale verdict rather than a current one; the upgrade path, if it
+     * ever matters, is to cross-check the XML's method names against the module's indexed snapshot rows.
+     */
+    fun readForRun(
+        resultsDirectory: Path,
+        startedAtMillis: Long,
+        buildRoot: Path,
+        buildSucceeded: Boolean,
+    ): List<SnapshotResult> {
+        val written = read(resultsDirectory, startedAtMillis, buildRoot)
+        if (written.isNotEmpty() || !buildSucceeded) return written
+        return read(resultsDirectory, 0L, buildRoot)
+    }
+
     /** A file that will not parse is skipped rather than failing the whole read: one malformed result must not
      *  hide the other nine facade classes' answers. */
     private fun readFile(file: File, buildRoot: Path): List<SnapshotResult> =

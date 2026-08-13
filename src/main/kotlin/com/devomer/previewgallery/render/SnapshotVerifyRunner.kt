@@ -39,6 +39,12 @@ import java.util.concurrent.atomic.AtomicReference
  * failure alone says nothing about whether the difference is a snapshot mismatch or a broken compile. That is
  * why [Outcome] is decided together with whether the task wrote any results, not from the exit status alone.
  *
+ * [verify]'s `buildSucceeded` flag is a narrower fact than [Outcome]: it is only the build's exit status, carried
+ * out so [com.devomer.previewgallery.service.SnapshotVerifyResults.readForRun] can tell an up-to-date success
+ * (the answer on disk is this run's own) from an up-to-date failure (it proves nothing). It must never be read
+ * as an answer to the question [Outcome] already exists to keep separate — a failed build still says nothing
+ * about whether the difference was a snapshot mismatch or a broken compile, and this flag is not that signal.
+ *
  * The task name is derived rather than read from the IDE's model (spec D5): the project is synced without
  * `-Pandroid.experimental.enableScreenshotTest=true`, so AGP's screenshot plugin is not applied there and the
  * task is absent from the model — the flag passed here is what makes it exist for this invocation.
@@ -85,23 +91,24 @@ class SnapshotVerifyRunner(private val project: Project) : Disposable {
      * Verifies [module]'s snapshots for [buildVariant], cancelling whatever run this service already has in
      * flight (single-flight, B4 — and spec D2: one question at a time).
      *
-     * Calls [onDone] with [Outcome.NOT_RUN] and a null [Started] when the run could not be launched at all:
-     * indexing, no linked Gradle project, or the external-system call itself failing.
+     * Calls [onDone] with [Outcome.NOT_RUN], a null [Started] and `buildSucceeded = false` when the run could not
+     * be launched at all: indexing, no linked Gradle project, or the external-system call itself failing. Nothing
+     * ran, so nothing succeeded.
      *
      * A run superseded by a later [verify] call before it finishes reports nothing at all — [onDone] simply
      * never fires for it, and only the newer run's callback does. A stale result landing after a fresher one
      * would otherwise be able to overwrite it.
      */
-    fun verify(module: Module, buildVariant: String, onDone: (Outcome, Started?) -> Unit) {
+    fun verify(module: Module, buildVariant: String, onDone: (Outcome, Started?, buildSucceeded: Boolean) -> Unit) {
         if (DumbService.isDumb(project)) {
             thisLogger().debug("Skipping verify for '${module.name}': the project is indexing")
-            onDone(Outcome.NOT_RUN, null)
+            onDone(Outcome.NOT_RUN, null, false)
             return
         }
         val target = resolveTarget(module, buildVariant)
         if (target == null) {
             thisLogger().warn("Cannot verify module '${module.name}': it is not part of a linked Gradle project")
-            onDone(Outcome.NOT_RUN, null)
+            onDone(Outcome.NOT_RUN, null, false)
             return
         }
 
@@ -135,8 +142,10 @@ class SnapshotVerifyRunner(private val project: Project) : Disposable {
                 onTaskStarted(id, myGeneration, taskIdForThisRun, submittedTasks)
         }
         val callback = object : TaskCallback {
-            override fun onSuccess() = finish(myGeneration, listener, notifications, Outcome.RAN, started, onDone)
-            override fun onFailure() = finish(myGeneration, listener, notifications, Outcome.RAN, started, onDone)
+            override fun onSuccess() =
+                finish(myGeneration, listener, notifications, Outcome.RAN, started, buildSucceeded = true, onDone)
+            override fun onFailure() =
+                finish(myGeneration, listener, notifications, Outcome.RAN, started, buildSucceeded = false, onDone)
         }
 
         try {
@@ -155,11 +164,11 @@ class SnapshotVerifyRunner(private val project: Project) : Disposable {
         } catch (e: Exception) {
             thisLogger().warn("Failed to start a verify for module '${module.name}'", e)
             removeListener(notifications, listener)
-            onDone(Outcome.NOT_RUN, null)
+            onDone(Outcome.NOT_RUN, null, false)
         } catch (e: LinkageError) {
             thisLogger().warn("The Gradle build API is incompatible with this IDE build", e)
             removeListener(notifications, listener)
-            onDone(Outcome.NOT_RUN, null)
+            onDone(Outcome.NOT_RUN, null, false)
         }
     }
 
@@ -213,12 +222,13 @@ class SnapshotVerifyRunner(private val project: Project) : Disposable {
         notifications: ExternalSystemProgressNotificationManager,
         outcome: Outcome,
         started: Started,
-        onDone: (Outcome, Started?) -> Unit,
+        buildSucceeded: Boolean,
+        onDone: (Outcome, Started?, Boolean) -> Unit,
     ) {
         removeListener(notifications, listener)
         if (generation.get() != myGeneration) return
         currentTaskId.set(null)
-        onDone(outcome, started)
+        onDone(outcome, started, buildSucceeded)
     }
 
     private fun cancelCurrent() {
