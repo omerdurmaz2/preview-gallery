@@ -87,6 +87,50 @@ class RenderModelResolver {
         object VariantUnresolved : RenderModelResult
     }
 
+    /** [decideVariantResolution]'s own result: either render — [Proceed.variantAssumed] says whether the element is
+     *  confirmed or merely assumed (D3a) — or stop, unrendered, at [RenderModelResult.VariantUnresolved]. */
+    internal sealed interface VariantResolution {
+        data class Proceed(val variantAssumed: Boolean) : VariantResolution
+        object Unresolved : VariantResolution
+    }
+
+    companion object {
+        /**
+         * D3a: the pure form of the branch both [resolve] and [resolveUnderReadAction] decide with, extracted so
+         * the decision itself is testable without Android Studio (see `RenderModelResolverTest`) — obtaining
+         * [elementFound] and [finderReturnedNothing] needs AS's finder and `Configuration.applyTo`, but choosing
+         * what they mean, once known, does not. [resolve] calls this once, lock-free, purely to skip the read
+         * action outright when it already knows the answer is [VariantResolution.Unresolved]; [resolveUnderReadAction]
+         * calls it again with [elementFound] now meaning "the config-aware element applied successfully" rather
+         * than "the finder matched one" — the same rule both times, run once per call against whatever that call
+         * has resolved so far.
+         *
+         * The four reachable combinations:
+         *  - [requiredVariant] `null` → always [VariantResolution.Proceed] with `variantAssumed = false`: the
+         *    ordinary, no-named-variant render every caller before PG22-8 took, independent of [elementFound].
+         *  - [requiredVariant] non-null, [elementFound] `true` → [VariantResolution.Proceed] with
+         *    `variantAssumed = false`: the named `@Preview` was found — the confirmed case D3 always allowed.
+         *  - [requiredVariant] non-null, [elementFound] `false`, [finderReturnedNothing] `true` → D3a's amendment:
+         *    [VariantResolution.Proceed] with `variantAssumed = true`. `AnnotationFilePreviewElementFinder`
+         *    produced no elements at all for the file (a project synced without
+         *    `-Pandroid.experimental.enableScreenshotTest=true`), so [buildDefaultPreviewElement] renders in the
+         *    named variant's place — safe only because the consuming project's `phone` `@Preview` carries no
+         *    properties of its own, so its configuration *is* the default one.
+         *  - [requiredVariant] non-null, [elementFound] `false`, [finderReturnedNothing] `false` →
+         *    [VariantResolution.Unresolved], unchanged from before PG22-11: the finder found instances but none
+         *    named [requiredVariant] — a real naming disagreement D3 forbids papering over.
+         */
+        internal fun decideVariantResolution(
+            requiredVariant: String?,
+            elementFound: Boolean,
+            finderReturnedNothing: Boolean,
+        ): VariantResolution = when {
+            elementFound || requiredVariant == null -> VariantResolution.Proceed(variantAssumed = false)
+            finderReturnedNothing -> VariantResolution.Proceed(variantAssumed = true)
+            else -> VariantResolution.Unresolved
+        }
+    }
+
     /**
      * PG22-3: [moduleWrapper], when non-null, wraps the [AndroidFacetRenderModelModule] this method would
      * otherwise build directly — the seam a `screenshotTest` classpath injection composes onto (see
@@ -137,10 +181,8 @@ class RenderModelResolver {
             // the project-model reads that genuinely need a read action run inside ReadAction.compute below, which
             // applies the already-fetched element's own @Preview configuration.
             val lookup = findConfigAwareElement(entry, project, requiredVariant)
-            // D3a: only a genuine "found instances, none named it" miss still stops here. An empty finder result
-            // is now a fact [resolveUnderReadAction] is told about and allowed to work around — see [resolve]'s
-            // own doc and [ConfigAwareLookup] for why the two are not the same miss.
-            if (requiredVariant != null && lookup.element == null && !lookup.finderReturnedNothing) {
+            val earlyDecision = decideVariantResolution(requiredVariant, lookup.element != null, lookup.finderReturnedNothing)
+            if (earlyDecision is VariantResolution.Unresolved) {
                 RenderModelResult.VariantUnresolved
             } else {
                 ReadAction.compute<RenderModelResult, RuntimeException> {
@@ -151,7 +193,7 @@ class RenderModelResolver {
                         override,
                         moduleWrapper,
                         requiredVariant,
-                        variantAssumed = requiredVariant != null && lookup.finderReturnedNothing,
+                        lookup.finderReturnedNothing,
                     )
                 }
             }
@@ -172,7 +214,7 @@ class RenderModelResolver {
         override: ViewOverride?,
         moduleWrapper: RenderModuleWrapper? = null,
         requiredVariant: String? = null,
-        variantAssumed: Boolean = false,
+        finderReturnedNothing: Boolean = false,
     ): RenderModelResult {
         // U1: module → AndroidFacet → AndroidBuildTargetReference → AndroidFacetRenderModelModule.
         // PG11-1: the facet is resolved through [AndroidModuleResolver], not `AndroidFacet.getInstance(module)`
@@ -206,24 +248,14 @@ class RenderModelResolver {
         // PG22-8: with a [requiredVariant] the default element is not an acceptable fallback — it is the plugin's
         // own configuration, not the named `@Preview`'s, and measuring it against that variant's golden would fold
         // the configuration difference into the percentage invisibly (spec D3).
-        //
-        // D3a: [variantAssumed], set by [resolve] only when [findConfigAwareElement]'s finder returned no elements
-        // at all, is the one case where a [requiredVariant] miss does NOT stop at [RenderModelResult.VariantUnresolved]
-        // — [configAware] is then always null too (the finder produced nothing to match), so this falls straight
-        // to [buildDefaultPreviewElement] exactly as the ordinary no-[requiredVariant] path already does. A
-        // [requiredVariant] miss with [variantAssumed] false — instances existed but none carried the name, or
-        // [applyConfigAware] threw on the one that did — still stops here, unchanged from before this task.
-        val element: SingleComposePreviewElementInstance<*>
-        val elementVariantAssumed: Boolean
-        if (configAware != null && applyConfigAware(configAware, configuration)) {
-            element = configAware
-            elementVariantAssumed = false
-        } else if (requiredVariant != null && !variantAssumed) {
+        val applied = configAware != null && applyConfigAware(configAware, configuration)
+        val decision = decideVariantResolution(requiredVariant, applied, finderReturnedNothing)
+        if (decision is VariantResolution.Unresolved) {
             return RenderModelResult.VariantUnresolved
-        } else {
-            element = buildDefaultPreviewElement(entry)
-            elementVariantAssumed = requiredVariant != null
         }
+        val elementVariantAssumed = (decision as VariantResolution.Proceed).variantAssumed
+        val element: SingleComposePreviewElementInstance<*> =
+            if (applied) configAware else buildDefaultPreviewElement(entry)
         thisLogger().debug(
             "Rendering ${entry.indexed.composableFqn} as '${element.displaySettings.name}' " +
                 "(configAware=${configAware != null}, requiredVariant=$requiredVariant, " +

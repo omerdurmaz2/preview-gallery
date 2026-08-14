@@ -1161,7 +1161,7 @@ class PreviewGalleryPanel(
             PreviewGalleryBundle.message("compare.resultGoldenOnly", goldenComparison)
         }
         val finalText = if (variantRender.variantAssumed) {
-            "${PreviewGalleryBundle.message("compare.variantAssumed")} · $text"
+            PreviewGalleryBundle.message("compare.variantAssumed", text)
         } else {
             text
         }
