@@ -82,7 +82,7 @@ class LiveRenderer(
         entry: PreviewEntry,
         override: ViewOverride? = null,
         moduleWrapper: RenderModuleWrapper? = null,
-    ): RenderOutcome = renderInstance(entry, override, moduleWrapper, requiredVariant = null)
+    ): RenderOutcome = renderInstance(entry, override, moduleWrapper, requiredVariant = null)?.outcome
         ?: RenderOutcome.Failure("Render failed", null)
 
     /**
@@ -95,12 +95,27 @@ class LiveRenderer(
      *
      * No [ViewOverride] parameter: an override is a comparison-view concept, and the calibration renders exactly
      * what the source declares.
+     *
+     * D3a: the return type is [VariantRender], not a bare [RenderOutcome], so [RenderModelResolver.Resolved.variantAssumed]
+     * — set when the resolver rendered the default element in place of a `phone` instance the finder could not
+     * name at all — can reach [PreviewGalleryPanel.compareOffEdt], the one caller. Widening [RenderOutcome] itself
+     * to carry this would leak a calibration-only concept into every other render path in the plugin; this
+     * one-caller wrapper is the smaller change.
      */
     fun renderVariant(
         entry: PreviewEntry,
         variantName: String,
         moduleWrapper: RenderModuleWrapper? = null,
-    ): RenderOutcome? = renderInstance(entry, override = null, moduleWrapper = moduleWrapper, requiredVariant = variantName)
+    ): VariantRender? = renderInstance(entry, override = null, moduleWrapper = moduleWrapper, requiredVariant = variantName)
+
+    /**
+     * D3a: [render]'s and [renderVariant]'s shared payload — the [RenderOutcome] both already produced, plus
+     * whether the resolver had to assume the `phone` variant rather than confirm it by name
+     * ([RenderModelResolver.Resolved.variantAssumed]). [render] itself only ever unwraps [outcome]; [variantAssumed]
+     * exists for [renderVariant]'s one caller, which must not present an assumed render's size mismatch as an
+     * engine disagreement (spec D3a, decision table).
+     */
+    class VariantRender(val outcome: RenderOutcome, val variantAssumed: Boolean)
 
     /**
      * The body both entry points share. Answers `null` only for a non-null [requiredVariant] the resolver could
@@ -112,14 +127,14 @@ class LiveRenderer(
         override: ViewOverride?,
         moduleWrapper: RenderModuleWrapper?,
         requiredVariant: String?,
-    ): RenderOutcome? {
+    ): VariantRender? {
         if (!isAvailable()) {
-            return RenderOutcome.Unsupported("Live rendering is unavailable on this IDE build")
+            return VariantRender(RenderOutcome.Unsupported("Live rendering is unavailable on this IDE build"), false)
         }
         return try {
             when (val result = resolver.resolve(entry, project, override, moduleWrapper, requiredVariant)) {
                 is RenderModelResult.NoFacet ->
-                    RenderOutcome.Unsupported("Module '${entry.moduleName}' has no Android facet")
+                    VariantRender(RenderOutcome.Unsupported("Module '${entry.moduleName}' has no Android facet"), false)
                 is RenderModelResult.VariantUnresolved -> {
                     thisLogger().info(
                         "No '$requiredVariant' preview instance for ${entry.indexed.composableFqn}; nothing rendered",
@@ -127,18 +142,18 @@ class LiveRenderer(
                     null
                 }
                 is RenderModelResult.Failed ->
-                    RenderOutcome.Failure(result.message, result.detail)
+                    VariantRender(RenderOutcome.Failure(result.message, result.detail), false)
                 is RenderModelResult.Resolved ->
-                    renderResolved(entry, result.model)
+                    VariantRender(renderResolved(entry, result.model), result.model.variantAssumed)
             }
         } catch (e: ProcessCanceledException) {
             throw e
         } catch (e: Exception) {
             thisLogger().warn("Render failed for ${entry.indexed.composableFqn}", e)
-            RenderOutcome.Failure("Render failed", e.stackTraceToString())
+            VariantRender(RenderOutcome.Failure("Render failed", e.stackTraceToString()), false)
         } catch (e: LinkageError) {
             thisLogger().warn("Render API mismatch for ${entry.indexed.composableFqn}", e)
-            RenderOutcome.Failure("Render API is incompatible with this IDE build", e.stackTraceToString())
+            VariantRender(RenderOutcome.Failure("Render API is incompatible with this IDE build", e.stackTraceToString()), false)
         }
     }
 

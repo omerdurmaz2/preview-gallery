@@ -56,6 +56,13 @@ class RenderModelResolver {
      * spellings are AS's own, not a typo here). `LiveRenderer` branches its two builder options on this flag
      * (PG4-2 ext, decorations): `true` for a `@Preview(showSystemUi = true)` match, `false` for everything else,
      * including the default fallback element.
+     *
+     * [variantAssumed] (D3a) is true only when [resolveUnderReadAction] rendered [element] as
+     * [buildDefaultPreviewElement] because [findConfigAwareElement]'s finder returned no elements at all for a
+     * non-null `requiredVariant` — the `phone`-carries-no-properties case the amendment covers, never the "found
+     * instances but none named `phone`" one, which still stops at [RenderModelResult.VariantUnresolved] and never
+     * reaches this class. `false` for every render before PG22-11 and for every ordinary (no `requiredVariant`)
+     * render today.
      */
     class Resolved(
         val renderModule: RenderModelModule,
@@ -63,6 +70,7 @@ class RenderModelResolver {
         val logger: RenderLogger,
         val element: XmlSerializable,
         val showDecorations: Boolean,
+        val variantAssumed: Boolean = false,
     )
 
     sealed interface RenderModelResult {
@@ -97,6 +105,22 @@ class RenderModelResolver {
      * [RenderModelResult.VariantUnresolved] rather than falling back to [buildDefaultPreviewElement]. Spec D3:
      * a render whose variant is unknown cannot be compared against a variant-specific golden, so the caller must
      * stop and report, not measure the plugin's default configuration against a `phone` golden.
+     *
+     * **D3a amendment, two branches that must stay distinct** (a gate run against `hepsi-android` found
+     * [findConfigAwareElement]'s finder returning no elements at all for a real `screenshotTest` file — the project
+     * is synced without `-Pandroid.experimental.enableScreenshotTest=true`, so AGP never attributes that file to a
+     * source set and the finder has no VFS fallback the way the plugin's own index does):
+     *  - **The finder returned nothing at all** ([ConfigAwareLookup.finderReturnedNothing]) → [element] below still
+     *    renders as [buildDefaultPreviewElement], but [Resolved.variantAssumed] is now `true` instead of this
+     *    method stopping at [RenderModelResult.VariantUnresolved]. Safe only because the consuming project's
+     *    `phone` `@Preview` carries no properties of its own — its configuration *is* the default configuration,
+     *    so what was missing was never the configuration, only the label the finder would have carried.
+     *  - **The finder returned instances, but none named [requiredVariant]** → unchanged: still
+     *    [RenderModelResult.VariantUnresolved]. This is a real naming disagreement, not a missing source set, and
+     *    D3 already forbids papering over it by rendering some other configuration and comparing it to a
+     *    variant-specific golden anyway.
+     * Conflating the two would silently render the wrong thing whenever a multipreview's variants genuinely
+     * disagree with what a golden's file name expects — exactly what D3 was written to prevent.
      */
     fun resolve(
         entry: PreviewEntry,
@@ -112,12 +136,23 @@ class RenderModelResolver {
             // grant — pinning the read lock and freezing the whole IDE (observed: a 65s UI freeze on select). Only
             // the project-model reads that genuinely need a read action run inside ReadAction.compute below, which
             // applies the already-fetched element's own @Preview configuration.
-            val configAware = findConfigAwareElement(entry, project, requiredVariant)
-            if (requiredVariant != null && configAware == null) {
+            val lookup = findConfigAwareElement(entry, project, requiredVariant)
+            // D3a: only a genuine "found instances, none named it" miss still stops here. An empty finder result
+            // is now a fact [resolveUnderReadAction] is told about and allowed to work around — see [resolve]'s
+            // own doc and [ConfigAwareLookup] for why the two are not the same miss.
+            if (requiredVariant != null && lookup.element == null && !lookup.finderReturnedNothing) {
                 RenderModelResult.VariantUnresolved
             } else {
                 ReadAction.compute<RenderModelResult, RuntimeException> {
-                    resolveUnderReadAction(entry, project, configAware, override, moduleWrapper, requiredVariant)
+                    resolveUnderReadAction(
+                        entry,
+                        project,
+                        lookup.element,
+                        override,
+                        moduleWrapper,
+                        requiredVariant,
+                        variantAssumed = requiredVariant != null && lookup.finderReturnedNothing,
+                    )
                 }
             }
         } catch (e: ProcessCanceledException) {
@@ -137,6 +172,7 @@ class RenderModelResolver {
         override: ViewOverride?,
         moduleWrapper: RenderModuleWrapper? = null,
         requiredVariant: String? = null,
+        variantAssumed: Boolean = false,
     ): RenderModelResult {
         // U1: module → AndroidFacet → AndroidBuildTargetReference → AndroidFacetRenderModelModule.
         // PG11-1: the facet is resolved through [AndroidModuleResolver], not `AndroidFacet.getInstance(module)`
@@ -170,17 +206,28 @@ class RenderModelResolver {
         // PG22-8: with a [requiredVariant] the default element is not an acceptable fallback — it is the plugin's
         // own configuration, not the named `@Preview`'s, and measuring it against that variant's golden would fold
         // the configuration difference into the percentage invisibly (spec D3).
-        val element: SingleComposePreviewElementInstance<*> =
-            if (configAware != null && applyConfigAware(configAware, configuration)) {
-                configAware
-            } else if (requiredVariant != null) {
-                return RenderModelResult.VariantUnresolved
-            } else {
-                buildDefaultPreviewElement(entry)
-            }
+        //
+        // D3a: [variantAssumed], set by [resolve] only when [findConfigAwareElement]'s finder returned no elements
+        // at all, is the one case where a [requiredVariant] miss does NOT stop at [RenderModelResult.VariantUnresolved]
+        // — [configAware] is then always null too (the finder produced nothing to match), so this falls straight
+        // to [buildDefaultPreviewElement] exactly as the ordinary no-[requiredVariant] path already does. A
+        // [requiredVariant] miss with [variantAssumed] false — instances existed but none carried the name, or
+        // [applyConfigAware] threw on the one that did — still stops here, unchanged from before this task.
+        val element: SingleComposePreviewElementInstance<*>
+        val elementVariantAssumed: Boolean
+        if (configAware != null && applyConfigAware(configAware, configuration)) {
+            element = configAware
+            elementVariantAssumed = false
+        } else if (requiredVariant != null && !variantAssumed) {
+            return RenderModelResult.VariantUnresolved
+        } else {
+            element = buildDefaultPreviewElement(entry)
+            elementVariantAssumed = requiredVariant != null
+        }
         thisLogger().debug(
             "Rendering ${entry.indexed.composableFqn} as '${element.displaySettings.name}' " +
-                "(configAware=${configAware != null}, requiredVariant=$requiredVariant)",
+                "(configAware=${configAware != null}, requiredVariant=$requiredVariant, " +
+                "variantAssumed=$elementVariantAssumed)",
         )
 
         // PG6-10: a non-default comparison-view override — from EphemeralPickerBridge's in-memory picker for a
@@ -194,7 +241,9 @@ class RenderModelResolver {
         // a newer IDE degrades this one flag to false (today's plain-preview behavior), not the whole resolution.
         val showDecorations = runCatching { finalElement.displaySettings.showDecoration }.getOrDefault(false)
 
-        return RenderModelResult.Resolved(Resolved(renderModule, configuration, logger, finalElement, showDecorations))
+        return RenderModelResult.Resolved(
+            Resolved(renderModule, configuration, logger, finalElement, showDecorations, elementVariantAssumed),
+        )
     }
 
     /**
@@ -351,8 +400,8 @@ class RenderModelResolver {
      * that `@Preview` into. See [resolve] for why the calibration must select by it, and what its absence means.
      * The candidate names are logged at debug either way, so the gate can see what the finder actually offered.
      *
-     * Returns `null` (so the caller falls back to [buildDefaultPreviewElement], or — with a [variantName] — stops)
-     * when:
+     * Returns a null [ConfigAwareLookup.element] (so the caller falls back to [buildDefaultPreviewElement], or —
+     * with a [variantName] and [ConfigAwareLookup.finderReturnedNothing] false — stops) when:
      *  - the probe ([RenderApiProbe.isConfigAwareAvailable]) says the finder is not present on this IDE build —
      *    checked first so an IDE build that lacks it never pays for the read-action + suspend-bridge round trip;
      *  - the finder returns no element whose `methodFqn` matches [entry.indexed]'s `composableFqn` and whose
@@ -364,6 +413,12 @@ class RenderModelResolver {
      *  - the finder call or the match throws — guarded against [Exception] and [LinkageError] (logged once, at
      *    `info` — this is an expected degrade, not a broken feature; applying the config is guarded separately in
      *    [applyConfigAware]).
+     *
+     * [ConfigAwareLookup.finderReturnedNothing] (D3a) is `true` in exactly one of those cases: the finder itself
+     * ran to completion and its own `elements` list — before any FQN or name filtering — was empty. It stays
+     * `false` for every other null-element case above, including "the finder found elements for other composables
+     * or names, just not this one" and "the probe/call/match failed": those are not the shape D3a's evidence
+     * covers, and [resolve] must keep stopping at [RenderModelResult.VariantUnresolved] for them.
      *
      * ## The suspend bridge — deliberately OUTSIDE any read action
      *
@@ -391,8 +446,8 @@ class RenderModelResolver {
         entry: PreviewEntry,
         project: Project,
         variantName: String? = null,
-    ): SingleComposePreviewElementInstance<*>? {
-        if (!RenderApiProbe.isConfigAwareAvailable()) return null
+    ): ConfigAwareLookup {
+        if (!RenderApiProbe.isConfigAwareAvailable()) return ConfigAwareLookup(null, finderReturnedNothing = false)
         return try {
             val elements = RenderTaskContext.runCancellable {
                 runBlockingCancellable {
@@ -410,7 +465,10 @@ class RenderModelResolver {
                     "Everything the finder returned for this file: " +
                     "${elements.map { it.methodFqn to it.displaySettings.name }}",
             )
-            matched as? SingleComposePreviewElementInstance<*>
+            ConfigAwareLookup(
+                matched as? SingleComposePreviewElementInstance<*>,
+                finderReturnedNothing = elements.isEmpty(),
+            )
         } catch (e: ProcessCanceledException) {
             throw e // Never swallow cancellation — the platform relies on it propagating.
         } catch (e: Exception) {
@@ -419,15 +477,29 @@ class RenderModelResolver {
                     "using the default configuration",
                 e,
             )
-            null
+            ConfigAwareLookup(null, finderReturnedNothing = false)
         } catch (e: LinkageError) {
             thisLogger().info(
                 "Config-aware preview element API is incompatible with this IDE build; using the default configuration",
                 e,
             )
-            null
+            ConfigAwareLookup(null, finderReturnedNothing = false)
         }
     }
+
+    /**
+     * [findConfigAwareElement]'s own result, split into the two facts [resolve] needs to tell apart (D3a): the
+     * matched element itself, if any, and whether the finder's *own* `elements` list — before any FQN or name
+     * filtering — was empty. A `null` [element] can happen either way; only [finderReturnedNothing] says which,
+     * and only [resolve] reads it, for exactly one decision: whether a [requiredVariant] miss may still render the
+     * default element (finder returned nothing) or must stop at [RenderModelResult.VariantUnresolved] (finder
+     * returned instances, none of them the wanted one). See [resolve]'s own doc for why conflating the two would
+     * undo D3.
+     */
+    private class ConfigAwareLookup(
+        val element: SingleComposePreviewElementInstance<*>?,
+        val finderReturnedNothing: Boolean,
+    )
 
     /**
      * U5: builds a [SingleComposePreviewElementInstance] with a default configuration. `cleanAndGet(null…)` fills
@@ -481,5 +553,5 @@ class RenderModelResolver {
      * be — [buildDefaultPreviewElement] takes none itself, so the combination carries no extra constraint.
      */
     internal fun resolveCurrentElement(entry: PreviewEntry, project: Project): SingleComposePreviewElementInstance<*> =
-        findConfigAwareElement(entry, project) ?: buildDefaultPreviewElement(entry)
+        findConfigAwareElement(entry, project).element ?: buildDefaultPreviewElement(entry)
 }

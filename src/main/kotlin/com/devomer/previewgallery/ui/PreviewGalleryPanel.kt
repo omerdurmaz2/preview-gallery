@@ -1087,6 +1087,16 @@ class PreviewGalleryPanel(
      * The classes-freshness gate above does not cover this: it proves the module compiled after the last edit,
      * not that a `validate` run happened after it. The number is kept either way, because dropping it loses data
      * the gate wants; it is only never presented as current when it is not.
+     *
+     * D3a: [LiveRenderer.renderVariant] now answers with a [LiveRenderer.VariantRender] rather than a bare
+     * [RenderOutcome] — `variantAssumed` is true when the resolver rendered the plugin's default configuration
+     * because `AnnotationFilePreviewElementFinder` named no `phone` instance at all for this file (a project
+     * synced without `-Pandroid.experimental.enableScreenshotTest=true`), not because the finder disagreed about
+     * the name. `compare.variantAssumed` is prefixed onto the published text whenever that happened, so the
+     * numbers below it never read as a *confirmed* `phone` comparison. [formatComparison] carries the same flag
+     * into the size-mismatch branch specifically, because that branch is the one place the decision table's
+     * ordinary reading (a size mismatch is Red) would otherwise misdescribe an assumed render: `small` is 320dp
+     * and `phone` is not, so a mismatch there means the configurations disagree, not that the engines do.
      */
     private fun compareOffEdt(
         snapshot: PreviewEntry,
@@ -1114,8 +1124,9 @@ class PreviewGalleryPanel(
         }
         val wrapper = ScreenshotTestClassLoader.wrapperFor(classesDirectory)
             ?: return ComparisonPublish(emptyList(), PreviewGalleryBundle.message("compare.renderFailed"))
-        val outcome = LiveRenderer(project).renderVariant(snapshot, PHONE_VARIANT, moduleWrapper = wrapper)
+        val variantRender = LiveRenderer(project).renderVariant(snapshot, PHONE_VARIANT, moduleWrapper = wrapper)
             ?: return ComparisonPublish(emptyList(), PreviewGalleryBundle.message("compare.variantUnresolved"))
+        val outcome = variantRender.outcome
         if (outcome !is RenderOutcome.Success) {
             return ComparisonPublish(emptyList(), PreviewGalleryBundle.message("compare.renderFailed"))
         }
@@ -1137,9 +1148,9 @@ class PreviewGalleryPanel(
         val gradleImage = gradle?.first
         val gradleIsStale = gradle?.second == true
 
-        val goldenComparison = formatComparison(ImageDiff.compare(outcome.image, goldenImage))
+        val goldenComparison = formatComparison(ImageDiff.compare(outcome.image, goldenImage), variantRender.variantAssumed)
         val text = if (gradleImage != null) {
-            val gradleComparison = formatComparison(ImageDiff.compare(outcome.image, gradleImage))
+            val gradleComparison = formatComparison(ImageDiff.compare(outcome.image, gradleImage), variantRender.variantAssumed)
             val qualified = if (gradleIsStale) {
                 PreviewGalleryBundle.message("compare.gradleStale", gradleComparison)
             } else {
@@ -1149,6 +1160,11 @@ class PreviewGalleryPanel(
         } else {
             PreviewGalleryBundle.message("compare.resultGoldenOnly", goldenComparison)
         }
+        val finalText = if (variantRender.variantAssumed) {
+            "${PreviewGalleryBundle.message("compare.variantAssumed")} · $text"
+        } else {
+            text
+        }
 
         val images = buildList {
             add(ReferenceStripView.LabelledImage(PreviewGalleryBundle.message("verify.golden"), goldenImage))
@@ -1157,7 +1173,7 @@ class PreviewGalleryPanel(
             }
             add(ReferenceStripView.LabelledImage(PreviewGalleryBundle.message("compare.liveLabel"), outcome.image))
         }
-        return ComparisonPublish(images, text)
+        return ComparisonPublish(images, finalText)
     }
 
     /**
@@ -1170,8 +1186,15 @@ class PreviewGalleryPanel(
      * The pre-compositing figure goes to the log rather than into the sentence ([ImageDiff]'s own doc says why it
      * is kept at all): the pane shows the number the decision table is read against, and the gate can still see
      * from the log whether alpha accounted for the whole difference.
+     *
+     * [variantAssumed] (D3a) only changes the [ImageDiff.Result.SizeMismatch] wording. On a *confirmed* `phone`
+     * render a size mismatch means the two engines drew different things — the decision table's Red. On an
+     * *assumed* one it means only that the default configuration [buildDefaultPreviewElement] rendered is not
+     * `small`'s 320dp — the sizes are the only evidence the finder's missing label left behind, which is why
+     * [ImageDiff.Result.SizeMismatch.left]/[right] still go into the sentence either way; only the claim built on
+     * top of them changes from "the engines disagree" to "nothing was measured".
      */
-    private fun formatComparison(result: ImageDiff.Result): String = when (result) {
+    private fun formatComparison(result: ImageDiff.Result, variantAssumed: Boolean): String = when (result) {
         is ImageDiff.Result.Measured -> {
             thisLogger().debug(
                 "Compare: ${result.differingPixels} of ${result.totalPixels} pixels differ over white, " +
@@ -1179,8 +1202,11 @@ class PreviewGalleryPanel(
             )
             PreviewGalleryBundle.message("compare.percent", String.format(Locale.ROOT, "%.3f", result.percent))
         }
-        is ImageDiff.Result.SizeMismatch ->
+        is ImageDiff.Result.SizeMismatch -> if (variantAssumed) {
+            PreviewGalleryBundle.message("compare.sizeMismatchAssumed", result.left, result.right)
+        } else {
             PreviewGalleryBundle.message("compare.sizeMismatch", result.left, result.right)
+        }
     }
 
     /**
