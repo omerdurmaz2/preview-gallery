@@ -68,6 +68,47 @@ a single instance for a multipreview rather than one per `@Preview`, **that is a
 not something to work around by rendering whatever came back: a render whose variant is unknown cannot be compared
 against a variant-specific golden.
 
+**D3a · Amended at the gate (2026-08-14), on evidence.** The first gate run produced no number and the diagnostic
+line said why:
+
+```
+Config-aware lookup for …EditListSnapshotsKt.CreateListContent_Submitting_Snapshot: wanted 'phone',
+instances [], matched=false. Everything the finder returned for this file: []
+```
+
+`AnnotationFilePreviewElementFinder` returns **nothing at all** for a `screenshotTest` file — not a differently
+named instance, none. The cause is the one PG14 already worked around from the other side: the project is synced
+without `-Pandroid.experimental.enableScreenshotTest=true`, so AGP's `screenshotTest` source set is not applied and
+the IDE model does not attribute the file to any source set. The plugin's own index reads it from the VFS for
+exactly this reason; the finder has no such fallback.
+
+So the `phone` instance cannot be obtained from the finder, and D3 as written stops the calibration permanently
+rather than protecting it. What makes the amendment safe is the multipreview's own shape:
+
+```kotlin
+@Preview(name = "phone")
+@Preview(name = "small", widthDp = 320)
+```
+
+`phone` carries **no properties at all** — only a name. Its configuration *is* the default configuration, which is
+what `buildDefaultPreviewElement` already produces. What was missing was never the configuration; it was the label.
+
+The amended rule, in two branches that must stay distinct:
+
+- **The finder returned nothing** → render the default element, and say in the pane that the variant was
+  **assumed**. Report the size comparison as the evidence: `small` is 320dp wide and `phone` is not, so a render
+  whose width matches the `phone` golden's is the `phone` render.
+- **The finder returned instances but none named `phone`** → keep D3's stop-and-report. That is a genuine
+  disagreement about naming, and papering over it is exactly what D3 forbids.
+
+A size mismatch on the assumed path is therefore **not** a Red verdict in the decision table — it says the
+configurations do not match, and no percentage is measured. Only a size mismatch on a render whose variant was
+*confirmed* carries the table's meaning.
+
+**Upgrade path, if `phone` ever gains real properties:** read the multipreview's `@Preview` arguments from PSI and
+apply them to the `Configuration` directly, the way `applyConfigAware` applies a resolved element's. That is exact
+and finder-independent — and worth nothing today, because there is nothing to apply.
+
 **D4 · An explicit action, not automatic.** The measurement runs when a button is pressed on a selected snapshot
 row. A false alarm the user triggered is a data point; a false alarm that arrives on its own accumulates behind
 them. Automatic triggering is step 3 above, and it is gated on this phase reading green.
