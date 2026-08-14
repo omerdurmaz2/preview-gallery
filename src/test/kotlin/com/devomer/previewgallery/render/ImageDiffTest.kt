@@ -34,4 +34,36 @@ class ImageDiffTest {
         assertEquals("4x4", (result as ImageDiff.Result.SizeMismatch).left.toString())
         assertEquals("8x4", result.right.toString())
     }
+
+    /** The live render's transparent background against the golden's opaque white one: identical to a viewer,
+     *  and the whole reason the comparison composites first. Raw ARGB would call every pixel different. */
+    @Test
+    fun `transparent and opaque white backgrounds measure zero`() {
+        val transparent = image(4, 4, rgb = 0x00000000)
+        val white = image(4, 4, rgb = 0xFFFFFFFF.toInt())
+        val result = ImageDiff.compare(transparent, white) as ImageDiff.Result.Measured
+        assertEquals(0L, result.differingPixels)
+        assertEquals(16L, result.rawDifferingPixels)
+        assertEquals(100.0, result.rawPercent, 0.0001)
+    }
+
+    @Test
+    fun `a colour difference still counts once composited`() {
+        val left = image(4, 4, rgb = 0x00000000)
+        val right = image(4, 4, rgb = 0xFFFFFFFF.toInt()).apply { setRGB(1, 1, 0xFF000000.toInt()) }
+        val result = ImageDiff.compare(left, right) as ImageDiff.Result.Measured
+        assertEquals(1L, result.differingPixels)
+        assertEquals(16L, result.rawDifferingPixels)
+    }
+
+    /** Half-alpha black over white is mid grey on both sides — the blend has to agree with an already-composited
+     *  opaque pixel, not merely with itself. */
+    @Test
+    fun `a half transparent pixel equals its composited opaque twin`() {
+        val left = image(1, 1, rgb = 0x80000000.toInt())
+        val right = image(1, 1, rgb = 0xFF7F7F7F.toInt())
+        val result = ImageDiff.compare(left, right) as ImageDiff.Result.Measured
+        assertEquals(0L, result.differingPixels)
+        assertEquals(1L, result.rawDifferingPixels)
+    }
 }

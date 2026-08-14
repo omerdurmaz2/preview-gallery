@@ -65,6 +65,7 @@ import java.awt.event.MouseEvent
 import java.awt.image.BufferedImage
 import java.io.File
 import java.io.IOException
+import java.util.Locale
 import javax.imageio.ImageIO
 import javax.swing.JTree
 import javax.swing.event.DocumentEvent
@@ -1006,8 +1007,15 @@ class PreviewGalleryPanel(
      *
      * The `phone` variant on both sides (spec D3). The project's `@SnapshotPreviews` multipreview draws `phone`
      * and a 320dp `small`, each with its own golden, and a `phone` render measured against a `small` golden would
-     * report a difference that means nothing. When the render turns out to be the other variant, the images differ
-     * in size and [ImageDiff] says so rather than inventing a percentage — that is the detector, not an oversight.
+     * report a difference that means nothing. Which one gets rendered is therefore **chosen by name**
+     * ([LiveRenderer.renderVariant]), never inferred afterwards: a size mismatch cannot serve as the detector,
+     * because two variants that differ only in a declared `name` render at the same size and the difference would
+     * disappear into the percentage — and when the sizes do differ, the decision table reads that as Red, the
+     * wrong conclusion for a render of the wrong thing.
+     *
+     * Both roots-derived inputs come from the **same** [ReferenceRoots.Root]. Taking the variant from the first
+     * root that names one while taking the golden from whichever root sorted first would let a `googleDebug`
+     * render be measured against a `huaweiDebug` golden on a flavoured module.
      *
      * The EDT half below gathers what only the EDT can read (the selection, the project model, the VFS — exactly
      * what [verifyTarget] gathers and for the same reason); [compareOffEdt] then does every remaining step —
@@ -1019,18 +1027,33 @@ class PreviewGalleryPanel(
      * answering rather than the button silently doing nothing, the same rule [reportNothingToVerify] already holds
      * for [runVerify]'s own `force` path. Only the very first line stays silent: with no row selected there is no
      * pane left to publish into.
+     *
+     * The background body is wrapped for the same rule. [compareOffEdt] returns its own sentence for everything it
+     * anticipates, but it cannot promise not to throw: [LiveRenderer.renderVariant] re-throws
+     * [ProcessCanceledException] by design, and image decoding can raise runtime exceptions of its own. Unwrapped,
+     * either one would end the executor task with no publish at all — a press that produced nothing, the exact
+     * failure this flow's error handling exists to remove. Cancellation is the one case that publishes nothing,
+     * matching [RenderPipeline]'s own shape: the render was abandoned, so there is no answer to give.
      */
     private fun compareLiveRender() {
         val snapshot = selectedSnapshotEntry() ?: return
         val moduleDirectory = ModuleDirectoryResolver.resolve(project, snapshot.file)
             ?: return reportCompareUnavailable(snapshot)
-        val roots = ReferenceRoots.of(moduleDirectory)
-        val variant = roots.firstNotNullOfOrNull { it.buildVariant } ?: return reportCompareUnavailable(snapshot)
+        val (root, variant) = ReferenceRoots.of(moduleDirectory)
+            .firstNotNullOfOrNull { candidate -> candidate.buildVariant?.let { candidate to it } }
+            ?: return reportCompareUnavailable(snapshot)
         val module = ModuleUtilCore.findModuleForFile(snapshot.file, project) ?: return reportCompareUnavailable(snapshot)
-        val golden = ReferenceImageLocator.locate(snapshot, roots).firstOrNull { it.variant == PHONE_VARIANT }
+        val golden = ReferenceImageLocator.locate(snapshot, listOf(root)).firstOrNull { it.variant == PHONE_VARIANT }
         val modality = ModalityState.defaultModalityState()
         AppExecutorUtil.getAppExecutorService().execute {
-            val message = compareOffEdt(snapshot, module, File(moduleDirectory.path), variant, golden)
+            val message = try {
+                compareOffEdt(snapshot, module, File(moduleDirectory.path), variant, golden)
+            } catch (e: ProcessCanceledException) {
+                return@execute
+            } catch (e: Throwable) {
+                thisLogger().warn("Comparing the live render failed for ${snapshot.indexed.composableFqn}", e)
+                ComparisonPublish(emptyList(), PreviewGalleryBundle.message("compare.renderFailed"))
+            }
             ApplicationManager.getApplication().invokeLater({
                 if (disposalCheck.isDisposed) return@invokeLater
                 if (selectedSnapshotEntry()?.id != snapshot.id) return@invokeLater
@@ -1052,9 +1075,18 @@ class PreviewGalleryPanel(
      * `return` elsewhere in this file would.
      *
      * The Gradle-rendered comparison is additive, never load-bearing: a module that was never verified has no
-     * [SnapshotVerifyStore] entry, [SnapshotVerifyStore.resultFor] answers null, the Gradle image stays null, and
-     * the method falls through to the `compare.resultGoldenOnly` message — the golden comparison computed just
-     * above is untouched by the second one's absence.
+     * [SnapshotVerifyStore.Measurement] at all, the Gradle image stays null, and the method falls through to the
+     * `compare.resultGoldenOnly` message — the golden comparison computed just above is untouched by the second
+     * one's absence.
+     *
+     * It is, however, marked when the measurement it came from is stale
+     * ([SnapshotVerifyStore.isStale], the same consultation [verifyMessage] makes of the same measurement). The
+     * second number exists to attribute the first (spec D2): a stale *golden* shows as `live vs Gradle ≈ 0` with
+     * `live vs golden > 0`. If the Gradle render is stale too, both numbers are large and the gate reads "the
+     * engines disagree" — a false Red produced by the very comparison that exists to prevent false conclusions.
+     * The classes-freshness gate above does not cover this: it proves the module compiled after the last edit,
+     * not that a `validate` run happened after it. The number is kept either way, because dropping it loses data
+     * the gate wants; it is only never presented as current when it is not.
      */
     private fun compareOffEdt(
         snapshot: PreviewEntry,
@@ -1082,7 +1114,8 @@ class PreviewGalleryPanel(
         }
         val wrapper = ScreenshotTestClassLoader.wrapperFor(classesDirectory)
             ?: return ComparisonPublish(emptyList(), PreviewGalleryBundle.message("compare.renderFailed"))
-        val outcome = LiveRenderer(project).render(snapshot, override = null, moduleWrapper = wrapper)
+        val outcome = LiveRenderer(project).renderVariant(snapshot, PHONE_VARIANT, moduleWrapper = wrapper)
+            ?: return ComparisonPublish(emptyList(), PreviewGalleryBundle.message("compare.variantUnresolved"))
         if (outcome !is RenderOutcome.Success) {
             return ComparisonPublish(emptyList(), PreviewGalleryBundle.message("compare.renderFailed"))
         }
@@ -1093,41 +1126,78 @@ class PreviewGalleryPanel(
                 emptyList(),
                 PreviewGalleryBundle.message("compare.goldenUnreadable", golden.file.path),
             )
-        val gradleImage = SnapshotVerifyStore.getInstance(project)
-            .resultFor(snapshot.moduleName, snapshot.indexed.functionName, PHONE_VARIANT)
-            ?.renderedPath
-            ?.let(::decodeImage)
+        val store = SnapshotVerifyStore.getInstance(project)
+        val gradle = store.measurementFor(snapshot.moduleName)?.let { measurement ->
+            measurement.results
+                .firstOrNull { it.methodName == snapshot.indexed.functionName && it.variant == PHONE_VARIANT }
+                ?.renderedPath
+                ?.let(::decodeImage)
+                ?.let { image -> image to store.isStale(measurement) }
+        }
+        val gradleImage = gradle?.first
+        val gradleIsStale = gradle?.second == true
 
         val goldenComparison = formatComparison(ImageDiff.compare(outcome.image, goldenImage))
         val text = if (gradleImage != null) {
             val gradleComparison = formatComparison(ImageDiff.compare(outcome.image, gradleImage))
-            PreviewGalleryBundle.message("compare.result", goldenComparison, gradleComparison)
+            val qualified = if (gradleIsStale) {
+                PreviewGalleryBundle.message("compare.gradleStale", gradleComparison)
+            } else {
+                gradleComparison
+            }
+            PreviewGalleryBundle.message("compare.result", goldenComparison, qualified)
         } else {
             PreviewGalleryBundle.message("compare.resultGoldenOnly", goldenComparison)
         }
 
         val images = buildList {
             add(ReferenceStripView.LabelledImage(PreviewGalleryBundle.message("verify.golden"), goldenImage))
-            if (gradleImage != null) add(ReferenceStripView.LabelledImage("Gradle", gradleImage))
-            add(ReferenceStripView.LabelledImage("live", outcome.image))
+            if (gradleImage != null) {
+                add(ReferenceStripView.LabelledImage(PreviewGalleryBundle.message("compare.gradleLabel"), gradleImage))
+            }
+            add(ReferenceStripView.LabelledImage(PreviewGalleryBundle.message("compare.liveLabel"), outcome.image))
         }
         return ComparisonPublish(images, text)
     }
 
-    /** [ImageDiff.Result] into the sentence [compareOffEdt] shows: a formatted percentage for a measured pair, or
-     *  both sizes — never a percentage — for a pair [ImageDiff] refused to average because they differ in size. */
+    /**
+     * [ImageDiff.Result] into the sentence [compareOffEdt] shows: a formatted percentage for a measured pair, or
+     * both sizes — never a percentage — for a pair [ImageDiff] refused to average because they differ in size.
+     *
+     * [Locale.ROOT], not the default locale: `%.3f` on a Turkish IDE prints `0,041`, which no longer reads as the
+     * same kind of number the screenshot engine's own report prints and cannot be pasted next to it.
+     *
+     * The pre-compositing figure goes to the log rather than into the sentence ([ImageDiff]'s own doc says why it
+     * is kept at all): the pane shows the number the decision table is read against, and the gate can still see
+     * from the log whether alpha accounted for the whole difference.
+     */
     private fun formatComparison(result: ImageDiff.Result): String = when (result) {
-        is ImageDiff.Result.Measured ->
-            PreviewGalleryBundle.message("compare.percent", String.format("%.3f", result.percent))
+        is ImageDiff.Result.Measured -> {
+            thisLogger().debug(
+                "Compare: ${result.differingPixels} of ${result.totalPixels} pixels differ over white, " +
+                    "${result.rawDifferingPixels} before compositing (${result.rawPercent}%)",
+            )
+            PreviewGalleryBundle.message("compare.percent", String.format(Locale.ROOT, "%.3f", result.percent))
+        }
         is ImageDiff.Result.SizeMismatch ->
             PreviewGalleryBundle.message("compare.sizeMismatch", result.left, result.right)
     }
 
-    /** A PNG that fails to decode reads as absent, exactly as [decodeVerifyImages] already treats an unreadable
-     *  reference image — [compareOffEdt] drops the comparison that image would have fed rather than failing it. */
+    /**
+     * A PNG that fails to decode reads as absent, exactly as [decodeVerifyImages] already treats an unreadable
+     * reference image — [compareOffEdt] drops the comparison that image would have fed rather than failing it,
+     * or names the golden it could not read.
+     *
+     * Caught at [Exception], not [IOException]: `ImageIO.read` answers a malformed PNG with runtime exceptions too
+     * (`CMMException` on a broken colour profile, `ArrayIndexOutOfBoundsException`, `IllegalArgumentException`),
+     * and an [IOException]-only catch let those escape the whole comparison. [ProcessCanceledException] is
+     * re-thrown first, as everywhere else here.
+     */
     private fun decodeImage(path: String): BufferedImage? = try {
         ImageIO.read(File(path))
-    } catch (e: IOException) {
+    } catch (e: ProcessCanceledException) {
+        throw e // Never swallow cancellation — the platform relies on it propagating.
+    } catch (e: Exception) {
         thisLogger().warn("Could not read image $path", e)
         null
     }

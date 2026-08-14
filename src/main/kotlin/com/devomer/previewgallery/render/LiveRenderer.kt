@@ -82,14 +82,50 @@ class LiveRenderer(
         entry: PreviewEntry,
         override: ViewOverride? = null,
         moduleWrapper: RenderModuleWrapper? = null,
-    ): RenderOutcome {
+    ): RenderOutcome = renderInstance(entry, override, moduleWrapper, requiredVariant = null)
+        ?: RenderOutcome.Failure("Render failed", null)
+
+    /**
+     * PG22-8: renders the `@Preview` instance named [variantName] — nothing else — and answers `null` when this
+     * composable has no such instance, or its configuration could not be applied.
+     *
+     * `null` is a stop, not a failure to describe: the calibration compares against a variant-specific golden, so
+     * a render whose variant is unknown is worse than no render at all (spec D3). The caller publishes its own
+     * stop-and-report message and produces no number; it must not treat `null` as "render it some other way".
+     *
+     * No [ViewOverride] parameter: an override is a comparison-view concept, and the calibration renders exactly
+     * what the source declares.
+     */
+    fun renderVariant(
+        entry: PreviewEntry,
+        variantName: String,
+        moduleWrapper: RenderModuleWrapper? = null,
+    ): RenderOutcome? = renderInstance(entry, override = null, moduleWrapper = moduleWrapper, requiredVariant = variantName)
+
+    /**
+     * The body both entry points share. Answers `null` only for a non-null [requiredVariant] the resolver could
+     * not satisfy — [render] passes none, which is why its own `?:` can never be taken; it is written rather than
+     * asserted so that a future variant-aware caller cannot make the ordinary render path throw.
+     */
+    private fun renderInstance(
+        entry: PreviewEntry,
+        override: ViewOverride?,
+        moduleWrapper: RenderModuleWrapper?,
+        requiredVariant: String?,
+    ): RenderOutcome? {
         if (!isAvailable()) {
             return RenderOutcome.Unsupported("Live rendering is unavailable on this IDE build")
         }
         return try {
-            when (val result = resolver.resolve(entry, project, override, moduleWrapper)) {
+            when (val result = resolver.resolve(entry, project, override, moduleWrapper, requiredVariant)) {
                 is RenderModelResult.NoFacet ->
                     RenderOutcome.Unsupported("Module '${entry.moduleName}' has no Android facet")
+                is RenderModelResult.VariantUnresolved -> {
+                    thisLogger().info(
+                        "No '$requiredVariant' preview instance for ${entry.indexed.composableFqn}; nothing rendered",
+                    )
+                    null
+                }
                 is RenderModelResult.Failed ->
                     RenderOutcome.Failure(result.message, result.detail)
                 is RenderModelResult.Resolved ->

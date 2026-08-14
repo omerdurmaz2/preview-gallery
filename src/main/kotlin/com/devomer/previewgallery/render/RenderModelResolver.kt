@@ -73,6 +73,10 @@ class RenderModelResolver {
 
         /** An AS-internal call failed — the caller maps this to `Failure`. */
         class Failed(val message: String, val detail: String?) : RenderModelResult
+
+        /** [resolve] was asked for one named `@Preview` instance and no such instance could be resolved and
+         *  applied. Only ever produced for a non-null `requiredVariant`; see [resolve]'s own doc. */
+        object VariantUnresolved : RenderModelResult
     }
 
     /**
@@ -81,12 +85,25 @@ class RenderModelResolver {
      * [ScreenshotTestClassLoader]). A null wrapper (every caller before this task, and `Original`'s own render)
      * reproduces the exact pre-PG22-3 path: [resolveUnderReadAction] builds the same
      * [AndroidFacetRenderModelModule] either way.
+     *
+     * PG22-8: [requiredVariant], when non-null, names the `@Preview` whose instance must be rendered — the `name`
+     * a multipreview declares (`phone`, `small`), which Android Studio also uses as `displaySettings.name` for
+     * each instance it expands a multipreview into. It replaces the ordinary
+     * `displaySettings.name == entry.indexed.displayName` match, which cannot work for a multipreview at all:
+     * `PreviewPsiScanner` leaves the annotation unresolved for a `@PreviewTest` whose only preview annotation is a
+     * custom multipreview, so `displayName` is the bare function name and no instance carries it.
+     *
+     * When no instance carries [requiredVariant] — or its configuration cannot be applied — this returns
+     * [RenderModelResult.VariantUnresolved] rather than falling back to [buildDefaultPreviewElement]. Spec D3:
+     * a render whose variant is unknown cannot be compared against a variant-specific golden, so the caller must
+     * stop and report, not measure the plugin's default configuration against a `phone` golden.
      */
     fun resolve(
         entry: PreviewEntry,
         project: Project,
         override: ViewOverride? = null,
         moduleWrapper: RenderModuleWrapper? = null,
+        requiredVariant: String? = null,
     ): RenderModelResult =
         try {
             // The config-aware element is fetched FIRST, lock-free (see [findConfigAwareElement]): its finder is a
@@ -95,9 +112,13 @@ class RenderModelResolver {
             // grant — pinning the read lock and freezing the whole IDE (observed: a 65s UI freeze on select). Only
             // the project-model reads that genuinely need a read action run inside ReadAction.compute below, which
             // applies the already-fetched element's own @Preview configuration.
-            val configAware = findConfigAwareElement(entry, project)
-            ReadAction.compute<RenderModelResult, RuntimeException> {
-                resolveUnderReadAction(entry, project, configAware, override, moduleWrapper)
+            val configAware = findConfigAwareElement(entry, project, requiredVariant)
+            if (requiredVariant != null && configAware == null) {
+                RenderModelResult.VariantUnresolved
+            } else {
+                ReadAction.compute<RenderModelResult, RuntimeException> {
+                    resolveUnderReadAction(entry, project, configAware, override, moduleWrapper, requiredVariant)
+                }
             }
         } catch (e: ProcessCanceledException) {
             throw e // Never swallow cancellation — the platform relies on it propagating.
@@ -115,6 +136,7 @@ class RenderModelResolver {
         configAware: SingleComposePreviewElementInstance<*>?,
         override: ViewOverride?,
         moduleWrapper: RenderModuleWrapper? = null,
+        requiredVariant: String? = null,
     ): RenderModelResult {
         // U1: module → AndroidFacet → AndroidBuildTargetReference → AndroidFacetRenderModelModule.
         // PG11-1: the facet is resolved through [AndroidModuleResolver], not `AndroidFacet.getInstance(module)`
@@ -144,12 +166,22 @@ class RenderModelResolver {
         // device/api/size/showSystemUi onto [configuration] is the only part of the config-aware path that needs a
         // read action. A null means the finder was unavailable, found no single-instance match, or threw — fall
         // back to the default-config element, exactly as before PG4-2.
+        //
+        // PG22-8: with a [requiredVariant] the default element is not an acceptable fallback — it is the plugin's
+        // own configuration, not the named `@Preview`'s, and measuring it against that variant's golden would fold
+        // the configuration difference into the percentage invisibly (spec D3).
         val element: SingleComposePreviewElementInstance<*> =
             if (configAware != null && applyConfigAware(configAware, configuration)) {
                 configAware
+            } else if (requiredVariant != null) {
+                return RenderModelResult.VariantUnresolved
             } else {
                 buildDefaultPreviewElement(entry)
             }
+        thisLogger().debug(
+            "Rendering ${entry.indexed.composableFqn} as '${element.displaySettings.name}' " +
+                "(configAware=${configAware != null}, requiredVariant=$requiredVariant)",
+        )
 
         // PG6-10: a non-default comparison-view override — from EphemeralPickerBridge's in-memory picker for a
         // copy; always null/default for Original — is applied on top of whichever element the config-aware/
@@ -312,12 +344,19 @@ class RenderModelResolver {
      * Asks Android Studio's own [AnnotationFilePreviewElementFinder] for [entry]'s file's real `@Preview`
      * elements and returns the one matching [entry] by composable FQN + display name — carrying that `@Preview`'s
      * own device/api/size/showSystemUi (which the caller, [resolveUnderReadAction], applies onto the
-     * `Configuration` under its read action). Returns `null` (so the caller falls back to
-     * [buildDefaultPreviewElement] unchanged) when:
+     * `Configuration` under its read action).
+     *
+     * [variantName], when non-null, replaces [entry]'s own `displayName` on the name half of that match: it is the
+     * `name` one `@Preview` of a multipreview declares, and the name Android Studio gives the instance it expands
+     * that `@Preview` into. See [resolve] for why the calibration must select by it, and what its absence means.
+     * The candidate names are logged at debug either way, so the gate can see what the finder actually offered.
+     *
+     * Returns `null` (so the caller falls back to [buildDefaultPreviewElement], or — with a [variantName] — stops)
+     * when:
      *  - the probe ([RenderApiProbe.isConfigAwareAvailable]) says the finder is not present on this IDE build —
      *    checked first so an IDE build that lacks it never pays for the read-action + suspend-bridge round trip;
-     *  - the finder returns no element whose `methodFqn` AND `displaySettings.name` both match [entry.indexed]'s
-     *    `composableFqn`/`displayName`;
+     *  - the finder returns no element whose `methodFqn` matches [entry.indexed]'s `composableFqn` and whose
+     *    `displaySettings.name` matches [variantName] (or, with none, [entry.indexed]'s `displayName`);
      *  - the match is a `ParametrizedComposePreviewElementTemplate` (a `@PreviewParameter` or multipreview group)
      *    rather than an already-resolved single instance — not `XmlSerializable`, and not what one [PreviewEntry]
      *    represents (spec R1); the `as?` below returns `null` for it precisely because that template class does
@@ -351,6 +390,7 @@ class RenderModelResolver {
     private fun findConfigAwareElement(
         entry: PreviewEntry,
         project: Project,
+        variantName: String? = null,
     ): SingleComposePreviewElementInstance<*>? {
         if (!RenderApiProbe.isConfigAwareAvailable()) return null
         return try {
@@ -361,10 +401,14 @@ class RenderModelResolver {
             }
             // Reads only String properties of the finder's already-resolved snapshot elements (no live PSI), so it
             // is safe off a read action; the config-aware element itself is applied under one in the caller.
-            elements.firstOrNull { element ->
-                element.methodFqn == entry.indexed.composableFqn &&
-                    element.displaySettings.name == entry.indexed.displayName
-            } as? SingleComposePreviewElementInstance<*>
+            val wanted = variantName ?: entry.indexed.displayName
+            val candidates = elements.filter { it.methodFqn == entry.indexed.composableFqn }
+            val matched = candidates.firstOrNull { it.displaySettings.name == wanted }
+            thisLogger().debug(
+                "Config-aware lookup for ${entry.indexed.composableFqn}: wanted '$wanted', " +
+                    "instances ${candidates.map { it.displaySettings.name }}, matched=${matched != null}",
+            )
+            matched as? SingleComposePreviewElementInstance<*>
         } catch (e: ProcessCanceledException) {
             throw e // Never swallow cancellation — the platform relies on it propagating.
         } catch (e: Exception) {

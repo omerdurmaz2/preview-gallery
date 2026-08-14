@@ -4,6 +4,7 @@ import com.android.tools.idea.projectsystem.ClassContent
 import com.android.tools.idea.rendering.BuildTargetReference
 import com.android.tools.idea.rendering.StudioModuleRenderContext
 import com.android.tools.idea.rendering.classloading.loaders.ProjectSystemClassLoader
+import com.android.tools.idea.rendering.tokens.BuildSystemFilePreviewServices
 import com.android.tools.rendering.api.RenderModelModule
 import com.android.tools.rendering.classloading.ClassTransform
 import com.android.tools.rendering.classloading.ModuleClassLoaderManager
@@ -132,20 +133,78 @@ internal object ScreenshotTestClassLoader {
         }
     }
 
+    /**
+     * The injected directory is layered **over** the project's own class-file finder, never in place of it.
+     *
+     * `createInjectableClassLoaderLoader()` is not one loader among several: `StudioModuleClassLoader` hands
+     * whatever it returns to `ModuleClassLoaderImpl` as its single `projectSystemLoader` field, and that field is
+     * the only path either `createProjectLoader(...)` call has to project classes — `createNonProjectLoader` wraps
+     * the external libraries and layoutlib's parent loader, neither of which carries module output. Returning only
+     * the `screenshotTest` directory therefore does not leave the real loader to answer for everything else; it
+     * severs it, and the first `main` class the `@PreviewTest` composable touches (the composable under test, the
+     * theme, the module's `R`) fails to load.
+     *
+     * So the lambda tries the directory first and falls back to [projectClassFor], which is byte-for-byte what the
+     * stock `createInjectableClassLoaderLoader` lambda does (`javap -c` on `StudioModuleRenderContext`:
+     * `BuildSystemFilePreviewServices.Companion.getBuildSystemFilePreviewServices(buildTargetReference)
+     * .getRenderingServices(buildTargetReference).classFileFinder?.findClassFile(fqcn)` — the first of those is an
+     * *extension* on `BuildTargetReference` declared inside the companion, per its
+     * `$this$getBuildSystemFilePreviewServices` receiver slot, hence the `with` in [projectClassFor]). The spike's
+     * alternative —
+     * `super.createInjectableClassLoaderLoader()` plus `injectClassFile` — is deliberately not used:
+     * `ProjectSystemClassLoader` stores injected content in a `SofterReference` (its `classCache` field type), so a
+     * cleared entry would silently fall back to the project finder and load the `main` class of the same name, or
+     * none at all. Explicit delegation cannot go quiet that way.
+     *
+     * `buildTargetReference` is the context's own property for the reference this subclass was constructed with
+     * (`public final getBuildTargetReference()` on `StudioModuleRenderContext`, per `javap`), so the fallback
+     * targets exactly the module the stock lambda would have.
+     */
     private fun injectingContext(module: RenderModelModule, classesDirectory: File): StudioModuleRenderContext =
         object : StudioModuleRenderContext(BuildTargetReference.gradleOnly(module.getIdeaModule())) {
             override fun createInjectableClassLoaderLoader(): ProjectSystemClassLoader =
-                ProjectSystemClassLoader { fqcn -> classFileFor(fqcn, classesDirectory) }
+                ProjectSystemClassLoader { fqcn ->
+                    classFileFor(fqcn, classesDirectory) ?: projectClassFor(fqcn, buildTargetReference)
+                }
         }
 
     /**
-     * A fully qualified name that is not in [classesDirectory] returns null, so the real loader answers — the
-     * injected directory holds only the `screenshotTest` classes, and every `main` class the composable touches
-     * still comes from the ordinary classpath. Kotlin file facades (`UtilSnapshotsKt`) and
-     * `ComposableSingletons$…` classes are ordinary entries here; no special casing.
+     * What the stock `createInjectableClassLoaderLoader` lambda would have returned for [fqcn] — the project's own
+     * class-file finder for [buildTarget] — so a class the injected directory does not hold still loads (see
+     * [injectingContext]).
+     *
+     * Guarded like every other AS-internal call here, and on its own because it runs when Android Studio's loader
+     * asks for a class, long after [wrapperFor] returned: on failure it returns null, so that one load misses and
+     * layoutlib reports a missing class, rather than an exception taking the whole render down.
+     */
+    private fun projectClassFor(fqcn: String, buildTarget: BuildTargetReference): ClassContent? = try {
+        with(BuildSystemFilePreviewServices) {
+            buildTarget.getBuildSystemFilePreviewServices()
+                .getRenderingServices(buildTarget)
+                .classFileFinder
+                ?.findClassFile(fqcn)
+        }
+    } catch (e: ProcessCanceledException) {
+        throw e // Never swallow cancellation — the platform relies on it propagating.
+    } catch (e: Exception) {
+        thisLogger().warn("The project class-file finder could not answer for $fqcn", e)
+        null
+    } catch (e: LinkageError) {
+        thisLogger().warn(
+            "The project class-file finder API is incompatible with this IDE build; $fqcn will not load",
+            e,
+        )
+        null
+    }
+
+    /**
+     * A fully qualified name that is not in [classesDirectory] returns null, which [injectingContext] turns into a
+     * [projectClassFor] delegation — the injected directory holds only the `screenshotTest` classes, and every
+     * `main` class the composable touches comes from the project finder instead. Kotlin file facades
+     * (`UtilSnapshotsKt`) and `ComposableSingletons$…` classes are ordinary entries here; no special casing.
      *
      * This runs when Android Studio's own loader asks for [fqcn], long after [wrapperFor] returned, so it is
-     * guarded on its own too: a read failure returns null exactly like a genuine miss, so the real loader answers
+     * guarded on its own too: a read failure returns null exactly like a genuine miss, so the delegation answers
      * for that one class instead of the whole render failing.
      */
     private fun classFileFor(fqcn: String, classesDirectory: File): ClassContent? {
