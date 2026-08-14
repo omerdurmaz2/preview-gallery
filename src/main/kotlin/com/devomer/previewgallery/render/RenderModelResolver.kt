@@ -406,7 +406,9 @@ class RenderModelResolver {
             val matched = candidates.firstOrNull { it.displaySettings.name == wanted }
             thisLogger().debug(
                 "Config-aware lookup for ${entry.indexed.composableFqn}: wanted '$wanted', " +
-                    "instances ${candidates.map { it.displaySettings.name }}, matched=${matched != null}",
+                    "instances ${candidates.map { it.displaySettings.name }}, matched=${matched != null}. " +
+                    "Everything the finder returned for this file: " +
+                    "${elements.map { it.methodFqn to it.displaySettings.name }}",
             )
             matched as? SingleComposePreviewElementInstance<*>
         } catch (e: ProcessCanceledException) {
