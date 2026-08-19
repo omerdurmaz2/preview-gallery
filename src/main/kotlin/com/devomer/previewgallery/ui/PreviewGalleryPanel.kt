@@ -883,6 +883,10 @@ class PreviewGalleryPanel(
                 SnapshotVerifyResults.readForRun(started.resultsDirectory, started.startedAtMillis, started.buildRoot, succeeded)
             }
             val now = System.currentTimeMillis()
+            thisLogger().info(
+                "Verify of '${target.moduleName}' read ${results.size} result(s), " +
+                    "${results.count { it.status == SnapshotVerifyResults.Status.FAILED }} failing",
+            )
             store.record(
                 moduleName = target.moduleName,
                 outcome = outcome,

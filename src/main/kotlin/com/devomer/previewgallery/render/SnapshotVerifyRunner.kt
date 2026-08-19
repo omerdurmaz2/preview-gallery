@@ -226,8 +226,17 @@ class SnapshotVerifyRunner(private val project: Project) : Disposable {
         onDone: (Outcome, Started?, Boolean) -> Unit,
     ) {
         removeListener(notifications, listener)
-        if (generation.get() != myGeneration) return
+        if (generation.get() != myGeneration) {
+            thisLogger().info(
+                "Verify of ${started.taskName} finished but a newer run superseded it; reporting nothing",
+            )
+            return
+        }
         currentTaskId.set(null)
+        thisLogger().info(
+            "Verify of ${started.taskName} finished: outcome=$outcome buildSucceeded=$buildSucceeded " +
+                "results=${started.resultsDirectory} launchedAt=${started.startedAtMillis}",
+        )
         onDone(outcome, started, buildSucceeded)
     }
 
