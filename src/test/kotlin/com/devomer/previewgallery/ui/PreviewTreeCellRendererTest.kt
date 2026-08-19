@@ -291,6 +291,11 @@ class PreviewTreeCellRendererTest {
         assertEquals(PreviewTreeCellRenderer.FailureBadge(stale = true), badge)
     }
 
+    /**
+     * No project means no store to badge against — the same rule this class's own doc already states for the
+     * snapshot row. The badge wiring itself is exercised, with a real store, by `PreviewGalleryPanelTest`;
+     * `previewFailureBadge` above is the decision it and this class doc both defer to.
+     */
     @Test
     fun `a preview leaf with covering snapshots but no project renders unchanged`() {
         val row = testRow(displayName = "WidgetPreview", functionName = "WidgetPreview", moduleName = "app")
@@ -299,9 +304,6 @@ class PreviewTreeCellRendererTest {
                 snapshots = listOf(testRow(functionName = "Widget_Default_Snapshot", moduleName = "app")),
             )
 
-        // No project means no store to badge against — the same rule PreviewTreeCellRendererTest's class doc
-        // already states for the snapshot row. The badge wiring itself is exercised, with a real store, by
-        // PreviewGalleryPanelTest; `previewFailureBadge` above is the decision it and this class doc both defer to.
         val rendered = text(PreviewNode.PreviewLeaf(row))
 
         assertFalse(rendered, rendered.contains("differs"))

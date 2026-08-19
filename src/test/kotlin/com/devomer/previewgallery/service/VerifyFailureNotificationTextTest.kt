@@ -76,4 +76,16 @@ class VerifyFailureNotificationTextTest {
 
         assertEquals("3 of 3 snapshots differ in app — FuncA (phone), FuncB (phone), FuncC (phone)", text)
     }
+
+    @Test
+    fun `exactly four failing functions shows three and one more`() {
+        val results = listOf(failed("FuncA"), failed("FuncB"), failed("FuncC"), failed("FuncD"))
+
+        val text = VerifyFailureNotificationText.of("app", results)
+
+        assertEquals(
+            "4 of 4 snapshots differ in app — FuncA (phone), FuncB (phone), FuncC (phone) and 1 more",
+            text,
+        )
+    }
 }
