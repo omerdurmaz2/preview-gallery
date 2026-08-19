@@ -372,6 +372,35 @@ for. A test phase that is not revert-checked is a test phase that has not run.
   `readForRun` reads results for functions that no longer exist — shown as stale, because the deletion moves the
   module's source clock past the run.
 
+#### H3 · Make a failing verify visible
+
+**Goal:** stop a failure that the plugin already measured from being invisible unless you happen to open the right row.
+
+Found by a user at the keyboard, not by a review. The flow: select a snapshot, wait for its verify, edit the
+component it draws, run Verify again. The run failed — correctly — and the plugin recorded it: the log says
+`read 100 result(s), 2 failing`, the goldens, rendered images and diffs were all on disk, and Gradle's own
+`report.html` showed them. The user saw nothing at all: no badge, no message, only the committed goldens of the row
+they were looking at.
+
+Nothing was broken. The two failing rows were `DeleteSelectedProductsDialog_Default_Snapshot`, whose body calls
+`PrimusDialog` directly — so the matcher files it under the `PrimusDialog` preview, in the design-system branch,
+not under the favorites file the user was reading. (It is one of F7's nine name-rule findings, which is exactly why.)
+The verdict existed; the path to it did not.
+
+Two fixes, both small:
+
+- **The badge travels up.** A preview row whose covering snapshots include a failing one carries `differs` too, so
+  red is visible while the branch is collapsed. `PreviewEntry.snapshots` already holds that list.
+- **A finished run says what it found.** When a verify measures failures, a notification names them —
+  *"2 of 100 snapshots differ in features/favorites/ui: DeleteSelectedProductsDialog_Default_Snapshot (phone, small)"*.
+  A passing run stays silent. Today the result reaches only whoever navigates to the row.
+
+**Deliberately not built yet:** a "show only failing snapshots" filter (the mirror of F2's uncovered toggle), and
+making the notification click through to the row. Both are follow-ups if the two above turn out not to be enough.
+
+- **Effort:** S · **Risk:** low
+- **Depends on:** F6 (the measurement it surfaces)
+
 #### F7 · Degenerate golden detector — **shipped (PG18)**
 
 **Goal:** catch snapshots that test nothing.
