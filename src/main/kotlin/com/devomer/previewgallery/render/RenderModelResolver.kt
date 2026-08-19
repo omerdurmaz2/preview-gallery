@@ -12,6 +12,7 @@ import com.intellij.openapi.project.Project
 // ── All imports below are Android Studio internal API (org.jetbrains.android / bundled render libs). ──
 // This class, together with LiveRenderer, is the ONLY place that touches them (design §3.1).
 import com.android.tools.configurations.Configuration
+import com.android.tools.environment.Logger
 import com.android.tools.idea.compose.preview.AnnotationFilePreviewElementFinder
 import com.android.tools.idea.configurations.ConfigurationManager
 import com.android.tools.idea.rendering.AndroidBuildTargetReference
@@ -23,6 +24,7 @@ import com.android.tools.preview.PreviewDisplaySettings
 import com.android.tools.preview.SingleComposePreviewElementInstance
 import com.android.tools.preview.XmlSerializable
 import com.android.tools.preview.applyTo
+import com.android.tools.preview.config.findOrParseFromDefinition
 import com.android.tools.rendering.RenderLogger
 import com.android.tools.rendering.api.RenderModelModule
 
@@ -52,6 +54,13 @@ import com.android.tools.rendering.api.RenderModelModule
  * caller's [Configuration] is picked exactly as before this task. A pin that cannot be applied stops the render
  * ([RenderModelResult.DeviceSpecUnresolved]) rather than proceeding on whatever device the module's own
  * [ConfigurationManager] would otherwise have handed back — the failure mode a gate run actually hit.
+ *
+ * PG22-15: [applyCalibrationDevice] writes that device onto [Configuration] via [Configuration.setDevice] directly,
+ * not through [PreviewConfiguration.applyTo] (the seam [applyConfigAware] uses for an ordinary `@Preview`'s own
+ * configuration). `applyTo` also resolves the configuration's preferred theme, which needs the main manifest
+ * index a `src/screenshotTest` file's module does not have (D3a) — a real gate run hit
+ * `MainManifestIndexNotReadyException` from exactly that path. The calibration pin only ever needed to set a
+ * device; see [applyCalibrationDevice]'s own doc for the mechanism and its `javap` evidence.
  */
 class RenderModelResolver {
 
@@ -335,7 +344,7 @@ class RenderModelResolver {
                 "variantAssumed=$elementVariantAssumed)",
         )
 
-        val devicePinApplied = pinCalibrationDevice && applyCalibrationDevice(entry, configuration)
+        val devicePinApplied = pinCalibrationDevice && applyCalibrationDevice(configuration)
         if (decideDevicePin(pinCalibrationDevice, devicePinApplied) is DevicePinResolution.Failed) {
             return RenderModelResult.DeviceSpecUnresolved
         }
@@ -381,16 +390,53 @@ class RenderModelResolver {
     }
 
     /**
-     * D6a: writes [CALIBRATION_DEVICE_SPEC] onto [configuration] through the exact same `applyTo` seam
-     * [applyConfigAware] already uses for a resolved `@Preview`'s own configuration — [buildCalibrationDeviceElement]
-     * is a throwaway vehicle for that one string, never the element that ends up rendered (the composable that gets
-     * drawn is decided entirely by the [element] resolved above; this call only ever mutates [configuration]).
-     * `false` (guarded inside [applyConfigAware], never thrown out of it) means the spec could not be applied on
-     * this IDE build; [resolveUnderReadAction] turns that into [RenderModelResult.DeviceSpecUnresolved] rather than
-     * proceeding on whatever device [configuration] already carried.
+     * PG22-15: writes [CALIBRATION_DEVICE_SPEC] straight onto [configuration] via [Configuration.setDevice],
+     * bypassing [PreviewConfiguration.applyTo] entirely — unlike [applyConfigAware], this never resolves or sets a
+     * theme. `applyTo` needs one (`Configuration.getPreferredTheme()`, which needs the main manifest index) only
+     * because it applies a whole `PreviewConfiguration` — api level, locale, font scale, wallpaper, ui mode, theme
+     * — of which the calibration pin only ever wanted one axis, the device. A `src/screenshotTest` file's module
+     * has no manifest to index at all (D3a), so that lookup threw `MainManifestIndexNotReadyException` out of a
+     * real gate run; this call needs no theme, so it cannot hit that lookup.
+     *
+     * [findOrParseFromDefinition] (`Collection<Device>.findOrParseFromDefinition(String, Logger)`, a
+     * `com.android.tools.preview.config` package-level extension confirmed via `javap` against `android.jar`) is
+     * Android Studio's own device-spec parsing entry point — the same one `applyTo`'s private device-resolution
+     * branch calls for a `spec:`-prefixed [PreviewConfiguration.deviceSpec]
+     * (`DeviceConfig.Companion.toDeviceConfigOrNull` → `createDeviceInstance`, with an `id:`/`name:` fallback this
+     * call never reaches because [CALIBRATION_DEVICE_SPEC] always starts with `spec:`), not a hand-rolled parser.
+     * `null` — a blank string, an unparseable spec, or an unknown id/name, none reachable for this fixed constant,
+     * but checked because the platform's own function returns it that way — means the pin could not be applied.
+     *
+     * `configuration.setEffectiveDevice(null, null)` immediately before `setDevice` mirrors `applyTo`'s own
+     * bytecode exactly (both arguments `null` there too, `javap -c` against `PreviewConfigurationKt`): it clears
+     * any effective-device override the [Configuration] already carries so the newly pinned device is not shadowed
+     * by it. `setDevice`'s own second argument (`false`) is likewise copied unchanged from what `applyTo` itself
+     * passes.
      */
-    private fun applyCalibrationDevice(entry: PreviewEntry, configuration: Configuration): Boolean =
-        applyConfigAware(buildCalibrationDeviceElement(entry), configuration)
+    private fun applyCalibrationDevice(configuration: Configuration): Boolean = try {
+        val device = configuration.settings.devices.findOrParseFromDefinition(
+            CALIBRATION_DEVICE_SPEC,
+            Logger.getInstance(RenderModelResolver::class.java),
+        )
+        if (device == null) {
+            false
+        } else {
+            configuration.setEffectiveDevice(null, null)
+            configuration.setDevice(device, false)
+            true
+        }
+    } catch (e: ProcessCanceledException) {
+        throw e // Never swallow cancellation — the platform relies on it propagating.
+    } catch (e: Exception) {
+        thisLogger().info("Applying the calibration device spec failed; device pin unavailable", e)
+        false
+    } catch (e: LinkageError) {
+        thisLogger().info(
+            "The device-spec parsing API is incompatible with this IDE build; device pin unavailable",
+            e,
+        )
+        false
+    }
 
     /**
      * PG6-10: applies [override]'s values onto [base] by deriving a new preview element via AS's own
@@ -629,24 +675,12 @@ class RenderModelResolver {
      * arguments given" case. Display settings carry only naming metadata; `previewWrapperProviderFqn` is null
      * because this path is for plain (non-`@PreviewParameter`) composables. The fallback target for
      * [findConfigAwareElement] (PG4-2), and — before PG4-2 — the only path this class had.
+     *
+     * PG22-15: this used to take a `deviceSpec` parameter shared with a now-deleted `buildCalibrationDeviceElement`
+     * sibling — [applyCalibrationDevice] no longer builds a throwaway preview element at all, so [deviceSpec] here
+     * is always the "no `@Preview` arguments given" sentinel and the parameter was removed rather than left unused.
      */
-    private fun buildDefaultPreviewElement(entry: PreviewEntry): SingleComposePreviewElementInstance<*> =
-        buildPreviewElement(entry, deviceSpec = null)
-
-    /**
-     * D6a: the calibration's own sibling of [buildDefaultPreviewElement] — everything the same except
-     * [CALIBRATION_DEVICE_SPEC] in place of the "no `@Preview` arguments given" sentinel. Never rendered itself;
-     * [applyCalibrationDevice] applies it to [Configuration] and discards it.
-     */
-    private fun buildCalibrationDeviceElement(entry: PreviewEntry): SingleComposePreviewElementInstance<*> =
-        buildPreviewElement(entry, deviceSpec = CALIBRATION_DEVICE_SPEC)
-
-    /**
-     * The construction [buildDefaultPreviewElement] and [buildCalibrationDeviceElement] share: every
-     * [PreviewConfiguration] axis at its `cleanAndGet(null…)` sentinel except [deviceSpec], and display settings
-     * carrying only [entry]'s naming metadata.
-     */
-    private fun buildPreviewElement(entry: PreviewEntry, deviceSpec: String?): SingleComposePreviewElementInstance<*> {
+    private fun buildDefaultPreviewElement(entry: PreviewEntry): SingleComposePreviewElementInstance<*> {
         val previewConfiguration = PreviewConfiguration.cleanAndGet(
             /* apiLevel = */ null,
             /* width = */ null,
@@ -654,7 +688,7 @@ class RenderModelResolver {
             /* locale = */ null,
             /* fontScale = */ null,
             /* uiMode = */ null,
-            /* deviceSpec = */ deviceSpec,
+            /* deviceSpec = */ null,
             /* wallpaper = */ null,
             /* colorBlindImageTransformation = */ null,
         )
