@@ -22,6 +22,7 @@
         <fileBasedIndex implementation="com.devomer.previewgallery.index.PreviewIndex"/>
         <toolWindow id="Compose Gallery"
                     anchor="right"
+                    icon="/icons/toolWindow.svg"
                     factoryClass="com.devomer.previewgallery.ui.PreviewGalleryToolWindowFactory"/>
         <searchEverywhereContributor
             implementation="com.devomer.previewgallery.searcheverywhere.PreviewSearchEverywhereContributorFactory"/>
