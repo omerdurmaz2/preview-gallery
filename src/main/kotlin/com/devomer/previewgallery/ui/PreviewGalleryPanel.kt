@@ -25,9 +25,12 @@ import com.devomer.previewgallery.service.ReferenceImageLocator
 import com.devomer.previewgallery.service.ReferenceRoots
 import com.devomer.previewgallery.service.SnapshotVerifyResults
 import com.devomer.previewgallery.service.SnapshotVerifyStore
+import com.devomer.previewgallery.service.VerifyFailureNotificationText
 import com.intellij.ide.CommonActionsManager
 import com.intellij.ide.DefaultTreeExpander
 import com.intellij.ide.TreeExpander
+import com.intellij.notification.NotificationGroupManager
+import com.intellij.notification.NotificationType
 import com.intellij.openapi.Disposable
 import com.intellij.openapi.actionSystem.ActionManager
 import com.intellij.openapi.actionSystem.DefaultActionGroup
@@ -894,7 +897,7 @@ class PreviewGalleryPanel(
                 launchedAtMillis = started?.startedAtMillis ?: now,
                 finishedAtMillis = now,
             )
-            showVerifyOutcome(target.moduleName)
+            showVerifyOutcome(target.moduleName, results)
         }
     }
 
@@ -915,9 +918,10 @@ class PreviewGalleryPanel(
     }
 
     /** Puts what [moduleName]'s run just recorded on screen: the badge via a repaint, the pane via the same
-     *  selection route a fresh selection takes. Hops to the EDT itself — the runner's callback arrives on
-     *  whatever thread Gradle finished on. */
-    private fun showVerifyOutcome(moduleName: String) {
+     *  selection route a fresh selection takes, and — only if [results] measured a failure (H3) — a balloon
+     *  naming it, for whoever is not already looking at the row the badge would have reached. Hops to the EDT
+     *  itself — the runner's callback arrives on whatever thread Gradle finished on. */
+    private fun showVerifyOutcome(moduleName: String, results: List<SnapshotVerifyResults.SnapshotResult>) {
         ApplicationManager.getApplication().invokeLater({
             if (verifyInFlightModule == moduleName) verifyInFlightModule = null
             if (disposalCheck.isDisposed) return@invokeLater
@@ -928,7 +932,20 @@ class PreviewGalleryPanel(
             } finally {
                 refreshingAfterVerify = false
             }
+            notifyVerifyFailures(moduleName, results)
         }, ModalityState.defaultModalityState())
+    }
+
+    /** H3: the balloon [showVerifyOutcome] raises when [results] measured a failure — silent, per
+     *  [VerifyFailureNotificationText.of], when it did not. Reuses the notification group this plugin already
+     *  registers (`plugin.xml`'s `Compose Preview Gallery`), the same one [PreviewRenderPanel] raises its own
+     *  warnings through. */
+    private fun notifyVerifyFailures(moduleName: String, results: List<SnapshotVerifyResults.SnapshotResult>) {
+        val text = VerifyFailureNotificationText.of(moduleName, results) ?: return
+        NotificationGroupManager.getInstance()
+            .getNotificationGroup("Compose Preview Gallery")
+            .createNotification(text, NotificationType.WARNING)
+            .notify(project)
     }
 
     /**

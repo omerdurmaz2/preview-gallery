@@ -1,6 +1,7 @@
 package com.devomer.previewgallery.ui
 
 import com.devomer.previewgallery.PreviewGalleryBundle
+import com.devomer.previewgallery.model.PreviewRow
 import com.devomer.previewgallery.model.SnapshotCoverage
 import com.devomer.previewgallery.service.SnapshotVerifyResults
 import com.devomer.previewgallery.service.SnapshotVerifyStore
@@ -79,6 +80,15 @@ class PreviewTreeCellRenderer(private val project: Project? = null) : ColoredTre
                     append("  ${badges.joinToString(" · ")}", SimpleTextAttributes.GRAYED_SMALL_ATTRIBUTES)
                 }
                 append("  ${coverageText(node.row.coverage)}", SimpleTextAttributes.GRAYED_SMALL_ATTRIBUTES)
+                val store = project?.let { SnapshotVerifyStore.getInstance(it) }
+                val failureBadge = store?.let { s ->
+                    previewFailureBadge(node.row.snapshots, s::measurementFor) { measurement ->
+                        s.isStale(measurement) { tree.repaint() }
+                    }
+                }
+                if (failureBadge != null) {
+                    append("  ${differsLabel(failureBadge.stale)}", SimpleTextAttributes.ERROR_ATTRIBUTES)
+                }
             }
 
             is PreviewNode.SnapshotLeaf -> {
@@ -116,6 +126,18 @@ class PreviewTreeCellRenderer(private val project: Project? = null) : ColoredTre
         SnapshotCoverage.Uncovered -> "· no snapshot"
     }
 
+    /** [PreviewNode.SnapshotLeaf]'s own badge wording (PG20-5), reused verbatim for [PreviewNode.PreviewLeaf]'s
+     *  rolled-up badge (H3) so the two rows never drift into saying the same fact two different ways. */
+    private fun differsLabel(stale: Boolean): String =
+        if (stale) {
+            "${PreviewGalleryBundle.message("verify.differs")} · ${PreviewGalleryBundle.message("verify.stale")}"
+        } else {
+            PreviewGalleryBundle.message("verify.differs")
+        }
+
+    /** [previewFailureBadge]'s result: a preview row's badge is warranted, and whether it should read stale. */
+    internal data class FailureBadge(val stale: Boolean)
+
     companion object {
         /**
          * The orphan branch's row text. Owned here because this is what actually draws it;
@@ -124,5 +146,48 @@ class PreviewTreeCellRenderer(private val project: Project? = null) : ColoredTre
          * unit-tested as plain JUnit, with no `Application` to resolve a `DynamicBundle` against.
          */
         const val ORPHAN_BRANCH_LABEL = "Snapshots without a preview"
+
+        /**
+         * H3: whether [snapshots] — a preview row's own covering snapshots ([PreviewRow.snapshots]) — include a
+         * FAILED result anywhere, and whether that verdict should read stale. A user hit this: a snapshot whose
+         * body calls a design-system composable directly gets filed under *that* composable's preview by the
+         * coverage matcher, in another branch of the tree, not under the preview the user was actually reading —
+         * so a failure the plugin had already measured was invisible unless the collapsed branch happened to be
+         * opened. Rolling the badge up to the preview row fixes that without changing where the fact itself lives.
+         *
+         * Each [snapshots] entry is looked up against its OWN [PreviewRow.moduleName] via [measurementFor], never
+         * the covering preview's — the exact case above, a snapshot in a different module from the preview it
+         * covers. [isStale] is the non-blocking [SnapshotVerifyStore.isStale] overload; the caller must pass that
+         * one, never the blocking source-tree walk, since this runs on Swing's per-row paint callback.
+         *
+         * Pure and unit-tested without a [SnapshotVerifyStore] or [com.intellij.openapi.project.Project]
+         * ([PreviewTreeCellRendererTest]) — [measurementFor] and [isStale] are its only IDE-touching facts, kept
+         * as parameters exactly as [RenderModelResolver][com.devomer.previewgallery.render.RenderModelResolver]
+         * keeps its own AS-touching facts as parameters to its pure decisions.
+         *
+         * `null` means no badge: no covering snapshot has a measurement, or every measured one passed. A non-null
+         * result's [FailureBadge.stale] is true if ANY failing snapshot's own measurement is stale — the same
+         * direction [SnapshotVerifyStore.markAllStale] already chose (a stale badge understates confidence, a
+         * fresh one overstates it), so one stale contributor is enough to call the whole badge stale.
+         */
+        internal fun previewFailureBadge(
+            snapshots: List<PreviewRow>,
+            measurementFor: (String) -> SnapshotVerifyStore.Measurement?,
+            isStale: (SnapshotVerifyStore.Measurement) -> Boolean,
+        ): FailureBadge? {
+            var failing = false
+            var stale = false
+            for (snapshot in snapshots) {
+                val measurement = measurementFor(snapshot.moduleName) ?: continue
+                val snapshotFailed = measurement.results.any {
+                    it.methodName == snapshot.indexed.functionName && it.status == SnapshotVerifyResults.Status.FAILED
+                }
+                if (snapshotFailed) {
+                    failing = true
+                    if (isStale(measurement)) stale = true
+                }
+            }
+            return if (failing) FailureBadge(stale) else null
+        }
     }
 }

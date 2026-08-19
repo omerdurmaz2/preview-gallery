@@ -676,6 +676,65 @@ class PreviewGalleryPanelTest : BasePlatformTestCase() {
         }
     }
 
+    /**
+     * H3: the badge rolls up from a covering snapshot to the preview row it covers, with a real
+     * [SnapshotVerifyStore] behind it — [PreviewTreeCellRendererTest]'s own tests cover the cross-module lookup
+     * this decision makes (`previewFailureBadge`); this exercises the actual wiring the renderer does with it.
+     */
+    fun `test a preview row carries the differs badge when a covering snapshot failed`() {
+        SnapshotVerifyStore.getInstance(project).record(
+            moduleName = module.name,
+            outcome = SnapshotVerifyRunner.Outcome.RAN,
+            results = listOf(failingResultWithImagesOnDisk("DeleteSelectedProductsDialog_Default_Snapshot")),
+            launchedAtMillis = System.currentTimeMillis(),
+            finishedAtMillis = System.currentTimeMillis(),
+        )
+        val previewRow = testRow(displayName = "PrimusDialogPreview", functionName = "PrimusDialogPreview", moduleName = module.name)
+            .copy(snapshots = listOf(testRow(functionName = "DeleteSelectedProductsDialog_Default_Snapshot", moduleName = module.name)))
+        val renderer = PreviewTreeCellRenderer(project)
+
+        renderer.getTreeCellRendererComponent(
+            JTree(),
+            DefaultMutableTreeNode(PreviewNode.PreviewLeaf(previewRow)),
+            false,
+            false,
+            true,
+            0,
+            false,
+        )
+
+        val badge = renderer.iterator().asSequence().joinToString("")
+        assertTrue(badge, badge.contains(PreviewGalleryBundle.message("verify.differs")))
+    }
+
+    /** The other half of the same rule: no failing covering snapshot means no badge, exactly as an ordinary
+     *  preview row renders today — a store that measured only a pass must not badge the row. */
+    fun `test a preview row with only passing covering snapshots carries no badge`() {
+        SnapshotVerifyStore.getInstance(project).record(
+            moduleName = module.name,
+            outcome = SnapshotVerifyRunner.Outcome.RAN,
+            results = listOf(passingResult("Widget_Default_Snapshot")),
+            launchedAtMillis = System.currentTimeMillis(),
+            finishedAtMillis = System.currentTimeMillis(),
+        )
+        val previewRow = testRow(displayName = "WidgetPreview", functionName = "WidgetPreview", moduleName = module.name)
+            .copy(snapshots = listOf(testRow(functionName = "Widget_Default_Snapshot", moduleName = module.name)))
+        val renderer = PreviewTreeCellRenderer(project)
+
+        renderer.getTreeCellRendererComponent(
+            JTree(),
+            DefaultMutableTreeNode(PreviewNode.PreviewLeaf(previewRow)),
+            false,
+            false,
+            true,
+            0,
+            false,
+        )
+
+        val badge = renderer.iterator().asSequence().joinToString("")
+        assertFalse(badge, badge.contains(PreviewGalleryBundle.message("verify.differs")))
+    }
+
     fun `test an explicit verify with no committed goldens says so instead of nothing`() {
         projectWithSnapshot()
         val panel = panel()
