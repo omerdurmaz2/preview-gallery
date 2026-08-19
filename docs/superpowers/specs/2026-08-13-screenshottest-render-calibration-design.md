@@ -218,3 +218,43 @@ verify path, its badges, or its messages. Each of these is a consequence of the 
 - **The measurement may be dominated by something trivial and fixable** — a device configuration, a density, a
   background. If the first number is red, the gate should record *what the images look like*, not only the
   percentage, before the roadmap conclusion is written.
+
+## D6a · The device the engine renders on (added at the gate, 2026-08-19)
+
+The second gate run rendered a `@PreviewTest` composable successfully — the classloader injection works, and the
+live image draws the same screen as its golden. It measured nothing, because the two images are different sizes:
+
+```
+phone variant assumed — the IDE model does not see this source set ·
+live vs golden configurations did not match, nothing measured: 2152x2076 vs 1080x2400
+```
+
+The IDE's own log names the live configuration: `sw852dp, w883dp, h852dp, Large Screen, Landscape Orientation,
+390dpi, Screen resolution 2152x2076`. That is whatever device `ConfigurationManager` hands back for the module —
+a large landscape screen, not a phone. The engines are not disagreeing about pixels; the plugin is drawing on a
+different device.
+
+**The committed goldens name the engine's device exactly, so this is derived rather than guessed:**
+
+| Golden | Size | What it fixes |
+|---|---|---|
+| `phone`, full screen | 1080 × 2400 px | the device's pixel resolution |
+| `small`, full screen | 840 × 2400 px | `small` declares `widthDp = 320`, so density = 840 / 320 = **2.625** (420 dpi) |
+| `phone`, a small component | 371 × 168 px | the engine shrinks to content too — that half already matches |
+
+Density 2.625 turns the phone golden into **411 × 914 dp at 420 dpi** — Android Studio's own *Medium Phone*, the
+modern Compose-preview default.
+
+**Decision:** the comparison render pins its configuration to `spec:width=411dp,height=914dp,dpi=420`. Nothing else
+about the render changes, and no other render path is touched — an ordinary `@Preview` still renders on whatever
+device its own configuration selects.
+
+**Why this is safe to hardcode, and how it fails loudly if it stops being true.** The numbers come from the
+project's own committed goldens, not from a device catalogue, and they are checked on every run: if the engine's
+device ever changes, the live render's size stops matching the golden's and the pane says the configurations did
+not match rather than reporting a percentage. A wrong device can therefore never be absorbed into the number —
+which is the property this whole calibration exists to protect.
+
+**Upgrade path:** derive the spec from the goldens at runtime — the `small`/`phone` width ratio gives the density
+and the pixel sizes give the rest — instead of carrying the constants. Worth doing only if a second consuming
+project ever wants this, since the derivation needs both variants present.
