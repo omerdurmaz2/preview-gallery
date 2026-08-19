@@ -82,31 +82,46 @@ class LiveRenderer(
         entry: PreviewEntry,
         override: ViewOverride? = null,
         moduleWrapper: RenderModuleWrapper? = null,
-    ): RenderOutcome = renderInstance(entry, override, moduleWrapper, requiredVariant = null)?.outcome
-        ?: RenderOutcome.Failure("Render failed", null)
+    ): RenderOutcome = when (
+        val result = renderInstance(entry, override, moduleWrapper, requiredVariant = null, pinCalibrationDevice = false)
+    ) {
+        is VariantRenderResult.Rendered -> result.render.outcome
+        is VariantRenderResult.VariantUnresolved, is VariantRenderResult.DeviceSpecUnresolved ->
+            RenderOutcome.Failure("Render failed", null)
+    }
 
     /**
-     * PG22-8: renders the `@Preview` instance named [variantName] — nothing else — and answers `null` when this
-     * composable has no such instance, or its configuration could not be applied.
+     * PG22-8: renders the `@Preview` instance named [variantName] — nothing else — pinned to the calibration's own
+     * device (D6a, [RenderModelResolver.resolve]'s `pinCalibrationDevice = true`) so its `Configuration` matches
+     * the device the committed goldens were drawn on rather than whatever the module's own defaults would produce.
      *
-     * `null` is a stop, not a failure to describe: the calibration compares against a variant-specific golden, so
-     * a render whose variant is unknown is worse than no render at all (spec D3). The caller publishes its own
-     * stop-and-report message and produces no number; it must not treat `null` as "render it some other way".
+     * [VariantRenderResult.VariantUnresolved] and [VariantRenderResult.DeviceSpecUnresolved] are stops, not a
+     * failure to describe: the calibration compares against a variant-specific golden rendered on a specific
+     * device, so a render whose variant is unknown, or whose device could not be pinned, is worse than no render
+     * at all (spec D3, D6a). The caller publishes its own stop-and-report message for each and produces no number;
+     * it must not treat either as "render it some other way".
      *
      * No [ViewOverride] parameter: an override is a comparison-view concept, and the calibration renders exactly
-     * what the source declares.
+     * what the source declares — device pinning is not an override in that sense, since it is never user-supplied
+     * and never optional for this entry point.
      *
-     * D3a: the return type is [VariantRender], not a bare [RenderOutcome], so [RenderModelResolver.Resolved.variantAssumed]
-     * — set when the resolver rendered the default element in place of a `phone` instance the finder could not
-     * name at all — can reach [PreviewGalleryPanel.compareOffEdt], the one caller. Widening [RenderOutcome] itself
-     * to carry this would leak a calibration-only concept into every other render path in the plugin; this
-     * one-caller wrapper is the smaller change.
+     * D3a: [VariantRenderResult.Rendered.render] carries [RenderModelResolver.Resolved.variantAssumed] — set when
+     * the resolver rendered the default element in place of a `phone` instance the finder could not name at all —
+     * so it can reach [PreviewGalleryPanel.compareOffEdt], the one caller. Widening [RenderOutcome] itself to carry
+     * this would leak a calibration-only concept into every other render path in the plugin; this one-caller
+     * wrapper is the smaller change.
      */
     fun renderVariant(
         entry: PreviewEntry,
         variantName: String,
         moduleWrapper: RenderModuleWrapper? = null,
-    ): VariantRender? = renderInstance(entry, override = null, moduleWrapper = moduleWrapper, requiredVariant = variantName)
+    ): VariantRenderResult = renderInstance(
+        entry,
+        override = null,
+        moduleWrapper = moduleWrapper,
+        requiredVariant = variantName,
+        pinCalibrationDevice = true,
+    )
 
     /**
      * D3a: [render]'s and [renderVariant]'s shared payload — the [RenderOutcome] both already produced, plus
@@ -118,42 +133,75 @@ class LiveRenderer(
     class VariantRender(val outcome: RenderOutcome, val variantAssumed: Boolean)
 
     /**
-     * The body both entry points share. Answers `null` only for a non-null [requiredVariant] the resolver could
-     * not satisfy — [render] passes none, which is why its own `?:` can never be taken; it is written rather than
-     * asserted so that a future variant-aware caller cannot make the ordinary render path throw.
+     * [renderInstance]'s own result, shared by [render] and [renderVariant]: a produced [VariantRender], or one of
+     * the two named stops [RenderModelResolver.resolve] can report before any render is attempted —
+     * [VariantUnresolved] when a non-null `requiredVariant` could not be named (D3a), [DeviceSpecUnresolved] when a
+     * requested calibration device pin could not be applied (D6a). [render] passes no `requiredVariant` and never
+     * asks for the pin, so neither stop is reachable through it — it is written to handle them anyway, defensively,
+     * rather than assume, the same discipline [renderInstance]'s own doc already held for a bare `null`.
      */
+    sealed interface VariantRenderResult {
+        class Rendered(val render: VariantRender) : VariantRenderResult
+        object VariantUnresolved : VariantRenderResult
+        object DeviceSpecUnresolved : VariantRenderResult
+    }
+
+    /** The body both entry points share. */
     private fun renderInstance(
         entry: PreviewEntry,
         override: ViewOverride?,
         moduleWrapper: RenderModuleWrapper?,
         requiredVariant: String?,
-    ): VariantRender? {
+        pinCalibrationDevice: Boolean,
+    ): VariantRenderResult {
         if (!isAvailable()) {
-            return VariantRender(RenderOutcome.Unsupported("Live rendering is unavailable on this IDE build"), false)
+            return VariantRenderResult.Rendered(
+                VariantRender(RenderOutcome.Unsupported("Live rendering is unavailable on this IDE build"), false),
+            )
         }
         return try {
-            when (val result = resolver.resolve(entry, project, override, moduleWrapper, requiredVariant)) {
+            when (
+                val result =
+                    resolver.resolve(entry, project, override, moduleWrapper, requiredVariant, pinCalibrationDevice)
+            ) {
                 is RenderModelResult.NoFacet ->
-                    VariantRender(RenderOutcome.Unsupported("Module '${entry.moduleName}' has no Android facet"), false)
+                    VariantRenderResult.Rendered(
+                        VariantRender(RenderOutcome.Unsupported("Module '${entry.moduleName}' has no Android facet"), false),
+                    )
                 is RenderModelResult.VariantUnresolved -> {
                     thisLogger().info(
                         "No '$requiredVariant' preview instance for ${entry.indexed.composableFqn}; nothing rendered",
                     )
-                    null
+                    VariantRenderResult.VariantUnresolved
+                }
+                is RenderModelResult.DeviceSpecUnresolved -> {
+                    thisLogger().info(
+                        "Could not pin the calibration device for ${entry.indexed.composableFqn}; nothing rendered",
+                    )
+                    VariantRenderResult.DeviceSpecUnresolved
                 }
                 is RenderModelResult.Failed ->
-                    VariantRender(RenderOutcome.Failure(result.message, result.detail), false)
+                    VariantRenderResult.Rendered(VariantRender(RenderOutcome.Failure(result.message, result.detail), false))
                 is RenderModelResult.Resolved ->
-                    VariantRender(renderResolved(entry, result.model), result.model.variantAssumed)
+                    VariantRenderResult.Rendered(
+                        VariantRender(renderResolved(entry, result.model), result.model.variantAssumed),
+                    )
             }
         } catch (e: ProcessCanceledException) {
             throw e
         } catch (e: Exception) {
             thisLogger().warn("Render failed for ${entry.indexed.composableFqn}", e)
-            VariantRender(RenderOutcome.Failure("Render failed", e.stackTraceToString()), false)
+            VariantRenderResult.Rendered(
+                VariantRender(RenderOutcome.Failure("Render failed", e.stackTraceToString()), false),
+            )
         } catch (e: LinkageError) {
             thisLogger().warn("Render API mismatch for ${entry.indexed.composableFqn}", e)
-            VariantRender(RenderOutcome.Failure("Render API is incompatible with this IDE build", e.stackTraceToString()), false)
+            VariantRenderResult.Rendered(
+                VariantRender(
+                    RenderOutcome.Failure("Render API is incompatible with this IDE build", e.stackTraceToString()),
+                    false,
+                ),
+            )
         }
     }
 

@@ -45,6 +45,13 @@ import com.android.tools.rendering.api.RenderModelModule
  * merging every axis the user did NOT edit from the base configuration first ([mergeConfiguration] /
  * [OverrideMerge] — spec V4's `cleanAndGet` trap). A `null` or default ([ViewOverride.isDefault]) override
  * leaves this class's behaviour byte-for-byte unchanged, exactly like before PG6-9.
+ *
+ * D6a (PG22-14): [resolve]'s [pinCalibrationDevice] pins the render's own [Configuration] to
+ * [CALIBRATION_DEVICE_SPEC] — the device the committed goldens were drawn on, derived (not guessed) from their own
+ * pixel sizes. Only the calibration's own caller ([LiveRenderer.renderVariant]) ever asks for it; every other
+ * caller's [Configuration] is picked exactly as before this task. A pin that cannot be applied stops the render
+ * ([RenderModelResult.DeviceSpecUnresolved]) rather than proceeding on whatever device the module's own
+ * [ConfigurationManager] would otherwise have handed back — the failure mode a gate run actually hit.
  */
 class RenderModelResolver {
 
@@ -85,6 +92,14 @@ class RenderModelResolver {
         /** [resolve] was asked for one named `@Preview` instance and no such instance could be resolved and
          *  applied. Only ever produced for a non-null `requiredVariant`; see [resolve]'s own doc. */
         object VariantUnresolved : RenderModelResult
+
+        /** D6a: [resolve] was asked to pin the render's [Configuration] to [CALIBRATION_DEVICE_SPEC]
+         *  (`pinCalibrationDevice = true`) and applying it failed. Only ever produced when that flag is true —
+         *  every render before PG22-14, and every render that does not ask for the pin, never reaches this
+         *  branch, exactly as [VariantUnresolved] is reached only for a non-null `requiredVariant`. The caller
+         *  must stop, not fall back to whatever device the module's own [Configuration] already carried: a render
+         *  on the wrong device compared against the `phone` golden is not a percentage, it is nothing. */
+        object DeviceSpecUnresolved : RenderModelResult
     }
 
     /** [decideVariantResolution]'s own result: either render — [Proceed.variantAssumed] says whether the element is
@@ -94,7 +109,39 @@ class RenderModelResolver {
         object Unresolved : VariantResolution
     }
 
+    /** [decideDevicePin]'s own result (D6a): [NotRequested] for every render that did not ask for the calibration
+     *  pin — every caller before PG22-14, and every ordinary render since — [Applied] once
+     *  [CALIBRATION_DEVICE_SPEC] has been written onto the render's [Configuration], [Failed] when it could not
+     *  be. Only [Failed] turns into [RenderModelResult.DeviceSpecUnresolved]. */
+    internal sealed interface DevicePinResolution {
+        object NotRequested : DevicePinResolution
+        object Applied : DevicePinResolution
+        object Failed : DevicePinResolution
+    }
+
     companion object {
+        /**
+         * D6a: the device the comparison render must use, so its [Configuration] matches the device the Android
+         * screenshot-test engine rendered the committed goldens on — derived from those goldens, not guessed, and
+         * re-derivable without re-measuring anything (see the design doc's D6a section for the gate evidence this
+         * answers: a live render at `2152x2076` measured against a `1080x2400` golden):
+         *
+         * - `small`'s `@Preview` declares `widthDp = 320`; its full-screen golden is 840px wide, so density =
+         *   840 / 320 = 2.625, i.e. 160 * 2.625 = **420dpi**.
+         * - Dividing the `phone` golden's own pixel size (1080 x 2400) by that same density gives its dp size:
+         *   1080 / 2.625 = **411dp**, 2400 / 2.625 = **914dp** — Android Studio's own *Medium Phone*, the modern
+         *   Compose-preview default (and 420 is literally `Preview.DeviceSpec.DEFAULT_DPI` on this IDE build,
+         *   confirmed via `javap` against `android.jar` — not a coincidence, the constant this derivation lands on
+         *   is the platform's own default density).
+         *
+         * The string shape (`spec:width=<n>dp,height=<n>dp,dpi=<n>`) is confirmed the same way: `javap -p
+         * -constants` against `com.android.tools.preview.config.Preview$DeviceSpec` in `android.jar` shows
+         * `PREFIX = "spec:"`, `SEPARATOR = ','`, `OPERATOR = '='`, `PARAMETER_WIDTH = "width"`,
+         * `PARAMETER_HEIGHT = "height"`, `PARAMETER_DPI = "dpi"`; `DimUnit` (same package) has `dp`/`px` as the
+         * only dimension suffixes a width/height value takes, and `dpi` takes none — exactly the format used here.
+         */
+        internal const val CALIBRATION_DEVICE_SPEC = "spec:width=411dp,height=914dp,dpi=420"
+
         /**
          * D3a: the pure form of the branch both [resolve] and [resolveUnderReadAction] decide with, extracted so
          * the decision itself is testable without Android Studio (see `RenderModelResolverTest`) — obtaining
@@ -128,6 +175,19 @@ class RenderModelResolver {
             elementFound || requiredVariant == null -> VariantResolution.Proceed(variantAssumed = false)
             finderReturnedNothing -> VariantResolution.Proceed(variantAssumed = true)
             else -> VariantResolution.Unresolved
+        }
+
+        /**
+         * D6a: the pure form of the branch [resolveUnderReadAction] decides the calibration device pin with —
+         * mirrors [decideVariantResolution]'s split of "what AS said" from "what it means". [applied] is only
+         * meaningful when [pinRequested] is true; [resolveUnderReadAction] never even attempts
+         * [applyCalibrationDevice] otherwise (its call site short-circuits on `pinRequested &&`), and this
+         * function does not need [applied] to answer [DevicePinResolution.NotRequested] either way.
+         */
+        internal fun decideDevicePin(pinRequested: Boolean, applied: Boolean): DevicePinResolution = when {
+            !pinRequested -> DevicePinResolution.NotRequested
+            applied -> DevicePinResolution.Applied
+            else -> DevicePinResolution.Failed
         }
     }
 
@@ -165,6 +225,16 @@ class RenderModelResolver {
      *    variant-specific golden anyway.
      * Conflating the two would silently render the wrong thing whenever a multipreview's variants genuinely
      * disagree with what a golden's file name expects — exactly what D3 was written to prevent.
+     *
+     * D6a (PG22-14): [pinCalibrationDevice], when true, additionally pins [Resolved.configuration]'s device to
+     * [CALIBRATION_DEVICE_SPEC] once the variant above has resolved — the device the committed goldens were
+     * rendered on, not whatever [ConfigurationManager] hands back for the module (a gate run found it handing back
+     * a large landscape screen, which is why the two images it did manage to render were different sizes and
+     * nothing got measured). `false` (every caller before this task, and [LiveRenderer.render]'s own ordinary
+     * path) leaves [Resolved.configuration] exactly as before this task. When the pin cannot be applied, this
+     * returns [RenderModelResult.DeviceSpecUnresolved] rather than proceeding on the module's own device — the
+     * same stop-not-guess posture [requiredVariant] already holds for the composable instance, now held for the
+     * device too.
      */
     fun resolve(
         entry: PreviewEntry,
@@ -172,6 +242,7 @@ class RenderModelResolver {
         override: ViewOverride? = null,
         moduleWrapper: RenderModuleWrapper? = null,
         requiredVariant: String? = null,
+        pinCalibrationDevice: Boolean = false,
     ): RenderModelResult =
         try {
             // The config-aware element is fetched FIRST, lock-free (see [findConfigAwareElement]): its finder is a
@@ -194,6 +265,7 @@ class RenderModelResolver {
                         moduleWrapper,
                         requiredVariant,
                         lookup.finderReturnedNothing,
+                        pinCalibrationDevice,
                     )
                 }
             }
@@ -215,6 +287,7 @@ class RenderModelResolver {
         moduleWrapper: RenderModuleWrapper? = null,
         requiredVariant: String? = null,
         finderReturnedNothing: Boolean = false,
+        pinCalibrationDevice: Boolean = false,
     ): RenderModelResult {
         // U1: module → AndroidFacet → AndroidBuildTargetReference → AndroidFacetRenderModelModule.
         // PG11-1: the facet is resolved through [AndroidModuleResolver], not `AndroidFacet.getInstance(module)`
@@ -262,6 +335,11 @@ class RenderModelResolver {
                 "variantAssumed=$elementVariantAssumed)",
         )
 
+        val devicePinApplied = pinCalibrationDevice && applyCalibrationDevice(entry, configuration)
+        if (decideDevicePin(pinCalibrationDevice, devicePinApplied) is DevicePinResolution.Failed) {
+            return RenderModelResult.DeviceSpecUnresolved
+        }
+
         // PG6-10: a non-default comparison-view override — from EphemeralPickerBridge's in-memory picker for a
         // copy; always null/default for Original — is applied on top of whichever element the config-aware/
         // default resolution above produced. A null or default override returns [element] itself, unchanged, so
@@ -301,6 +379,18 @@ class RenderModelResolver {
         thisLogger().info("The config-aware apply API is incompatible with this IDE build; using the default", e)
         false
     }
+
+    /**
+     * D6a: writes [CALIBRATION_DEVICE_SPEC] onto [configuration] through the exact same `applyTo` seam
+     * [applyConfigAware] already uses for a resolved `@Preview`'s own configuration — [buildCalibrationDeviceElement]
+     * is a throwaway vehicle for that one string, never the element that ends up rendered (the composable that gets
+     * drawn is decided entirely by the [element] resolved above; this call only ever mutates [configuration]).
+     * `false` (guarded inside [applyConfigAware], never thrown out of it) means the spec could not be applied on
+     * this IDE build; [resolveUnderReadAction] turns that into [RenderModelResult.DeviceSpecUnresolved] rather than
+     * proceeding on whatever device [configuration] already carried.
+     */
+    private fun applyCalibrationDevice(entry: PreviewEntry, configuration: Configuration): Boolean =
+        applyConfigAware(buildCalibrationDeviceElement(entry), configuration)
 
     /**
      * PG6-10: applies [override]'s values onto [base] by deriving a new preview element via AS's own
@@ -540,7 +630,23 @@ class RenderModelResolver {
      * because this path is for plain (non-`@PreviewParameter`) composables. The fallback target for
      * [findConfigAwareElement] (PG4-2), and — before PG4-2 — the only path this class had.
      */
-    private fun buildDefaultPreviewElement(entry: PreviewEntry): SingleComposePreviewElementInstance<*> {
+    private fun buildDefaultPreviewElement(entry: PreviewEntry): SingleComposePreviewElementInstance<*> =
+        buildPreviewElement(entry, deviceSpec = null)
+
+    /**
+     * D6a: the calibration's own sibling of [buildDefaultPreviewElement] — everything the same except
+     * [CALIBRATION_DEVICE_SPEC] in place of the "no `@Preview` arguments given" sentinel. Never rendered itself;
+     * [applyCalibrationDevice] applies it to [Configuration] and discards it.
+     */
+    private fun buildCalibrationDeviceElement(entry: PreviewEntry): SingleComposePreviewElementInstance<*> =
+        buildPreviewElement(entry, deviceSpec = CALIBRATION_DEVICE_SPEC)
+
+    /**
+     * The construction [buildDefaultPreviewElement] and [buildCalibrationDeviceElement] share: every
+     * [PreviewConfiguration] axis at its `cleanAndGet(null…)` sentinel except [deviceSpec], and display settings
+     * carrying only [entry]'s naming metadata.
+     */
+    private fun buildPreviewElement(entry: PreviewEntry, deviceSpec: String?): SingleComposePreviewElementInstance<*> {
         val previewConfiguration = PreviewConfiguration.cleanAndGet(
             /* apiLevel = */ null,
             /* width = */ null,
@@ -548,7 +654,7 @@ class RenderModelResolver {
             /* locale = */ null,
             /* fontScale = */ null,
             /* uiMode = */ null,
-            /* deviceSpec = */ null,
+            /* deviceSpec = */ deviceSpec,
             /* wallpaper = */ null,
             /* colorBlindImageTransformation = */ null,
         )

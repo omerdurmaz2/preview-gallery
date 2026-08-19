@@ -54,4 +54,30 @@ class RenderModelResolverTest {
 
         assertEquals(RenderModelResolver.VariantResolution.Unresolved, decision)
     }
+
+    @Test
+    fun `an ordinary render that never asked for the calibration pin is not requested regardless of apply result`() {
+        assertEquals(
+            RenderModelResolver.DevicePinResolution.NotRequested,
+            RenderModelResolver.decideDevicePin(pinRequested = false, applied = false),
+        )
+        assertEquals(
+            RenderModelResolver.DevicePinResolution.NotRequested,
+            RenderModelResolver.decideDevicePin(pinRequested = false, applied = true),
+        )
+    }
+
+    @Test
+    fun `a requested pin that was applied is Applied`() {
+        val decision = RenderModelResolver.decideDevicePin(pinRequested = true, applied = true)
+
+        assertEquals(RenderModelResolver.DevicePinResolution.Applied, decision)
+    }
+
+    @Test
+    fun `a requested pin that could not be applied is Failed`() {
+        val decision = RenderModelResolver.decideDevicePin(pinRequested = true, applied = false)
+
+        assertEquals(RenderModelResolver.DevicePinResolution.Failed, decision)
+    }
 }

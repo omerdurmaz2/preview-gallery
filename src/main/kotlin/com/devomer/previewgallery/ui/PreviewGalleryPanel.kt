@@ -1088,15 +1088,22 @@ class PreviewGalleryPanel(
      * not that a `validate` run happened after it. The number is kept either way, because dropping it loses data
      * the gate wants; it is only never presented as current when it is not.
      *
-     * D3a: [LiveRenderer.renderVariant] now answers with a [LiveRenderer.VariantRender] rather than a bare
-     * [RenderOutcome] — `variantAssumed` is true when the resolver rendered the plugin's default configuration
-     * because `AnnotationFilePreviewElementFinder` named no `phone` instance at all for this file (a project
-     * synced without `-Pandroid.experimental.enableScreenshotTest=true`), not because the finder disagreed about
-     * the name. `compare.variantAssumed` is prefixed onto the published text whenever that happened, so the
-     * numbers below it never read as a *confirmed* `phone` comparison. [formatComparison] carries the same flag
-     * into the size-mismatch branch specifically, because that branch is the one place the decision table's
-     * ordinary reading (a size mismatch is Red) would otherwise misdescribe an assumed render: `small` is 320dp
-     * and `phone` is not, so a mismatch there means the configurations disagree, not that the engines do.
+     * D3a: [LiveRenderer.renderVariant] now answers with a [LiveRenderer.VariantRenderResult] rather than a bare
+     * [RenderOutcome] — `variantAssumed` (on the [LiveRenderer.VariantRenderResult.Rendered] branch's own
+     * [LiveRenderer.VariantRender]) is true when the resolver rendered the plugin's default configuration because
+     * `AnnotationFilePreviewElementFinder` named no `phone` instance at all for this file (a project synced without
+     * `-Pandroid.experimental.enableScreenshotTest=true`), not because the finder disagreed about the name.
+     * `compare.variantAssumed` is prefixed onto the published text whenever that happened, so the numbers below it
+     * never read as a *confirmed* `phone` comparison. [formatComparison] carries the same flag into the
+     * size-mismatch branch specifically, because that branch is the one place the decision table's ordinary reading
+     * (a size mismatch is Red) would otherwise misdescribe an assumed render: `small` is 320dp and `phone` is not,
+     * so a mismatch there means the configurations disagree, not that the engines do.
+     *
+     * D6a: [LiveRenderer.VariantRenderResult.DeviceSpecUnresolved] is the other named stop — the calibration's
+     * device could not be pinned onto the render's `Configuration` at all, so nothing was rendered on any device.
+     * `compare.deviceUnresolved` names that failure on its own, distinct from `compare.variantUnresolved`: a wrong
+     * composable instance and a wrong device are different reasons to stop, and conflating their messages would
+     * hide which one a gate run actually hit.
      */
     private fun compareOffEdt(
         snapshot: PreviewEntry,
@@ -1124,8 +1131,15 @@ class PreviewGalleryPanel(
         }
         val wrapper = ScreenshotTestClassLoader.wrapperFor(classesDirectory)
             ?: return ComparisonPublish(emptyList(), PreviewGalleryBundle.message("compare.renderFailed"))
-        val variantRender = LiveRenderer(project).renderVariant(snapshot, PHONE_VARIANT, moduleWrapper = wrapper)
-            ?: return ComparisonPublish(emptyList(), PreviewGalleryBundle.message("compare.variantUnresolved"))
+        val variantRender = when (
+            val result = LiveRenderer(project).renderVariant(snapshot, PHONE_VARIANT, moduleWrapper = wrapper)
+        ) {
+            is LiveRenderer.VariantRenderResult.Rendered -> result.render
+            is LiveRenderer.VariantRenderResult.VariantUnresolved ->
+                return ComparisonPublish(emptyList(), PreviewGalleryBundle.message("compare.variantUnresolved"))
+            is LiveRenderer.VariantRenderResult.DeviceSpecUnresolved ->
+                return ComparisonPublish(emptyList(), PreviewGalleryBundle.message("compare.deviceUnresolved"))
+        }
         val outcome = variantRender.outcome
         if (outcome !is RenderOutcome.Success) {
             return ComparisonPublish(emptyList(), PreviewGalleryBundle.message("compare.renderFailed"))
