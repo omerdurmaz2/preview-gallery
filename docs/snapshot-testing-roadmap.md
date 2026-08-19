@@ -372,7 +372,7 @@ for. A test phase that is not revert-checked is a test phase that has not run.
   `readForRun` reads results for functions that no longer exist — shown as stale, because the deletion moves the
   module's source clock past the run.
 
-#### H3 · Make a failing verify visible
+#### H3 · Make a failing verify visible — **shipped (PG23)**
 
 **Goal:** stop a failure that the plugin already measured from being invisible unless you happen to open the right row.
 
@@ -394,6 +394,18 @@ Two fixes, both small:
 - **A finished run says what it found.** When a verify measures failures, a notification names them —
   *"2 of 100 snapshots differ in features/favorites/ui: DeleteSelectedProductsDialog_Default_Snapshot (phone, small)"*.
   A passing run stays silent. Today the result reaches only whoever navigates to the row.
+
+**Verified at the keyboard (2026-08-19).** The same scenario that produced the report — edit the component, press
+Verify, watch it fail — now answers twice: a balloon reading *"2 of 100 snapshots differ in
+hepsi-android.features.favorites.ui.main — DeleteSelectedProductsDialog_Default_Snapshot (small, phone)"*, and both
+`DeleteSelectedProductsDialog_Preview` and its snapshot child carrying `differs` in the tree. The passing orphan
+beside them (`DeleteSelectedProductsDialog_Direct_Snapshot`) stays unbadged, which is the check that the badge means
+something.
+
+Worth recording for whoever reads this next: nothing was ever broken. Every run in that investigation had recorded
+its measurement correctly, and the images were on disk the whole time. What failed was discoverability — the verdict
+lived on one row in a 900-preview tree, and the user had no way to be standing on it. A feature that measures the
+right thing and cannot be found measures nothing.
 
 **Deliberately not built yet:** a "show only failing snapshots" filter (the mirror of F2's uncovered toggle), and
 making the notification click through to the row. Both are follow-ups if the two above turn out not to be enough.
