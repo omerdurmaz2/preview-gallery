@@ -606,6 +606,7 @@ class PreviewRenderPanel(private val project: Project) : JBPanel<PreviewRenderPa
         // at 100% until the resize listener settles the fit debt (referenceFitPending stays standing — this
         // assigns the strip's scale directly rather than going through setReferenceScale, which would clear it).
         strip.setScale(referenceScale)
+        ViewportGestures.install(strip, StripZoom())
         renderScroll.setViewportView(strip)
         centerPanel.add(renderScroll, BorderLayout.CENTER)
         if (entry != null) {
@@ -633,6 +634,33 @@ class PreviewRenderPanel(private val project: Project) : JBPanel<PreviewRenderPa
         val extent = renderScroll.viewport.extentSize
         if (extent.width <= 0 || extent.height <= 0) return
         setReferenceScale(strip.fitScale(extent.width, extent.height))
+    }
+
+    /**
+     * [ViewportGestures]' view of the reference strip (PG24): the same wheel, Ctrl+wheel and trackpad-pinch zoom
+     * a live render gets, driving the strip's one shared scale (spec D7) rather than a [ZoomableRenderView]'s own
+     * zoom factor. Before this the strip had no gesture handling at all — the toolbar's buttons were the only way
+     * to zoom a snapshot, which on a laptop meant there effectively was none.
+     *
+     * Installed per strip in [showReferenceStrip] because a strip is built fresh for every snapshot selection;
+     * the binding reads [referenceStrip]/[referenceScale] rather than capturing them, so a strip that has since
+     * been replaced can no longer move the scale of the one on screen.
+     */
+    private inner class StripZoom : ViewportGestures.Zoom {
+
+        override fun current(): Double = referenceScale
+
+        override fun applyAt(next: Double, cursorInViewport: Point) {
+            val strip = referenceStrip ?: return
+            val viewport = renderScroll.viewport
+            val old = referenceScale
+            val oldScroll = viewport.viewPosition
+            setReferenceScale(next)
+            val target = ZoomMath.anchorScroll(cursorInViewport, old, referenceScale, oldScroll)
+            val maxX = (strip.preferredSize.width - viewport.extentSize.width).coerceAtLeast(0)
+            val maxY = (strip.preferredSize.height - viewport.extentSize.height).coerceAtLeast(0)
+            viewport.viewPosition = Point(target.x.coerceIn(0, maxX), target.y.coerceIn(0, maxY))
+        }
     }
 
     /** Applies one shared scale to the whole strip, bounded like a render's zoom factor is, and settles the fit

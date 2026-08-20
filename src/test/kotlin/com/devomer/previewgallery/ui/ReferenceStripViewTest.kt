@@ -22,22 +22,28 @@ class ReferenceStripViewTest {
     )
 
     @Test
-    fun `strip width is the sum of the images plus the gaps`() {
+    fun `strip width is the widest image, not the sum of them`() {
         val size = strip(100 to 200, 50 to 200).preferredStripSize(scale = 1.0)
-        assertEquals(100 + 50 + ReferenceStripView.scaledGap(), size.width)
+        assertEquals(100, size.width)
     }
 
     @Test
-    fun `strip height is the tallest image plus the label row`() {
+    fun `strip height is every image plus its own label row plus the gaps between them`() {
         val size = strip(100 to 200, 50 to 300).preferredStripSize(scale = 1.0)
-        assertEquals(300 + ReferenceStripView.scaledLabelHeight(), size.height)
+        assertEquals(
+            200 + 300 + ReferenceStripView.scaledLabelHeight() * 2 + ReferenceStripView.scaledGap(),
+            size.height,
+        )
     }
 
     @Test
-    fun `scale multiplies the images but not the label row`() {
+    fun `scale multiplies the images but not the label rows or the gaps`() {
         val size = strip(100 to 200, 50 to 200).preferredStripSize(scale = 2.0)
-        assertEquals((100 + 50) * 2 + ReferenceStripView.scaledGap(), size.width)
-        assertEquals(200 * 2 + ReferenceStripView.scaledLabelHeight(), size.height)
+        assertEquals(100 * 2, size.width)
+        assertEquals(
+            200 * 2 * 2 + ReferenceStripView.scaledLabelHeight() * 2 + ReferenceStripView.scaledGap(),
+            size.height,
+        )
     }
 
     @Test
@@ -46,6 +52,17 @@ class ReferenceStripViewTest {
         assertTrue(wide.fitScale(viewportWidth = 500, viewportHeight = 5000) < 1.0)
         val tall = strip(100 to 1000)
         assertTrue(tall.fitScale(viewportWidth = 5000, viewportHeight = 500) < 1.0)
+    }
+
+    /** The whole reason for stacking: three phone-width images no longer make the width bind. Side by side the
+     *  same three would have had to shrink to a third of this scale to fit the same viewport. */
+    @Test
+    fun `three same-width images are not squeezed by the width the way a row would be`() {
+        val row = strip(1000 to 400, 1000 to 400, 1000 to 400)
+
+        val fit = row.fitScale(viewportWidth = 1000, viewportHeight = 10_000)
+
+        assertEquals(1.0, fit, 0.0001)
     }
 
     /**
@@ -75,6 +92,20 @@ class ReferenceStripViewTest {
         val fit = strip.fitScale(viewportWidth = 5000, viewportHeight = viewportHeight)
 
         assertEquals((viewportHeight - ReferenceStripView.scaledLabelHeight()) / 1000.0, fit, 0.0001)
+        assertTrue(strip.preferredStripSize(fit).height <= viewportHeight)
+    }
+
+    /** Every stacked image reserves its own label row and every seam its own gap, so the chrome subtracted from
+     *  the viewport grows with the strip. Reserving one row for the whole strip would leave scrollbars behind. */
+    @Test
+    fun `each stacked image reserves its own label row out of the viewport`() {
+        val strip = strip(100 to 1000, 100 to 1000)
+        val viewportHeight = 900
+        val chrome = ReferenceStripView.scaledLabelHeight() * 2 + ReferenceStripView.scaledGap()
+
+        val fit = strip.fitScale(viewportWidth = 5000, viewportHeight = viewportHeight)
+
+        assertEquals((viewportHeight - chrome) / 2000.0, fit, 0.0001)
         assertTrue(strip.preferredStripSize(fit).height <= viewportHeight)
     }
 

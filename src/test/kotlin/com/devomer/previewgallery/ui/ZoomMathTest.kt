@@ -70,4 +70,45 @@ class ZoomMathTest {
         // zooming out never yields a negative offset.
         assertEquals(Point(0, 0), ZoomMath.anchorScroll(Point(10, 10), 1.0, 0.5, Point(0, 0)))
     }
+
+    @Test fun `scaleBy multiplies and clamps to the hard bounds`() {
+        assertEquals(2.6, ZoomMath.scaleBy(2.0, 1.3), 1e-9)
+        assertEquals(ZoomMath.MAX, ZoomMath.scaleBy(3.0, 10.0), 1e-9)
+        assertEquals(ZoomMath.MIN, ZoomMath.scaleBy(0.1, 0.001), 1e-9)
+    }
+
+    /** The gesture scale arrives from a native callback, so a degenerate value must leave the zoom alone rather
+     *  than collapse it to the floor or produce a NaN the whole view then paints with. */
+    @Test fun `scaleBy leaves the zoom alone for a degenerate factor`() {
+        assertEquals(2.0, ZoomMath.scaleBy(2.0, 0.0), 1e-9)
+        assertEquals(2.0, ZoomMath.scaleBy(2.0, -1.0), 1e-9)
+        assertEquals(2.0, ZoomMath.scaleBy(2.0, Double.NaN), 1e-9)
+    }
+
+    @Test fun `wheel rotation away from the user zooms in and toward it zooms out`() {
+        assertTrue(ZoomMath.wheelZoomFactor(-1.0) > 1.0)
+        assertTrue(ZoomMath.wheelZoomFactor(1.0) < 1.0)
+        assertEquals(1.0, ZoomMath.wheelZoomFactor(0.0), 1e-9)
+    }
+
+    /** Two half-notch events must land where one whole-notch event does, or a trackpad's event stream would zoom
+     *  further than the same physical gesture on a wheel. */
+    @Test fun `wheel zoom composes across fractional events`() {
+        val once = ZoomMath.wheelZoomFactor(-1.0)
+        val twice = ZoomMath.wheelZoomFactor(-0.5) * ZoomMath.wheelZoomFactor(-0.5)
+
+        assertEquals(once, twice, 1e-9)
+    }
+
+    @Test fun `wheel pan is proportional to the precise rotation and keeps its sign`() {
+        assertEquals(2.0 * ZoomMath.wheelPanPixels(1.0), ZoomMath.wheelPanPixels(2.0), 1e-9)
+        assertTrue(ZoomMath.wheelPanPixels(-1.0) < 0.0)
+        assertEquals(0.0, ZoomMath.wheelPanPixels(0.0), 1e-9)
+    }
+
+    /** A fractional notch must not truncate to zero pixels: this is the value the caller accumulates, and
+     *  rounding it here is what made a slow trackpad drag move nothing at all. */
+    @Test fun `a fraction of a notch is a non-zero pan distance`() {
+        assertTrue(ZoomMath.wheelPanPixels(0.05) > 0.0)
+    }
 }

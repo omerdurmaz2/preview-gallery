@@ -2,6 +2,7 @@ package com.devomer.previewgallery.ui
 
 import java.awt.Dimension
 import java.awt.Point
+import kotlin.math.pow
 import kotlin.math.roundToInt
 
 /**
@@ -37,6 +38,46 @@ object ZoomMath {
     private const val DEFAULT_DPI: Int = 160
 
     private const val EPS = 1e-6
+
+    /**
+     * How far one notch of wheel rotation zooms, as a multiplier. 15% a notch is close enough to the platform
+     * image viewer's own feel to be unsurprising, and small enough that the stream of fractional events a macOS
+     * trackpad emits for one Ctrl+two-finger gesture reads as a smooth zoom rather than a jump.
+     */
+    private const val WHEEL_ZOOM_PER_NOTCH = 1.15
+
+    /**
+     * How far one notch of wheel rotation pans, in pixels. The old path used `scrollAmount * wheelRotation` —
+     * three pixels a notch on a typical peer — which made a full trackpad swipe crawl. This is a deliberate
+     * constant rather than a peer-supplied one so the distance does not change with the input device.
+     */
+    private const val PAN_PIXELS_PER_NOTCH = 48.0
+
+    /**
+     * [current] multiplied by [factor], clamped to [MIN]/[MAX] — continuous zoom, for the inputs that are
+     * themselves continuous (wheel, trackpad pinch). [LADDER] is only where the toolbar's step buttons stop:
+     * stepping it per wheel event ran a trackpad from 25% to 400% in one flick.
+     *
+     * A non-positive or non-finite [factor] returns [current] unchanged rather than producing a degenerate zoom:
+     * the gesture scale arrives from a native callback and is not this code's to trust.
+     */
+    fun scaleBy(current: Double, factor: Double): Double =
+        if (!factor.isFinite() || factor <= 0.0) current else (current * factor).coerceIn(MIN, MAX)
+
+    /**
+     * The zoom multiplier [preciseRotation] notches of wheel travel mean. Negative rotation — wheel away, two
+     * fingers up — zooms in, matching every other zoomable surface in the IDE.
+     *
+     * Takes `preciseWheelRotation`, never `wheelRotation`: the integer one is 0 for the small high-precision
+     * events a macOS trackpad emits, so a gentle gesture would zoom by exactly nothing.
+     */
+    fun wheelZoomFactor(preciseRotation: Double): Double =
+        if (!preciseRotation.isFinite()) 1.0 else WHEEL_ZOOM_PER_NOTCH.pow(-preciseRotation)
+
+    /** How many pixels [preciseRotation] notches of wheel travel should pan. Fractional on purpose — the caller
+     *  accumulates the remainder, which is what makes a slow trackpad drag move at all. */
+    fun wheelPanPixels(preciseRotation: Double): Double =
+        if (!preciseRotation.isFinite()) 0.0 else preciseRotation * PAN_PIXELS_PER_NOTCH
 
     /** The smallest ladder level strictly greater than [current]; the maximum if there is none. */
     fun stepIn(current: Double): Double = LADDER.firstOrNull { it > current + EPS } ?: LADDER.last()
