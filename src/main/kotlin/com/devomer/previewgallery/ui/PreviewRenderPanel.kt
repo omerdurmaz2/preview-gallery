@@ -330,7 +330,10 @@ class PreviewRenderPanel(private val project: Project) : JBPanel<PreviewRenderPa
         when (view.state) {
             RenderState.IDLE -> center(idle())
             RenderState.RENDERING -> center(JBLabel(PreviewGalleryBundle.message("render.rendering")))
-            RenderState.LIVE -> showImage(view.outcome as? RenderOutcome.Success)
+            RenderState.LIVE -> when (val outcome = view.outcome) {
+                is RenderOutcome.MultiSuccess -> showParameterSet(outcome, entry)
+                else -> showImage(outcome as? RenderOutcome.Success)
+            }
             RenderState.NEEDS_BUILD -> center(JBLabel(PreviewGalleryBundle.message("render.building")))
             RenderState.FAILED -> center(failed(view.outcome as? RenderOutcome.Failure, entry))
             RenderState.UNSUPPORTED -> center(unsupported(view.outcome as? RenderOutcome.Unsupported, entry))
@@ -574,6 +577,30 @@ class PreviewRenderPanel(private val project: Project) : JBPanel<PreviewRenderPa
         // then fit — otherwise the first render (before any later revalidate) would show at 100% instead of Fit.
         centerPanel.validate()
         renderView.fitToViewport()
+    }
+
+    /**
+     * PG24: a `@PreviewParameter` composable's whole set, stacked in one [ReferenceStripView] with each value's
+     * own label under it.
+     *
+     * The strip, not a row of comparison tabs, because the set is one preview seen at several inputs: reading it
+     * means scanning down the values, which is exactly what the strip is for, and it costs no new widget, no new
+     * zoom model and no new export path — it inherits the snapshot strip's shared scale, its Fit, and PG24's
+     * wheel/trackpad gestures. What it gives up is the hover outline and click-to-source, which need a per-image
+     * view tree the set does not carry ([RenderOutcome.MultiSuccess]'s own doc says why).
+     *
+     * An empty set never reaches here — [LiveRenderer] reports a failure instead of an empty success — but the
+     * branch is written for it anyway rather than trusting a caller two layers away.
+     */
+    private fun showParameterSet(outcome: RenderOutcome.MultiSuccess, entry: PreviewEntry?) {
+        if (outcome.renders.isEmpty()) {
+            center(JBLabel(PreviewGalleryBundle.message("render.failed")))
+            return
+        }
+        val strip = ReferenceStripView(
+            outcome.renders.map { ReferenceStripView.LabelledImage(it.label, it.image) },
+        )
+        showReferenceStrip(strip, entry)
     }
 
     // ── PG13-12: the reference-image strip a snapshot row shows (spec D7/D8) ──────────────────────────────

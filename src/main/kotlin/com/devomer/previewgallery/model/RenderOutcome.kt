@@ -9,6 +9,10 @@ import java.awt.image.BufferedImage
  *   plus the plugin-owned [PreviewViewNode] tree for the render (PG4-3) — empty when AS's view-info parser is
  *   unavailable or the conversion failed; the image is never lost to a tree-conversion failure — plus the
  *   density layoutlib rendered at (PG12-2), which the display layer needs to show the preview at dp size.
+ * - [MultiSuccess] is one composable rendered once per `@PreviewParameter` value (PG24). It carries no view tree:
+ *   the panel shows the set as a stacked strip rather than as one interactive render, so there is nothing for a
+ *   hover outline to hit-test against. A composable with no `@PreviewParameter` never produces it — the single
+ *   [Success] path is byte-for-byte what it was.
  * - [Failure] is a render that was attempted but did not produce an image (build missing, layoutlib error, timeout).
  * - [Unsupported] is a preview the renderer will not attempt (no Android facet, renderer API absent, etc.).
  */
@@ -24,6 +28,19 @@ sealed interface RenderOutcome {
         val viewTree: List<PreviewViewNode> = emptyList(),
         val dpi: Int = DEFAULT_DPI,
     ) : RenderOutcome
+
+    /**
+     * @param renders one entry per resolved `@PreviewParameter` value, in the provider's own order; never empty
+     *   (a resolution that yielded nothing is a [Failure], not an empty success).
+     */
+    data class MultiSuccess(
+        val renders: List<LabelledRender>,
+        val dpi: Int = DEFAULT_DPI,
+    ) : RenderOutcome
+
+    /** One rendered `@PreviewParameter` value: the image, and the label Android Studio gives that instance
+     *  (`MyPreview (0)`, `MyPreview (1)`, …), shown under it in the strip. */
+    data class LabelledRender(val label: String, val image: BufferedImage)
 
     data class Failure(val message: String, val detail: String?) : RenderOutcome
     data class Unsupported(val reason: String) : RenderOutcome

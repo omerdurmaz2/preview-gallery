@@ -18,8 +18,10 @@ import com.android.tools.idea.configurations.ConfigurationManager
 import com.android.tools.idea.rendering.AndroidBuildTargetReference
 import com.android.tools.idea.rendering.AndroidFacetRenderModelModule
 import com.android.tools.idea.rendering.StudioRenderService
+import com.android.tools.preview.ComposePreviewElementInstance
 import com.android.tools.preview.DisplayPositioning
 import com.android.tools.preview.PreviewConfiguration
+import com.android.tools.preview.ParametrizedComposePreviewElementTemplate
 import com.android.tools.preview.PreviewDisplaySettings
 import com.android.tools.preview.SingleComposePreviewElementInstance
 import com.android.tools.preview.XmlSerializable
@@ -88,10 +90,20 @@ class RenderModelResolver {
         val renderModule: RenderModelModule,
         val configuration: Configuration,
         val logger: RenderLogger,
-        val element: XmlSerializable,
+        val instances: List<Instance>,
         val showDecorations: Boolean,
         val variantAssumed: Boolean = false,
     )
+
+    /**
+     * PG24: one preview instance to render, and the label the panel puts under it.
+     *
+     * A plain `@Preview` resolves to exactly one of these and [Resolved.instances] is a singleton — the shape
+     * every render had before this task. A `@PreviewParameter` one resolves to one per value the provider yields,
+     * which is the whole reason this is a list: those instances differ only in the argument they are invoked
+     * with, so they share one [Configuration] and one [RenderModelModule] and differ only in their XML.
+     */
+    class Instance(val label: String, val element: XmlSerializable)
 
     sealed interface RenderModelResult {
         class Resolved(val model: RenderModelResolver.Resolved) : RenderModelResult
@@ -184,6 +196,11 @@ class RenderModelResolver {
          * a real gate run — the whole reason [applyCalibrationConfiguration] bypasses `applyTo` (PG22-15).
          */
         internal const val CALIBRATION_THEME = "@android:style/Theme.Material.Light"
+
+        /** How many `@PreviewParameter` values one composable may render (PG24). Each costs its own
+         *  `RenderTask`, and a provider is ordinary Kotlin that can yield as many as it likes; past this the
+         *  extras are dropped and the drop is logged. */
+        internal const val MAX_PARAMETER_INSTANCES = 16
 
         /**
          * D3a: the pure form of the branch both [resolve] and [resolveUnderReadAction] decide with, extracted so
@@ -295,7 +312,8 @@ class RenderModelResolver {
             // the project-model reads that genuinely need a read action run inside ReadAction.compute below, which
             // applies the already-fetched element's own @Preview configuration.
             val lookup = findConfigAwareElement(entry, project, requiredVariant)
-            val earlyDecision = decideVariantResolution(requiredVariant, lookup.element != null, lookup.finderReturnedNothing)
+            val earlyDecision =
+                decideVariantResolution(requiredVariant, lookup.elements.isNotEmpty(), lookup.finderReturnedNothing)
             if (earlyDecision is VariantResolution.Unresolved) {
                 RenderModelResult.VariantUnresolved
             } else {
@@ -303,7 +321,7 @@ class RenderModelResolver {
                     resolveUnderReadAction(
                         entry,
                         project,
-                        lookup.element,
+                        lookup.elements,
                         override,
                         moduleWrapper,
                         requiredVariant,
@@ -325,7 +343,7 @@ class RenderModelResolver {
     private fun resolveUnderReadAction(
         entry: PreviewEntry,
         project: Project,
-        configAware: SingleComposePreviewElementInstance<*>?,
+        configAware: List<ComposePreviewElementInstance<*>>,
         override: ViewOverride?,
         moduleWrapper: RenderModuleWrapper? = null,
         requiredVariant: String? = null,
@@ -364,17 +382,20 @@ class RenderModelResolver {
         // PG22-8: with a [requiredVariant] the default element is not an acceptable fallback — it is the plugin's
         // own configuration, not the named `@Preview`'s, and measuring it against that variant's golden would fold
         // the configuration difference into the percentage invisibly (spec D3).
-        val applied = configAware != null && applyConfigAware(configAware, configuration)
+        // One configuration for the whole set: a `@PreviewParameter` composable's instances come from a single
+        // `@Preview`, so they share its device/api/size and differ only in the argument they are invoked with.
+        // Applying the first one's configuration therefore applies all of theirs.
+        val applied = configAware.isNotEmpty() && applyConfigAware(configAware.first(), configuration)
         val decision = decideVariantResolution(requiredVariant, applied, finderReturnedNothing)
         if (decision is VariantResolution.Unresolved) {
             return RenderModelResult.VariantUnresolved
         }
         val elementVariantAssumed = (decision as VariantResolution.Proceed).variantAssumed
-        val element: SingleComposePreviewElementInstance<*> =
-            if (applied) configAware else buildDefaultPreviewElement(entry)
+        val elements: List<ComposePreviewElementInstance<*>> =
+            if (applied) configAware else listOf(buildDefaultPreviewElement(entry))
         thisLogger().debug(
-            "Rendering ${entry.indexed.composableFqn} as '${element.displaySettings.name}' " +
-                "(configAware=${configAware != null}, requiredVariant=$requiredVariant, " +
+            "Rendering ${entry.indexed.composableFqn} as ${elements.map { it.displaySettings.name }} " +
+                "(configAware=${configAware.size}, requiredVariant=$requiredVariant, " +
                 "variantAssumed=$elementVariantAssumed)",
         )
 
@@ -387,15 +408,22 @@ class RenderModelResolver {
         // copy; always null/default for Original — is applied on top of whichever element the config-aware/
         // default resolution above produced. A null or default override returns [element] itself, unchanged, so
         // Original's render is byte-for-byte identical to before PG6-9/PG6-10.
-        val finalElement = applyOverride(element, configuration, override)
+        val finalElements = elements.map { applyOverride(it, configuration, override) }
 
         // PG4-2 ext: whether this element's own @Preview asked for system-UI chrome (showSystemUi), so LiveRenderer
         // can render WITH decorations instead of always shrink-to-content. Guarded on its own: a signature change on
         // a newer IDE degrades this one flag to false (today's plain-preview behavior), not the whole resolution.
-        val showDecorations = runCatching { finalElement.displaySettings.showDecoration }.getOrDefault(false)
+        val showDecorations = runCatching { finalElements.first().displaySettings.showDecoration }.getOrDefault(false)
 
         return RenderModelResult.Resolved(
-            Resolved(renderModule, configuration, logger, finalElement, showDecorations, elementVariantAssumed),
+            Resolved(
+                renderModule,
+                configuration,
+                logger,
+                finalElements.map { Instance(labelOf(it), it) },
+                showDecorations,
+                elementVariantAssumed,
+            ),
         )
     }
 
@@ -408,7 +436,7 @@ class RenderModelResolver {
      * throw here falls back to that override's own base element rather than the default-config render.
      */
     private fun applyConfigAware(
-        element: SingleComposePreviewElementInstance<*>,
+        element: ComposePreviewElementInstance<*>,
         configuration: Configuration,
     ): Boolean = try {
         element.applyTo(configuration)
@@ -494,10 +522,10 @@ class RenderModelResolver {
      * configuration instead of failing the whole render (design D11).
      */
     private fun applyOverride(
-        base: SingleComposePreviewElementInstance<*>,
+        base: ComposePreviewElementInstance<*>,
         configuration: Configuration,
         override: ViewOverride?,
-    ): SingleComposePreviewElementInstance<*> {
+    ): ComposePreviewElementInstance<*> {
         if (override == null || override.isDefault) return base
         val derived = deriveOverriddenElement(base, override) ?: return base
         return if (applyConfigAware(derived, configuration)) derived else base
@@ -512,9 +540,9 @@ class RenderModelResolver {
      * display settings in the same `copy(...)` call, so every offered picker property reaches the render.
      */
     private fun deriveOverriddenElement(
-        base: SingleComposePreviewElementInstance<*>,
+        base: ComposePreviewElementInstance<*>,
         override: ViewOverride,
-    ): SingleComposePreviewElementInstance<*>? = try {
+    ): ComposePreviewElementInstance<*>? = try {
         val merged = mergeConfiguration(base.configuration, override)
         val display = base.displaySettings.copy(
             showDecoration = override.values["showSystemUi"]?.toBooleanStrictOrNull()
@@ -656,7 +684,7 @@ class RenderModelResolver {
         project: Project,
         variantName: String? = null,
     ): ConfigAwareLookup {
-        if (!RenderApiProbe.isConfigAwareAvailable()) return ConfigAwareLookup(null, finderReturnedNothing = false)
+        if (!RenderApiProbe.isConfigAwareAvailable()) return ConfigAwareLookup(emptyList(), finderReturnedNothing = false)
         return try {
             val elements = RenderTaskContext.runCancellable {
                 runBlockingCancellable {
@@ -675,7 +703,7 @@ class RenderModelResolver {
                     "${elements.map { it.methodFqn to it.displaySettings.name }}",
             )
             ConfigAwareLookup(
-                matched as? SingleComposePreviewElementInstance<*>,
+                instancesOf(matched, entry),
                 finderReturnedNothing = elements.isEmpty(),
             )
         } catch (e: ProcessCanceledException) {
@@ -686,13 +714,13 @@ class RenderModelResolver {
                     "using the default configuration",
                 e,
             )
-            ConfigAwareLookup(null, finderReturnedNothing = false)
+            ConfigAwareLookup(emptyList(), finderReturnedNothing = false)
         } catch (e: LinkageError) {
             thisLogger().info(
                 "Config-aware preview element API is incompatible with this IDE build; using the default configuration",
                 e,
             )
-            ConfigAwareLookup(null, finderReturnedNothing = false)
+            ConfigAwareLookup(emptyList(), finderReturnedNothing = false)
         }
     }
 
@@ -706,9 +734,69 @@ class RenderModelResolver {
      * undo D3.
      */
     private class ConfigAwareLookup(
-        val element: SingleComposePreviewElementInstance<*>?,
+        val elements: List<ComposePreviewElementInstance<*>>,
         val finderReturnedNothing: Boolean,
     )
+
+    /**
+     * PG24: the preview instances [matched] stands for — one for a plain `@Preview`, one per value for a
+     * `@PreviewParameter` one, and none when the finder matched nothing.
+     *
+     * `AnnotationFilePreviewElementFinder` answers a `@PreviewParameter` composable with a
+     * [ParametrizedComposePreviewElementTemplate], which is deliberately **not** a
+     * [SingleComposePreviewElementInstance] — it is not renderable as it stands, because the argument to invoke
+     * the composable with has not been chosen yet. Its own `resolve()` chooses them: it loads the declared
+     * `PreviewParameterProvider` through a module class loader it builds and closes itself (`javap -c`), and
+     * yields one `ParametrizedComposePreviewElementInstance` per value. Every one of those extends
+     * `ComposePreviewElementInstance`, which implements `XmlSerializable` — so from the render's point of view
+     * they are the same kind of thing a plain `@Preview` produces, and [LiveRenderer] needs no new concept.
+     *
+     * **Bounded at [MAX_PARAMETER_INSTANCES], and the drop is logged rather than silent.** A provider is ordinary
+     * Kotlin and may yield hundreds of values; each one costs a `RenderTask`. A truncated set that looked
+     * complete would be worse than a slow one.
+     *
+     * Guarded on its own rather than inside [findConfigAwareElement]'s catch: `resolve()` runs *project* code —
+     * the provider's own constructor and `values` sequence — so it can throw anything at all, and a provider that
+     * throws must degrade this preview to the default element, not fail the whole lookup. It also loads classes,
+     * which is why it must stay off the read action, exactly like the finder call it sits next to.
+     */
+    private fun instancesOf(
+        matched: com.android.tools.preview.ComposePreviewElement<*>?,
+        entry: PreviewEntry,
+    ): List<ComposePreviewElementInstance<*>> = when (matched) {
+        null -> emptyList()
+        is ComposePreviewElementInstance<*> -> listOf(matched)
+        is ParametrizedComposePreviewElementTemplate<*> -> try {
+            val resolved = matched.resolve().take(MAX_PARAMETER_INSTANCES + 1).toList()
+            if (resolved.size > MAX_PARAMETER_INSTANCES) {
+                thisLogger().info(
+                    "${entry.indexed.composableFqn} has more than $MAX_PARAMETER_INSTANCES @PreviewParameter " +
+                        "values; rendering the first $MAX_PARAMETER_INSTANCES",
+                )
+            }
+            resolved.take(MAX_PARAMETER_INSTANCES)
+        } catch (e: ProcessCanceledException) {
+            throw e // Never swallow cancellation — the platform relies on it propagating.
+        } catch (e: Throwable) {
+            // Throwable, not Exception: resolve() instantiates the project's own PreviewParameterProvider, and a
+            // provider that throws an Error (a missing class it referenced, a failed assertion) must cost this
+            // one preview its parameters, never the IDE.
+            thisLogger().info(
+                "Could not resolve the @PreviewParameter values for ${entry.indexed.composableFqn}; " +
+                    "using the default configuration",
+                e,
+            )
+            emptyList()
+        }
+        else -> emptyList()
+    }
+
+    /** What the panel writes under one rendered instance: Android Studio's own name for it, which already
+     *  carries the parameter index (`MyPreview (0)`). Falls back to the composable's simple name so a label is
+     *  never blank — the strip reserves a row for it either way. */
+    private fun labelOf(element: ComposePreviewElementInstance<*>): String =
+        runCatching { element.displaySettings.name }.getOrNull()?.takeIf { it.isNotBlank() }
+            ?: element.methodFqn.substringAfterLast('.')
 
     /**
      * U5: builds a [SingleComposePreviewElementInstance] with a default configuration. `cleanAndGet(null…)` fills
@@ -766,5 +854,9 @@ class RenderModelResolver {
      * be — [buildDefaultPreviewElement] takes none itself, so the combination carries no extra constraint.
      */
     internal fun resolveCurrentElement(entry: PreviewEntry, project: Project): SingleComposePreviewElementInstance<*> =
-        findConfigAwareElement(entry, project).element ?: buildDefaultPreviewElement(entry)
+        findConfigAwareElement(entry, project)
+            .elements
+            .filterIsInstance<SingleComposePreviewElementInstance<*>>()
+            .firstOrNull()
+            ?: buildDefaultPreviewElement(entry)
 }

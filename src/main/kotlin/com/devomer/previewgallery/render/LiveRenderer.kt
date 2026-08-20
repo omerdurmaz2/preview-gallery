@@ -22,6 +22,7 @@ import com.android.tools.idea.compose.preview.parseViewInfo
 import com.android.tools.idea.rendering.StudioRenderService
 import com.android.tools.rendering.RenderResult
 import com.android.tools.rendering.RenderTask
+import com.android.tools.preview.XmlSerializable
 import com.android.tools.rendering.parsers.RenderXmlFileSnapshot
 
 /**
@@ -205,12 +206,40 @@ class LiveRenderer(
         }
     }
 
+    /**
+     * PG24: one composable can now resolve to more than one instance — a `@PreviewParameter` preview renders once
+     * per value its provider yields ([RenderModelResolver.Resolved.instances]). A single instance takes the exact
+     * pre-PG24 path and produces the same [RenderOutcome.Success]; more than one produces a
+     * [RenderOutcome.MultiSuccess] the panel shows as a stacked strip.
+     *
+     * **One `RenderTask` per instance**, deliberately, rather than re-using one task through `setXmlFile`: a task
+     * carries an inflated view hierarchy and a class loader, and driving the same one through several composables
+     * would make each render depend on what the previous one left behind. The cost is bounded by
+     * [RenderModelResolver.MAX_PARAMETER_INSTANCES], which is why it is affordable.
+     *
+     * A failing instance does not fail the set. Rendering 8 of 10 values and saying so beats showing nothing
+     * because the tenth threw — but a set where *nothing* rendered reports the first instance's own failure,
+     * which is the message that explains why.
+     */
     private fun renderResolved(entry: PreviewEntry, model: RenderModelResolver.Resolved): RenderOutcome {
+        val instances = model.instances
+        val single = instances.singleOrNull()
+        if (single != null) return renderInstance(entry, model, single.element)
+
+        val rendered = instances.map { it.label to renderInstance(entry, model, it.element) }
+        return combineInstanceRenders(rendered, "Nothing to render for ${entry.indexed.composableFqn}")
+    }
+
+    private fun renderInstance(
+        entry: PreviewEntry,
+        model: RenderModelResolver.Resolved,
+        element: XmlSerializable,
+    ): RenderOutcome {
         // U2: the compose element serializes to a <androidx.compose.ui.tooling.ComposeViewAdapter
         //     tools:composableName="<fqn>" …> tag. layoutlib inflates that adapter, which reflectively invokes the
         //     composable. A RenderXmlFileSnapshot parses the string into a non-PSI RenderXmlFile the task can read
         //     (RenderTask.createRenderSession requires an XML file; withParserFactory alone is not the root path).
-        val xml = model.element.toPreviewXml().buildString()
+        val xml = element.toPreviewXml().buildString()
         val xmlFile = RenderXmlFileSnapshot(project, PREVIEW_FILE_NAME, ResourceFolderType.LAYOUT, xml)
 
         val renderService = StudioRenderService.getInstance(project)
@@ -500,6 +529,41 @@ class LiveRenderer(
         }.getOrDefault("No detail available.")
 
     companion object {
+
+        /**
+         * PG24: what a set of per-instance renders adds up to — the pure half of [renderResolved]'s
+         * `@PreviewParameter` branch, extracted so the rule is testable without Android Studio (the same split
+         * [RenderModelResolver.decideVariantResolution] draws for its own decision).
+         *
+         * **A failing instance does not fail the set.** Eight values rendered out of ten, each labelled, is worth
+         * more than nothing at all because the tenth threw; the set that comes back is the set that rendered, in
+         * the provider's own order.
+         *
+         * **A set where nothing rendered reports the first failure it saw**, not a summary of its own: that
+         * failure carries layoutlib's own message and detail, which is what explains why the preview is blank.
+         * [fallbackMessage] covers only the case with no failures to report either — an empty instance list,
+         * which callers should not produce and this function must still answer.
+         *
+         * The dpi is the last successful render's. They are renders of one composable on one [Configuration], so
+         * they agree; taking one rather than asserting they do keeps a disagreement from failing the whole set.
+         */
+        internal fun combineInstanceRenders(
+            rendered: List<Pair<String, RenderOutcome>>,
+            fallbackMessage: String,
+        ): RenderOutcome {
+            val successes = rendered.mapNotNull { (label, outcome) ->
+                (outcome as? RenderOutcome.Success)?.let { label to it }
+            }
+            if (successes.isNotEmpty()) {
+                return RenderOutcome.MultiSuccess(
+                    successes.map { (label, success) -> RenderOutcome.LabelledRender(label, success.image) },
+                    successes.last().second.dpi,
+                )
+            }
+            return rendered.firstNotNullOfOrNull { it.second as? RenderOutcome.Failure }
+                ?: RenderOutcome.Failure(fallbackMessage, null)
+        }
+
         /** Per-future render timeout (design §5.1 rule 4). Expiry becomes a [RenderOutcome.Failure], not a hang. */
         private const val TIMEOUT_MS = 30_000L
 

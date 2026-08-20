@@ -26,11 +26,24 @@ class RenderPipelineTest {
         )
     }
 
+    /**
+     * PG24: a `@PreviewParameter` preview renders as a set, one instance per value its provider yields, so it is
+     * no longer refused before the render is even attempted. Whether the provider can actually be loaded is the
+     * render's question — it has a class loader; this classification does not.
+     */
     @Test
-    fun `a preview parameter is unsupported even when fresh`() {
+    fun `a preview parameter renders like any other fresh preview`() {
         assertEquals(
-            RenderState.UNSUPPORTED,
+            RenderState.RENDERING,
             RenderPipeline.classify(unsupported = false, hasPreviewParameter = true, isFresh = true),
+        )
+    }
+
+    @Test
+    fun `a preview parameter in a stale module still builds first`() {
+        assertEquals(
+            RenderState.NEEDS_BUILD,
+            RenderPipeline.classify(unsupported = false, hasPreviewParameter = true, isFresh = false),
         )
     }
 

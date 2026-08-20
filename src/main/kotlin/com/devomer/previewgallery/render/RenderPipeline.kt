@@ -52,11 +52,18 @@ class RenderPipeline(
     companion object {
         const val DEBOUNCE_MS = 400
 
-        /** Pure: the state a selection lands in before any async render runs. Booleans, not a PreviewEntry, so
-         *  it is unit-testable without a VirtualFile fixture. */
+        /**
+         * Pure: the state a selection lands in before any async render runs. Booleans, not a PreviewEntry, so
+         * it is unit-testable without a VirtualFile fixture.
+         *
+         * PG24: [hasPreviewParameter] no longer forces [RenderState.UNSUPPORTED]. A `@PreviewParameter`
+         * composable resolves to one instance per value its provider yields
+         * ([RenderModelResolver.Resolved.instances]) and renders as a set. The parameter is kept in the signature
+         * because a provider that cannot be resolved at render time still degrades to unsupported — but that is
+         * decided by the render, which can load the provider class, not by this classification, which cannot.
+         */
         fun classify(unsupported: Boolean, hasPreviewParameter: Boolean, isFresh: Boolean): RenderState = when {
             unsupported -> RenderState.UNSUPPORTED
-            hasPreviewParameter -> RenderState.UNSUPPORTED
             isFresh -> RenderState.RENDERING
             else -> RenderState.NEEDS_BUILD
         }
@@ -248,7 +255,7 @@ class RenderPipeline(
                 if (gen != generation) return@invokeLater
                 if (disposalCheck.isDisposed) return@invokeLater
                 val state = when (outcome) {
-                    is RenderOutcome.Success -> RenderState.LIVE
+                    is RenderOutcome.Success, is RenderOutcome.MultiSuccess -> RenderState.LIVE
                     is RenderOutcome.Failure -> RenderState.FAILED
                     is RenderOutcome.Unsupported -> RenderState.UNSUPPORTED
                 }
@@ -259,6 +266,6 @@ class RenderPipeline(
     }
 
     private fun unsupportedOutcome(entry: PreviewEntry): RenderOutcome.Unsupported = RenderOutcome.Unsupported(
-        entry.indexed.unsupportedReason ?: if (entry.indexed.hasPreviewParameter) "@PreviewParameter is not supported" else "Unsupported",
+        entry.indexed.unsupportedReason ?: "Unsupported",
     )
 }

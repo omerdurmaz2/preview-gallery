@@ -4,6 +4,15 @@
 
 ### Added
 
+- `@PreviewParameter` previews render: the provider's values are resolved and the composable is rendered once per
+  value, stacked in one strip with each value's label under it (capped at 16 values, and the drop is logged). A
+  value whose render fails costs that value, not the set.
+- Reference and parameter strips are laid out top to bottom instead of left to right, so three phone-width images
+  no longer force the shared scale down until nothing is readable.
+- Trackpad zoom and pan: high-precision (sub-notch) two-finger scroll now pans instead of doing nothing, one notch
+  pans a usable distance, and Ctrl/Cmd+wheel and pinch zoom continuously instead of jumping a whole zoom-ladder
+  rung per event. The reference strip gets the same gestures, which it had none of before.
+
 - Config-aware rendering: each preview renders with the device, API level, size and system-UI chrome from its own
   `@Preview` annotation instead of a fixed default (falls back to the default configuration when unavailable).
 - Live picker refresh: editing a value in Android Studio's `@Preview` property picker re-renders the displayed
