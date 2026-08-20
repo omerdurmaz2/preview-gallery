@@ -394,8 +394,16 @@ class RenderModelResolver {
         val elementVariantAssumed = (decision as VariantResolution.Proceed).variantAssumed
         val elements: List<ComposePreviewElementInstance<*>> =
             if (applied) configAware else listOf(buildDefaultPreviewElement(entry))
+        // PG24-4: the device is in this line because it is the answer to "why is this preview the wrong size?",
+        // and reading it out of the pane is not possible at all — `applyTo` writes it onto a Configuration nobody
+        // prints. Guarded: a device-shape change on a newer IDE must cost this log line, never the render.
+        val deviceSummary = runCatching {
+            val device = configuration.device
+            "${device?.id ?: "none"} ${device?.defaultHardware?.screen?.let { "${it.xDimension}x${it.yDimension}" }}"
+        }.getOrDefault("unreadable")
         thisLogger().debug(
             "Rendering ${entry.indexed.composableFqn} as ${elements.map { it.displaySettings.name }} " +
+                "on device $deviceSummary " +
                 "(configAware=${configAware.size}, requiredVariant=$requiredVariant, " +
                 "variantAssumed=$elementVariantAssumed)",
         )

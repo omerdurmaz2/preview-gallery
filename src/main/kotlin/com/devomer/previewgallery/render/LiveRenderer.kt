@@ -270,7 +270,7 @@ class LiveRenderer(
             .disableSecurityManager() // headless render off the EDT; the sandbox blocks layoutlib class loading here
             .build()
             .getOrTimeout()
-            ?: return RenderOutcome.Failure("Render task could not be created", loggerDetail(model))
+            ?: return logged(RenderOutcome.Failure("Render task could not be created", loggerDetail(model)))
 
         try {
             // ── 1. Inflate: build the view hierarchy and load the composable's classes. ──
@@ -278,7 +278,7 @@ class LiveRenderer(
             // so a failed inflation still fell through to a blank "successful" image.
             val inflated = task.inflate().getOrTimeout()
             if (inflated == null) {
-                return RenderOutcome.Failure("Inflating the preview timed out", loggerDetail(model))
+                return logged(RenderOutcome.Failure("Inflating the preview timed out", loggerDetail(model)))
             }
             if (hasFailedStatus(inflated)) {
                 return failure("Inflating the preview failed", inflated)
@@ -289,7 +289,7 @@ class LiveRenderer(
             // This frame is intentionally thrown away — it is the one that used to be captured (and was blank).
             val firstPass = task.render().getOrTimeout()
             if (firstPass == null) {
-                return RenderOutcome.Failure("The first render pass timed out", loggerDetail(model))
+                return logged(RenderOutcome.Failure("The first render pass timed out", loggerDetail(model)))
             }
             if (hasFailedStatus(firstPass)) {
                 return failure("The first render pass failed", firstPass)
@@ -301,7 +301,7 @@ class LiveRenderer(
 
             // ── 4. Second render: captures the now-composed content. ──
             val result = task.render().getOrTimeout()
-                ?: return RenderOutcome.Failure("Render produced no result", loggerDetail(model))
+                ?: return logged(RenderOutcome.Failure("Render produced no result", loggerDetail(model)))
             if (hasFailedStatus(result)) {
                 return failure("Render failed", result)
             }
@@ -489,8 +489,26 @@ class LiveRenderer(
     private fun <T> CompletableFuture<T>.getOrTimeout(): T? =
         get(TIMEOUT_MS, TimeUnit.MILLISECONDS)
 
+    /**
+     * PG24-4: **every render failure is logged, not only shown.**
+     *
+     * The pane has carried layoutlib's own diagnosis behind its Details link since PG2, and nothing wrote it
+     * anywhere else — so a user reporting "Render produced no image" left no trace in `idea.log` at all, and the
+     * only way to see the reason was to have them copy it out of the dialog by hand. Every render failure now
+     * lands in the log with the same summary and detail the pane shows.
+     *
+     * `warn`, not `info`: a preview that failed to render is a defect in either the composable or this plugin,
+     * and the log level is what decides whether it survives to the report.
+     */
     private fun failure(message: String, result: RenderResult): RenderOutcome.Failure =
-        RenderOutcome.Failure(renderErrorSummary(message, result), renderErrorDetail(result))
+        logged(RenderOutcome.Failure(renderErrorSummary(message, result), renderErrorDetail(result)))
+
+    /** [failure]'s logging, for the failures built without a [RenderResult] to interrogate — a task that could
+     *  not be created, or a pass that timed out, whose detail is [loggerDetail]'s instead. */
+    private fun logged(failure: RenderOutcome.Failure): RenderOutcome.Failure {
+        thisLogger().warn("Render failed: ${failure.message}\n${failure.detail.orEmpty()}")
+        return failure
+    }
 
     private fun renderErrorSummary(fallback: String, result: RenderResult): String {
         val message = runCatching { result.renderResult.errorMessage }.getOrNull()
