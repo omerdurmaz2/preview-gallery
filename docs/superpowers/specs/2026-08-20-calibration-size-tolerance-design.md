@@ -174,6 +174,85 @@ Against `hepsi-android`, from a `runIde` sandbox:
    small component (1080×147). Record every number and delta verbatim.
 5. Apply the parent spec's decision table to the overlap percentages.
 
+## Read this before implementing D6b: an adversarial review changed the picture (2026-08-20)
+
+A skeptic review found the screenshot engine's own renderer on disk —
+`com.android.tools.compose:compose-preview-renderer:0.0.1-alpha15` in `~/.gradle/caches` — and compared the two
+render paths instruction for instruction. The engine is not a black box: it drives the same
+`com.android.tools.rendering` API this plugin does. Its findings reorder the work.
+
+**The class loader is exonerated.** `getClassFileFinder`'s holder-module branch logs that warning and returns the
+*main* module's finder. It cannot load a different implementation than Gradle compiled against: the injected
+directory is tried first, and the two output trees (`built_in_kotlinc/debugScreenshotTest/…/classes` and
+`built_in_kotlinc/debug`) share **zero** class-file paths, so the injection can only add, never shadow. No `R` class
+exists in the injected directory at all. The warning is the platform lint for asking a holder module a source-set
+question — Android Studio's own Compose preview takes the same path in this project.
+
+**But the number, as the code stands, would not measure what the phase asks.** Three divergences dominate it, all
+of them configuration rather than engine:
+
+1. **The theme, and it is the largest term.** The engine's `RenderRequest.configurationModifier` is literally
+   `PreviewConfigurationKt::applyTo` — the seam `PG22-15` removed — and `applyTo` ends with
+   `setTheme(getPreferredTheme())`. Its `StandaloneThemeInfoProvider` hardcodes
+   `@android:style/Theme.Material.Light`, whose `windowBackground` resolves to **`#FAFAFA`**. Decoding the golden
+   the gate is about to measure (`CreateListActionBar_Submitting_Snapshot_phone_…png`, 1080×190) finds
+   `(250,250,250,255)` in **83,044 of 205,200 pixels — 40.5%** of the image. The composable cannot be painting it:
+   `CreateListActionBar` is a bare `Row`, and both `PrimusTheme` and `PreviewComponent` are `CompositionLocalProvider`
+   wrappers with no `Surface`. The plugin disables decorations, so it paints no window background at all, and
+   `ImageDiff.onWhite` then turns those pixels `#FFFFFF`. **Over 40% of the image differs before a single glyph is
+   compared.**
+2. **The device is the right size but the wrong device.** `PG22-16`'s px spec is correct about pixels — 1080×2400
+   exactly — but `createDeviceInstance` also leaves `xdpi/ydpi = 0`, `nav`/`keyboard`/`touchScreen` null, and derives
+   `ScreenSize` from the diagonal: `sqrt(1080²+2400²)/420 = 6.27 in` → **`LARGE`**, where the engine's catalogue
+   `medium_phone` declares `normal`. layoutlib ORs that into `Configuration.screenLayout`, so anything reading
+   `WindowSizeClass`, `isLayoutSizeAtLeast`, or a `-large`/`-normal` resource folder branches differently — and this
+   module has exactly those adaptive shapes. **The size check no longer catches it**, because both sides are now
+   1080×2400: D6a's claim that a wrong device cannot be absorbed into the number was true of the dp spec and is not
+   true of the px spec.
+3. **The frame is sampled at a different, irreproducible instant.** The engine calls `render()` once. The plugin
+   runs `inflate()` → `render()` → `drainComposeCallbacks` (up to 16 rounds × 16 ms of stepped frame clock, exiting
+   on a 100 ms **wall-clock** budget) → `render()`. `CreateListActionBar_Submitting_Snapshot` draws
+   `PrimusLoadingSpinner` — `rememberInfiniteTransition` + `Modifier.rotate` — so the engine captures ≈0° and the
+   plugin ≈92°, and the exact angle depends on how fast the machine is that day. Every `FavoritesSkeleton_*` and
+   `ShimmerOptionsPlaceholder_*` snapshot shares this.
+
+Also recorded: the engine builds with `showDecorations = true` and rendering mode `NORMAL`, where the plugin uses
+`disableDecorations()` and `SHRINK`; and `applyTo` also sets `uiMode`, `fontScale = 1.0`, `locale = ANY` and the
+API target, all of which the plugin currently inherits from a shared, workspace-persisted IDE `Configuration`.
+
+### Do these three first, then D6b
+
+Each is roughly one line, and together they cost far less than a session:
+
+- **`CALIBRATION_DEVICE_SPEC = "id:medium_phone"`.** `findOrParseFromDefinition` already handles an `id:` prefix
+  (`removePrefix("id:")`, then match on `Device.getId()`), so this hands the render the *same catalogue device* the
+  engine picks from the same `devices.xml`, with every qualifier matching — strictly more correct than a synthesized
+  spec, and self-documenting.
+- **`configuration.setTheme("@android:style/Theme.Material.Light")`** inside `applyCalibrationDevice`. A literal
+  string, so `getPreferredTheme()` is still never called and `MainManifestIndexNotReadyException` stays avoided.
+  This reproduces the engine rather than approximating it.
+- **Drop `disableDecorations()` and `SHRINK` on the calibration path only**, so the engine's own builder defaults
+  apply. Ordinary preview renders keep both.
+
+Then re-run the gate. **D6b may become unnecessary**: several of the size deltas being tolerated could be artefacts
+of the mismatched device and rendering mode. Measure again before writing tolerance into the metric — and if a
+delta survives all three fixes, D6b as specified above is still the right answer.
+
+### What the first number will never prove
+
+The two stacks ship different `libandroid_runtime.dylib` binaries (19.9 MB vs 25.0 MB), different platform builds
+(36.0 vs 36.1, four months apart) and a different `Roboto-Regular.ttf`. Whatever residue survives after every
+configuration is matched belongs to *this AS build against this AGP screenshot-plugin version*, and it moves when
+either is upgraded. A threshold read from one measurement is a threshold against one pair of toolchain versions —
+worth stating in the roadmap entry whichever way the number lands.
+
+### One structural risk to guard cheaply
+
+`compareLiveRender` takes the build variant from the first `ReferenceRoots.Root` that names one, while the
+main-class finder resolves against the IDE's *selected* variant. On a flavoured module those can diverge and the
+injected `screenshotTest` classes would link against another flavour's `main`. Compare the two and refuse when they
+differ.
+
 ## What is still open beyond this fix
 
 - **A skeptic review was running when this document was written** and its answer matters before the number is
