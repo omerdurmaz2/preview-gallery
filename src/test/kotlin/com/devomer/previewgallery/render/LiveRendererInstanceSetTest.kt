@@ -90,4 +90,26 @@ class LiveRendererInstanceSetTest {
 
         assertEquals(420, (combined as RenderOutcome.MultiSuccess).dpi)
     }
+
+    @Test
+    fun `flattenHtml turns a layoutlib problem into one readable line`() {
+        assertEquals(
+            "Couldn't resolve resource @drawable/foo",
+            LiveRenderer.flattenHtml("<b>Couldn't resolve</b><BR/>resource @drawable/foo"),
+        )
+    }
+
+    /**
+     * Tags out first, then entities: unescaping first would promote a composable's own escaped `&lt;b&gt;` to a
+     * real tag and then strip it, deleting text its author wrote.
+     */
+    @Test
+    fun `an escaped tag in the message survives flattening`() {
+        assertEquals("use <b> here", LiveRenderer.flattenHtml("<i>use &lt;b&gt; here</i>"))
+    }
+
+    @Test
+    fun `flattening a message with no markup leaves it alone`() {
+        assertEquals("No Component provided", LiveRenderer.flattenHtml("No Component provided"))
+    }
 }

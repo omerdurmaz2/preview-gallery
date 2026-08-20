@@ -20,6 +20,7 @@ import com.android.resources.ResourceFolderType
 import com.android.tools.idea.compose.preview.ComposeViewInfo
 import com.android.tools.idea.compose.preview.parseViewInfo
 import com.android.tools.idea.rendering.StudioRenderService
+import com.android.tools.rendering.RenderProblem
 import com.android.tools.rendering.RenderResult
 import com.android.tools.rendering.RenderTask
 import com.android.tools.preview.XmlSerializable
@@ -510,6 +511,38 @@ class LiveRenderer(
         return failure
     }
 
+    /**
+     * One layoutlib problem as readable text.
+     *
+     * PG24-5: this used to be `problem.toString()`, and [RenderProblem] overrides no `toString` — so the whole
+     * point of collecting the problems was lost to eight lines of
+     * `com.android.tools.rendering.RenderProblem$Html@14755587` in a real gate run. The message lives in
+     * `getHtml()`, and the cause — when there is one — in `getThrowable()`, which is where a composable that threw
+     * during measure or draw actually names itself.
+     *
+     * The HTML is flattened rather than rendered: this string goes to `idea.log` and to the pane's plain-text
+     * Details area, and a `<BR/>` in either reads as noise. Entities are unescaped after the tags come out, in
+     * that order — doing it the other way round would turn an escaped `&lt;b&gt;` in a composable's own message
+     * into a tag and then strip it.
+     *
+     * Guarded per field: these are AS-internal accessors, and a shape change on a newer IDE must cost the detail
+     * line, never the failure it is describing.
+     */
+    private fun describeProblem(problem: RenderProblem): String {
+        val severity = runCatching { problem.severity.toString() }.getOrNull().orEmpty()
+        val message = runCatching { problem.html }.getOrNull()?.let(::flattenHtml).orEmpty()
+        val throwable = runCatching { problem.throwable }.getOrNull()
+        return buildString {
+            append("  - ")
+            if (severity.isNotBlank()) append(severity).append(": ")
+            append(message.ifBlank { "(no message)" })
+            if (throwable != null) {
+                append("\n")
+                append(throwable.stackTraceToString().prependIndent("    "))
+            }
+        }
+    }
+
     private fun renderErrorSummary(fallback: String, result: RenderResult): String {
         val message = runCatching { result.renderResult.errorMessage }.getOrNull()
         return if (message.isNullOrBlank()) fallback else "$fallback: $message"
@@ -528,8 +561,8 @@ class LiveRenderer(
         if (missing.isNotEmpty()) parts += "missingClasses=$missing"
         val broken = runCatching { logger.brokenClasses.keys }.getOrNull().orEmpty()
         if (broken.isNotEmpty()) parts += "brokenClasses=$broken"
-        val problems = runCatching { logger.messages.map { it.toString() } }.getOrNull().orEmpty()
-        if (problems.isNotEmpty()) parts += "problems=$problems"
+        val problems = runCatching { logger.messages }.getOrNull().orEmpty()
+        if (problems.isNotEmpty()) parts += "problems=\n" + problems.joinToString("\n", transform = ::describeProblem)
 
         val exception = runCatching { result.renderResult.exception }.getOrNull()
         if (exception != null) parts += "exception=${exception.stackTraceToString()}"
@@ -547,6 +580,24 @@ class LiveRenderer(
         }.getOrDefault("No detail available.")
 
     companion object {
+
+        /**
+         * A layoutlib problem's HTML as one line of readable text, for the log and for the pane's plain-text
+         * Details area (PG24-5). In the companion so it can be tested without layoutlib — see
+         * [describeProblem], which is the only caller and needs a real `RenderProblem` to reach it.
+         *
+         * Tags come out **before** entities are unescaped, and the order is the whole subtlety: unescaping first
+         * would turn a composable's own escaped `&lt;b&gt;` into a real tag and then strip it, silently deleting
+         * text the author wrote.
+         */
+        internal fun flattenHtml(html: String): String = HTML_TAG.replace(html, " ")
+            .replace("&lt;", "<")
+            .replace("&gt;", ">")
+            .replace("&quot;", "\"")
+            .replace("&#39;", "'")
+            .replace("&amp;", "&")
+            .replace(WHITESPACE, " ")
+            .trim()
 
         /**
          * PG24: what a set of per-instance renders adds up to — the pure half of [renderResolved]'s
@@ -590,6 +641,11 @@ class LiveRenderer(
 
         /** Hard cap on callback rounds so a composable that never settles cannot spin. */
         private const val MAX_CALLBACK_ROUNDS = 16
+
+        /** [flattenHtml]'s two passes: any tag, then any run of whitespace (including the newlines a flattened
+         *  `<BR/>` leaves behind). */
+        private val HTML_TAG = Regex("<[^>]*>")
+        private val WHITESPACE = Regex("\\s+")
 
         /** One frame per round. AS: `SteppingSessionClock(16.milliseconds)` for a static preview. */
         private const val FRAME_STEP_NANOS = 16_000_000L
