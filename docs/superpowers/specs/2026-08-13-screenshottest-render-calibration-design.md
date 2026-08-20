@@ -279,3 +279,97 @@ what made that readable — a percentage would have absorbed the difference and 
 **Upgrade path:** derive the spec from the goldens at runtime — the `small`/`phone` width ratio gives the density
 and the pixel sizes give the rest — instead of carrying the constants. Worth doing only if a second consuming
 project ever wants this, since the derivation needs both variants present.
+
+---
+
+## D6b · Configuration parity before tolerance (added 2026-08-20, `PG22-19`)
+
+The third gate run produced the first pair of images the metric could almost read:
+
+| Image | Size |
+|---|---|
+| Committed golden, `CreateListContent_Default_Snapshot` `phone` | 1080 × 252 |
+| Gradle's own `rendered` PNG from the last `validate` | 1080 × 252 |
+| The IDE's live render | 1080 × 250 |
+
+The engine agrees with itself and the IDE is two pixels shorter — and not by a constant offset: an earlier run of
+`DeleteSelectedProductsDialog_Direct_Snapshot` matched on height exactly and missed on width, which was the dp
+rounding D6a's amendment fixed. The delta is content-dependent, so it is a measurement rounding in layout rather
+than a fixed border. D6's "size equality is a precondition" can therefore never produce a number for a
+shrink-to-content snapshot that lands on the wrong side of that rounding, and a tolerance band was proposed:
+refuse above 2% of either dimension, measure the top-left overlap below it and always print the delta beside the
+percentage.
+
+**That band is not being written into the metric yet, and the reason is that the two renders were not yet
+configured alike.** Reading the screenshot engine's own renderer —
+`com.android.tools.compose:compose-preview-renderer:0.0.1-alpha15`, which drives the same
+`com.android.tools.rendering` API this plugin does — found three divergences that are configuration, not engine.
+Two are real and are fixed here; the third turned out to be the review's own mistake and is recorded because it
+would have made the calibration worse.
+
+**Fixed — the theme, and it is the largest term.** The engine's `RenderRequest.configurationModifier` is
+`PreviewConfigurationKt::applyTo`, whose device step ends `setTheme(getPreferredTheme())`, and the
+`ThemeInfoProvider` behind that lookup in a standalone render is `StandaloneThemeInfoProvider`, whose
+`appThemeName` is the literal `@android:style/Theme.Material.Light`. Its `windowBackground` resolves to `#FAFAFA`,
+and decoding the golden for a bare `Row` (`CreateListActionBar_Submitting_Snapshot_phone`, 1080 × 190) finds
+`(250,250,250,255)` in 83,044 of 205,200 pixels — **40.5% of the image**. The plugin inherited whatever theme the
+module's own `ConfigurationManager` had persisted. `applyCalibrationConfiguration` now sets that exact string as a
+literal, which reproduces the engine without ever calling `getPreferredTheme()` — so the
+`MainManifestIndexNotReadyException` `PG22-15` removed stays removed.
+
+**Fixed — the device was the right size but the wrong device.** `StandaloneConfigurationSettings` builds the
+engine's default device as `DefaultDevices.getDevice("medium_phone", "Generic")`. `PG22-16`'s
+`spec:width=1080px,height=2400px,dpi=420` produced the same canvas, but `createDeviceInstance` sets only
+`xDimension`, `yDimension`, `pixelDensity`, a derived diagonal, round/chin and ratio: no `xdpi`/`ydpi`, no
+navigation, no keyboard, and `Screen.size` derived from that diagonal —
+`sqrt(1080² + 2400²) / 420 = 6.27 in`, which `ScreenSize.getScreenSize` maps to `LARGE` (its thresholds are
+`160 × diagonal ≥ 1200` → `XLARGE`, `≥ 800` → `LARGE`, `≥ 568` → `NORMAL`; `160 × 6.27 = 1003`). The catalogue's
+`medium_phone` declares `normal`, with `xdpi`/`ydpi` 420, `nav` `nonav`, `keyboard` `nokeys`. layoutlib ORs
+`Screen.size` into `Configuration.screenLayout`, so a `-large`/`-normal` resource folder, a `WindowSizeClass` read
+or an `isLayoutSizeAtLeast` branch resolves differently on the two — and **the size check cannot catch this**,
+because both devices are 1080 × 2400. D6a's claim that a wrong device can never be absorbed into the number was
+true of the dp spec and false of the px one. The pin is now `id:medium_phone`: `findOrParseFromDefinition` sends
+anything without a `spec:` prefix to `findByIdOrName`, which strips `id:` and matches `Device.getId()`, so the
+render gets the engine's own `Device` out of the same `devices.xml`.
+
+**Not applied — "the engine renders with decorations and `NORMAL`".** It does not. The engine constructs
+`new RenderService(Renderer$4.INSTANCE)`, and that `Consumer<RenderTaskBuilder>` — applied to every task builder
+it creates — calls `disableDecorations()`, `withRenderingMode(SHRINK)` and `disableSecurityManager()`
+(`javap -c` on `com/android/tools/render/Renderer$4.class`). The plugin's calibration path already makes exactly
+those calls. Dropping them would have diverged the two renders instead of converging them, and would have turned
+every shrink-to-content comparison into a full-device-versus-content size refusal — the failure this whole section
+exists to remove. It is also the only way the goldens can be 1080 × 252 at all.
+
+**Still divergent, deliberately not addressed here.** The engine calls `render()` once; the plugin runs
+`inflate()` → `render()` → `drainComposeCallbacks` (stepped 16 ms frame clock, 100 ms wall-clock budget) →
+`render()`. For a snapshot that draws `PrimusLoadingSpinner` (`rememberInfiniteTransition` + `Modifier.rotate`)
+the engine captures ≈0° and the plugin captures whatever the machine reached — an irreproducible frame, shared by
+every `FavoritesSkeleton_*` and `ShimmerOptionsPlaceholder_*` snapshot. The single-render sequence is what
+`PG2-2` fixed by adding the callback drain, so this is not a one-line revert; if the residue after the two fixes
+above is concentrated in animated snapshots, that is where to look next.
+
+**Also guarded here (`PG22-19`):** `compareLiveRender` took its build variant from the first `ReferenceRoots.Root`
+that named one, while the render resolves `main` classes against the variant the IDE has selected. On a flavoured
+module those diverge and the injected `screenshotTest` classes link against another flavour's `main`. The two are
+now compared (`ScreenshotTestClasses.variantMatches`) and the press is refused when they disagree; a build that
+cannot report a selected variant is not refused, since "could not ask" and "is on another variant" are different
+facts.
+
+**So D6b stands as proposed but unimplemented.** Re-run the gate on the reconfigured render first. If a size delta
+survives a matched device and a matched theme, the two-band rule is the right answer and the numbers from that run
+belong here:
+
+- above 2% on either dimension → refusal, unchanged, and not a Red verdict but "not measured";
+- below it → measure the top-left-anchored overlap, report the differing-pixel percentage over that region, and
+  always print the size delta beside it (`live vs golden 0.42% different · live 2px shorter`), never folded into
+  the percentage.
+
+Padding is the wrong alternative: every invented pixel counts as a difference, which is the opposite of what the
+measurement is for. Top-left anchoring is right because both engines shrink to content from that corner, so a
+bottom-anchored difference correctly reads as a large percentage.
+
+**What no first number will prove.** The two stacks ship different `libandroid_runtime.dylib` binaries
+(19.9 MB vs 25.0 MB), different platform builds (36.0 vs 36.1, four months apart) and a different
+`Roboto-Regular.ttf`. Whatever residue survives after every configuration is matched belongs to *this* Android
+Studio build against *this* AGP screenshot-plugin version, and it moves when either is upgraded. Any threshold read
+from one measurement is a threshold against one pair of toolchain versions, and the roadmap entry should say so.

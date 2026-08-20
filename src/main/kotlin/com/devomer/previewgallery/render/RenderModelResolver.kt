@@ -49,18 +49,22 @@ import com.android.tools.rendering.api.RenderModelModule
  * leaves this class's behaviour byte-for-byte unchanged, exactly like before PG6-9.
  *
  * D6a (PG22-14): [resolve]'s [pinCalibrationDevice] pins the render's own [Configuration] to
- * [CALIBRATION_DEVICE_SPEC] — the device the committed goldens were drawn on, derived (not guessed) from their own
- * pixel sizes. Only the calibration's own caller ([LiveRenderer.renderVariant]) ever asks for it; every other
- * caller's [Configuration] is picked exactly as before this task. A pin that cannot be applied stops the render
- * ([RenderModelResult.DeviceSpecUnresolved]) rather than proceeding on whatever device the module's own
- * [ConfigurationManager] would otherwise have handed back — the failure mode a gate run actually hit.
+ * [CALIBRATION_DEVICE_SPEC] — the device the committed goldens were drawn on. Only the calibration's own caller
+ * ([LiveRenderer.renderVariant]) ever asks for it; every other caller's [Configuration] is picked exactly as
+ * before this task. A pin that cannot be applied stops the render ([RenderModelResult.DeviceSpecUnresolved])
+ * rather than proceeding on whatever device the module's own [ConfigurationManager] would otherwise have handed
+ * back — the failure mode a gate run actually hit.
  *
- * PG22-15: [applyCalibrationDevice] writes that device onto [Configuration] via [Configuration.setDevice] directly,
- * not through [PreviewConfiguration.applyTo] (the seam [applyConfigAware] uses for an ordinary `@Preview`'s own
- * configuration). `applyTo` also resolves the configuration's preferred theme, which needs the main manifest
- * index a `src/screenshotTest` file's module does not have (D3a) — a real gate run hit
- * `MainManifestIndexNotReadyException` from exactly that path. The calibration pin only ever needed to set a
- * device; see [applyCalibrationDevice]'s own doc for the mechanism and its `javap` evidence.
+ * PG22-15: [applyCalibrationConfiguration] writes that device onto [Configuration] via [Configuration.setDevice]
+ * directly, not through [PreviewConfiguration.applyTo] (the seam [applyConfigAware] uses for an ordinary
+ * `@Preview`'s own configuration). `applyTo` resolves the configuration's preferred theme, which needs the main
+ * manifest index a `src/screenshotTest` file's module does not have (D3a) — a real gate run hit
+ * `MainManifestIndexNotReadyException` from exactly that path.
+ *
+ * PG22-19: the pin is a device **and** a theme ([CALIBRATION_THEME]), both taken from the screenshot engine's own
+ * jar rather than approximated — the device by catalogue id so every qualifier matches, the theme as a literal so
+ * no preferred-theme lookup happens. See [applyCalibrationConfiguration] and the two constants for the `javap`
+ * evidence behind each.
  */
 class RenderModelResolver {
 
@@ -130,36 +134,56 @@ class RenderModelResolver {
 
     companion object {
         /**
-         * D6a: the device the comparison render must use, so its [Configuration] matches the device the Android
-         * screenshot-test engine rendered the committed goldens on — derived from those goldens, not guessed, and
-         * re-derivable without re-measuring anything (see the design doc's D6a section for the gate evidence this
-         * answers: a live render at `2152x2076` measured against a `1080x2400` golden):
+         * D6a, revised in PG22-19: the device the comparison render must use — the Android screenshot engine's
+         * **own default device, named by catalogue id**, rather than a spec synthesized to have the same pixel
+         * size.
          *
-         * - `small`'s `@Preview` declares `widthDp = 320`; its full-screen golden is 840px wide, so density =
-         *   840 / 320 = 2.625, i.e. 160 * 2.625 = **420dpi**.
-         * - Dividing the `phone` golden's own pixel size (1080 x 2400) by that same density gives its dp size:
-         *   1080 / 2.625 = **411.43dp**, 2400 / 2.625 = **914.29dp** — Android Studio's own *Medium Phone*, the
-         *   modern Compose-preview default (and 420 is literally `Preview.DeviceSpec.DEFAULT_DPI` on this IDE
-         *   build, confirmed via `javap` against `android.jar` — not a coincidence, the constant this derivation
-         *   lands on is the platform's own default density).
+         * `compose-preview-renderer-0.0.1-alpha15` builds its default device as
+         * `DefaultDevices.getDevice("medium_phone", "Generic")` (`javap -c` against that artifact's
+         * `StandaloneConfigurationSettings`), so `id:medium_phone` hands this render the *same* `Device` the
+         * engine renders every golden on, read out of the same `devices.xml`, with every qualifier matching
+         * instead of only the two dimensions.
          *
-         * **Written in pixels, not dp, and that is the whole point of PG22-16.** Those dp sizes are not whole
-         * numbers, and a dp spec is converted before it is used: `DeviceUtilsKt.createDeviceInstance` sets
-         * `screen.xDimension = roundToInt(config.width)` after scaling by `dpi / 160`, so `411dp` becomes
-         * `roundToInt(411 * 2.625)` = `roundToInt(1078.875)` = **1079** — one pixel short of the golden, and a
-         * size mismatch measures nothing at all. A px spec skips that conversion entirely:
-         * `MutableDeviceConfig.setDimUnit` returns immediately when the unit is already `px` (an `if_acmpeq` to
-         * the exit, read from the bytecode), so `1080.0f` reaches `roundToInt` untouched and the device is exactly
-         * the golden's canvas. The gate proved this the expensive way: `1079x190 vs 1080x190`, with the height —
-         * which needed no rounding — already matching exactly.
+         * **Why the previous `spec:width=1080px,height=2400px,dpi=420` was not enough**, even though PG22-16 is
+         * right that it produces exactly the golden's canvas: `DeviceUtilsKt.createDeviceInstance` sets
+         * `xDimension`, `yDimension`, `pixelDensity`, a diagonal derived from those three, round/chin and ratio —
+         * and nothing else. It never sets `xdpi`/`ydpi`, navigation, keyboard or touch screen, and it derives
+         * `Screen.size` from that computed diagonal: `sqrt(1080² + 2400²) / 420 = 6.27 in`, which
+         * `ScreenSize.getScreenSize` maps to **`LARGE`** (its own thresholds, by bytecode: `XLARGE` at
+         * `160 * diagonal >= 1200`, `LARGE` at `>= 800`, `NORMAL` at `>= 568`; `160 * 6.27 = 1003`). The
+         * catalogue's `medium_phone` declares `normal`, with `diagonal-length` 6.4, `xdpi`/`ydpi` 420, `nav`
+         * `nonav` and `keyboard` `nokeys`. layoutlib ORs `Screen.size` into `Configuration.screenLayout`, so a
+         * `-large`/`-normal` resource folder, a `WindowSizeClass` read or an `isLayoutSizeAtLeast` branch
+         * resolves differently on the two devices — and the size check cannot catch that, because both are
+         * 1080x2400 either way.
          *
-         * The string shape (`spec:width=<n>px,height=<n>px,dpi=<n>`) is confirmed the same way: `javap -p
-         * -constants` against `com.android.tools.preview.config.Preview$DeviceSpec` in `android.jar` shows
-         * `PREFIX = "spec:"`, `SEPARATOR = ','`, `OPERATOR = '='`, `PARAMETER_WIDTH = "width"`,
-         * `PARAMETER_HEIGHT = "height"`, `PARAMETER_DPI = "dpi"`; `DimUnit` (same package) has `dp`/`px` as the
-         * only dimension suffixes a width/height value takes, and `dpi` takes none — exactly the format used here.
+         * `findOrParseFromDefinition` takes the `id:` form directly: only a `spec:`-prefixed definition goes
+         * through `DeviceConfig`/`createDeviceInstance`, and everything else falls through to `findByIdOrName`,
+         * which strips the prefix and matches on `Device.getId()` (`javap -c` against `android.jar`;
+         * `DEVICE_BY_ID_PREFIX = "id:"` is that same file's own constant).
          */
-        internal const val CALIBRATION_DEVICE_SPEC = "spec:width=1080px,height=2400px,dpi=420"
+        internal const val CALIBRATION_DEVICE_SPEC = "id:medium_phone"
+
+        /**
+         * D6a, PG22-19: the theme the comparison render must use — the one the screenshot engine renders every
+         * golden under — written as a literal so it can be applied without resolving one.
+         *
+         * The engine's `RenderRequest.configurationModifier` is `PreviewConfigurationKt::applyTo`, whose device
+         * step ends `setTheme(getPreferredTheme())` (`javap -c`), and the `ThemeInfoProvider` that lookup reaches
+         * in a standalone render is `StandaloneThemeInfoProvider`, whose `appThemeName` — returned by both
+         * `getDefaultTheme` and `getDeviceDefaultTheme` — is exactly this string.
+         *
+         * It carries far more of the measurement than one line suggests. `Theme.Material.Light`'s
+         * `windowBackground` resolves to `#FAFAFA`, and the golden for a bare `Row`
+         * (`CreateListActionBar_Submitting_Snapshot_phone`, 1080x190) holds `(250,250,250,255)` in 83,044 of its
+         * 205,200 pixels — 40.5%. A render that inherits the module's own theme paints something else there, and
+         * [ImageDiff] measures 40% of the image as different before a single glyph is compared.
+         *
+         * A literal, never `Configuration.getPreferredTheme()`: that lookup needs the main manifest index a
+         * `src/screenshotTest` file's module does not have and threw `MainManifestIndexNotReadyException` out of
+         * a real gate run — the whole reason [applyCalibrationConfiguration] bypasses `applyTo` (PG22-15).
+         */
+        internal const val CALIBRATION_THEME = "@android:style/Theme.Material.Light"
 
         /**
          * D3a: the pure form of the branch both [resolve] and [resolveUnderReadAction] decide with, extracted so
@@ -200,7 +224,7 @@ class RenderModelResolver {
          * D6a: the pure form of the branch [resolveUnderReadAction] decides the calibration device pin with —
          * mirrors [decideVariantResolution]'s split of "what AS said" from "what it means". [applied] is only
          * meaningful when [pinRequested] is true; [resolveUnderReadAction] never even attempts
-         * [applyCalibrationDevice] otherwise (its call site short-circuits on `pinRequested &&`), and this
+         * [applyCalibrationConfiguration] otherwise (its call site short-circuits on `pinRequested &&`), and this
          * function does not need [applied] to answer [DevicePinResolution.NotRequested] either way.
          */
         internal fun decideDevicePin(pinRequested: Boolean, applied: Boolean): DevicePinResolution = when {
@@ -354,7 +378,7 @@ class RenderModelResolver {
                 "variantAssumed=$elementVariantAssumed)",
         )
 
-        val devicePinApplied = pinCalibrationDevice && applyCalibrationDevice(configuration)
+        val devicePinApplied = pinCalibrationDevice && applyCalibrationConfiguration(configuration)
         if (decideDevicePin(pinCalibrationDevice, devicePinApplied) is DevicePinResolution.Failed) {
             return RenderModelResult.DeviceSpecUnresolved
         }
@@ -401,29 +425,35 @@ class RenderModelResolver {
 
     /**
      * PG22-15: writes [CALIBRATION_DEVICE_SPEC] straight onto [configuration] via [Configuration.setDevice],
-     * bypassing [PreviewConfiguration.applyTo] entirely — unlike [applyConfigAware], this never resolves or sets a
-     * theme. `applyTo` needs one (`Configuration.getPreferredTheme()`, which needs the main manifest index) only
-     * because it applies a whole `PreviewConfiguration` — api level, locale, font scale, wallpaper, ui mode, theme
-     * — of which the calibration pin only ever wanted one axis, the device. A `src/screenshotTest` file's module
-     * has no manifest to index at all (D3a), so that lookup threw `MainManifestIndexNotReadyException` out of a
-     * real gate run; this call needs no theme, so it cannot hit that lookup.
+     * bypassing [PreviewConfiguration.applyTo] entirely — unlike [applyConfigAware], this never *resolves* a
+     * theme. `applyTo` resolves one (`Configuration.getPreferredTheme()`, which needs the main manifest index)
+     * because it applies a whole `PreviewConfiguration` — api level, locale, font scale, wallpaper, ui mode,
+     * theme. A `src/screenshotTest` file's module has no manifest to index at all (D3a), so that lookup threw
+     * `MainManifestIndexNotReadyException` out of a real gate run.
+     *
+     * PG22-19: it does set a theme, [CALIBRATION_THEME], as a literal string. That is not a return to `applyTo`'s
+     * path — the exception above came from *resolving* a preferred theme, and a literal never asks. Leaving the
+     * theme alone was the larger error: the [Configuration] this render is handed carries whatever theme the
+     * module's own `ConfigurationManager` persisted, while every committed golden was drawn under
+     * [CALIBRATION_THEME], and on a shrink-to-content golden that single axis accounts for 40% of the pixels
+     * (see that constant's own doc for the count).
      *
      * [findOrParseFromDefinition] (`Collection<Device>.findOrParseFromDefinition(String, Logger)`, a
      * `com.android.tools.preview.config` package-level extension confirmed via `javap` against `android.jar`) is
-     * Android Studio's own device-spec parsing entry point — the same one `applyTo`'s private device-resolution
-     * branch calls for a `spec:`-prefixed [PreviewConfiguration.deviceSpec]
-     * (`DeviceConfig.Companion.toDeviceConfigOrNull` → `createDeviceInstance`, with an `id:`/`name:` fallback this
-     * call never reaches because [CALIBRATION_DEVICE_SPEC] always starts with `spec:`), not a hand-rolled parser.
-     * `null` — a blank string, an unparseable spec, or an unknown id/name, none reachable for this fixed constant,
-     * but checked because the platform's own function returns it that way — means the pin could not be applied.
+     * Android Studio's own device-definition entry point — the same one `applyTo`'s private device-resolution
+     * branch calls for a [PreviewConfiguration.deviceSpec], not a hand-rolled parser. For [CALIBRATION_DEVICE_SPEC]
+     * it takes the `id:` branch: only a `spec:` prefix goes through `DeviceConfig`/`createDeviceInstance`, and
+     * everything else falls through to `findByIdOrName`. `null` — a blank string, an unparseable spec, or an
+     * unknown id, the last of which is the only one reachable for this fixed constant and only on an IDE whose
+     * device catalogue has no `medium_phone` — means the pin could not be applied.
      *
      * `configuration.setEffectiveDevice(null, null)` immediately before `setDevice` mirrors `applyTo`'s own
      * bytecode exactly (both arguments `null` there too, `javap -c` against `PreviewConfigurationKt`): it clears
      * any effective-device override the [Configuration] already carries so the newly pinned device is not shadowed
      * by it. `setDevice`'s own second argument (`false`) is likewise copied unchanged from what `applyTo` itself
-     * passes.
+     * passes, as is the order — `applyTo` sets the device and then the theme.
      */
-    private fun applyCalibrationDevice(configuration: Configuration): Boolean = try {
+    private fun applyCalibrationConfiguration(configuration: Configuration): Boolean = try {
         val device = configuration.settings.devices.findOrParseFromDefinition(
             CALIBRATION_DEVICE_SPEC,
             Logger.getInstance(RenderModelResolver::class.java),
@@ -433,16 +463,17 @@ class RenderModelResolver {
         } else {
             configuration.setEffectiveDevice(null, null)
             configuration.setDevice(device, false)
+            configuration.setTheme(CALIBRATION_THEME)
             true
         }
     } catch (e: ProcessCanceledException) {
         throw e // Never swallow cancellation — the platform relies on it propagating.
     } catch (e: Exception) {
-        thisLogger().info("Applying the calibration device spec failed; device pin unavailable", e)
+        thisLogger().info("Applying the calibration device and theme failed; the pin is unavailable", e)
         false
     } catch (e: LinkageError) {
         thisLogger().info(
-            "The device-spec parsing API is incompatible with this IDE build; device pin unavailable",
+            "The device-definition API is incompatible with this IDE build; the calibration pin is unavailable",
             e,
         )
         false
@@ -687,7 +718,7 @@ class RenderModelResolver {
      * [findConfigAwareElement] (PG4-2), and — before PG4-2 — the only path this class had.
      *
      * PG22-15: this used to take a `deviceSpec` parameter shared with a now-deleted `buildCalibrationDeviceElement`
-     * sibling — [applyCalibrationDevice] no longer builds a throwaway preview element at all, so [deviceSpec] here
+     * sibling — [applyCalibrationConfiguration] no longer builds a throwaway preview element at all, so [deviceSpec] here
      * is always the "no `@Preview` arguments given" sentinel and the parameter was removed rather than left unused.
      */
     private fun buildDefaultPreviewElement(entry: PreviewEntry): SingleComposePreviewElementInstance<*> {

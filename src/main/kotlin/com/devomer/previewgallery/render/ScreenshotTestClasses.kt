@@ -36,6 +36,27 @@ internal object ScreenshotTestClasses {
         return File(moduleDirectory, "build/intermediates/built_in_kotlinc/$sourceSet/$task/classes")
     }
 
+    /**
+     * PG22-19: whether [selectedVariant] — the variant the IDE resolves a module's *main* classes against
+     * ([AndroidModuleResolver.selectedVariantName]) — names the same variant as [referenceVariant], the one a
+     * reference root's directory carries and [directoryFor] takes its compiled test classes from.
+     *
+     * The injection only ever *adds* a directory to the render classpath, so on a flavoured module a
+     * `googleDebug` `screenshotTest` tree can end up linking against `huaweiDebug`'s `main`. The comparison is
+     * then between two programs rather than two renders, and no percentage over it means anything.
+     *
+     * Case-insensitive, because the two values arrive in different casings by construction: the source-set
+     * directory is `screenshotTestGoogleDebug`, so [referenceVariant] is upper-camel, while the build model names
+     * the same variant `googleDebug`. Nothing else about them differs — both are the plain variant name AGP uses
+     * in its own task names.
+     *
+     * A `null` [selectedVariant] matches. The IDE could not be asked, and refusing every comparison on a build
+     * that cannot answer would remove the measurement instead of protecting it — the same direction
+     * [AndroidModuleResolver.selectedVariantName] already takes by degrading to `null` rather than to a guess.
+     */
+    fun variantMatches(referenceVariant: String, selectedVariant: String?): Boolean =
+        selectedVariant == null || referenceVariant.equals(selectedVariant, ignoreCase = true)
+
     fun stateOf(directory: File, newestSourceMillis: Long?): State {
         val newestClass = newestClassMtime(directory)
         if (newestClass <= 0L) return State.Missing

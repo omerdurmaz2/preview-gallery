@@ -1,6 +1,8 @@
 package com.devomer.previewgallery.render
 
 import org.junit.Assert.assertEquals
+import org.junit.Assert.assertFalse
+import org.junit.Assert.assertTrue
 import org.junit.Rule
 import org.junit.Test
 import org.junit.rules.TemporaryFolder
@@ -93,6 +95,27 @@ class ScreenshotTestClassesTest {
         File(root, "manifest.txt").apply { createNewFile() }.setLastModified(NEWER_MTIME)
 
         assertEquals(OLDER_MTIME, ScreenshotTestClasses.newestClassMtime(root))
+    }
+
+    @Test
+    fun `variantMatches accepts the same variant across the two casings it arrives in`() {
+        assertTrue(ScreenshotTestClasses.variantMatches("GoogleDebug", "googleDebug"))
+        assertTrue(ScreenshotTestClasses.variantMatches("Debug", "debug"))
+    }
+
+    @Test
+    fun `variantMatches refuses another flavor of the same build type`() {
+        assertFalse(ScreenshotTestClasses.variantMatches("GoogleDebug", "huaweiDebug"))
+    }
+
+    @Test
+    fun `variantMatches refuses another build type of the same flavor`() {
+        assertFalse(ScreenshotTestClasses.variantMatches("GoogleDebug", "googleRelease"))
+    }
+
+    @Test
+    fun `variantMatches accepts an unknown selected variant rather than refusing the comparison`() {
+        assertTrue(ScreenshotTestClasses.variantMatches("GoogleDebug", null))
     }
 
     private companion object {

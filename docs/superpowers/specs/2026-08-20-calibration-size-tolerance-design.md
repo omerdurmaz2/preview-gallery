@@ -1,6 +1,8 @@
 # Design — let the calibration measure when the two renders differ by a pixel or two
 
-**Status:** proposed, awaiting implementation · **Feature:** F5's diff half, phase 1 (the calibration) ·
+**Status:** partly applied in `PG22-19` — the three configuration fixes below landed (with one of them refuted by
+its own evidence, see the parent doc); **D6b itself is still unimplemented and waits on a re-run of the gate** ·
+**Feature:** F5's diff half, phase 1 (the calibration) ·
 **Commit prefix:** `PG22`, continuing from `PG22-16`
 **Amends:** [2026-08-13-screenshottest-render-calibration-design.md](2026-08-13-screenshottest-render-calibration-design.md)
 — decision **D6** (the metric). Everything else in that document stands.

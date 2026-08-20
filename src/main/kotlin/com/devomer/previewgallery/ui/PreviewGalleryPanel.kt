@@ -5,6 +5,7 @@ import com.devomer.previewgallery.model.PreviewEntry
 import com.devomer.previewgallery.model.PreviewSourceLocation
 import com.devomer.previewgallery.model.ReferenceImage
 import com.devomer.previewgallery.model.RenderOutcome
+import com.devomer.previewgallery.render.AndroidModuleResolver
 import com.devomer.previewgallery.render.BuildService
 import com.devomer.previewgallery.render.EphemeralPickerBridge
 import com.devomer.previewgallery.render.ImageDiff
@@ -1038,6 +1039,17 @@ class PreviewGalleryPanel(
      * root that names one while taking the golden from whichever root sorted first would let a `googleDebug`
      * render be measured against a `huaweiDebug` golden on a flavoured module.
      *
+     * PG22-19: **which** root that is, is decided by the variant the IDE has selected
+     * ([AndroidModuleResolver.selectedVariantName], matched by [ScreenshotTestClasses.variantMatches]) rather than
+     * by sort order. The classpath injection only *adds* the named variant's `screenshotTest` classes; the render
+     * still resolves `main` against the selected variant, so a root from another flavour would have the two halves
+     * of one render come from two flavours and the percentage would be measuring two programs. A flavoured module
+     * that has committed a root for the selected flavour is therefore measured against that one, whatever sorted
+     * first, and only a module with no matching root at all is refused
+     * ([reportCompareVariantMismatch]). A build that cannot report a selected variant answers `null`, matches the
+     * first root and is never refused — the pre-PG22-19 behaviour, kept for the same reason that function
+     * degrades to `null` rather than to a guess.
+     *
      * The EDT half below gathers what only the EDT can read (the selection, the project model, the VFS — exactly
      * what [verifyTarget] gathers and for the same reason); [compareOffEdt] then does every remaining step —
      * freshness, the render, both PNG decodes and the measurement — off the EDT, and the result is published back
@@ -1060,10 +1072,13 @@ class PreviewGalleryPanel(
         val snapshot = selectedSnapshotEntry() ?: return
         val moduleDirectory = ModuleDirectoryResolver.resolve(project, snapshot.file)
             ?: return reportCompareUnavailable(snapshot)
-        val (root, variant) = ReferenceRoots.of(moduleDirectory)
-            .firstNotNullOfOrNull { candidate -> candidate.buildVariant?.let { candidate to it } }
-            ?: return reportCompareUnavailable(snapshot)
         val module = ModuleUtilCore.findModuleForFile(snapshot.file, project) ?: return reportCompareUnavailable(snapshot)
+        val candidates = ReferenceRoots.of(moduleDirectory)
+            .mapNotNull { candidate -> candidate.buildVariant?.let { candidate to it } }
+        if (candidates.isEmpty()) return reportCompareUnavailable(snapshot)
+        val selectedVariant = AndroidModuleResolver.selectedVariantName(module)
+        val (root, variant) = candidates.firstOrNull { ScreenshotTestClasses.variantMatches(it.second, selectedVariant) }
+            ?: return reportCompareVariantMismatch(snapshot, candidates.map { it.second }, selectedVariant)
         val golden = ReferenceImageLocator.locate(snapshot, listOf(root)).firstOrNull { it.variant == PHONE_VARIANT }
         val modality = ModalityState.defaultModalityState()
         AppExecutorUtil.getAppExecutorService().execute {
@@ -1081,6 +1096,27 @@ class PreviewGalleryPanel(
                 renderPanel.showVerified(snapshot, message.images, message.text)
             }, modality)
         }
+    }
+
+    /** What [compareLiveRender] says when every committed reference root belongs to a build variant other than the
+     *  one the IDE has selected ([availableVariants] against [selectedVariant]) — the render would link one
+     *  flavour's `screenshotTest` classes against another's `main`, so there is nothing worth measuring. Named
+     *  apart from [reportCompareUnavailable] because the module *has* goldens: what is missing is a matching
+     *  variant, and the fix is to switch the Build Variants pane rather than to run a Gradle task. */
+    private fun reportCompareVariantMismatch(
+        snapshot: PreviewEntry,
+        availableVariants: List<String>,
+        selectedVariant: String?,
+    ) {
+        renderPanel.showVerified(
+            snapshot,
+            emptyList(),
+            PreviewGalleryBundle.message(
+                "compare.variantMismatch",
+                availableVariants.joinToString(", ") { name -> name.replaceFirstChar { it.lowercaseChar() } },
+                selectedVariant.orEmpty(),
+            ),
+        )
     }
 
     /** What [compareLiveRender] says when its own EDT-side lookups found nothing to compare — the module directory,

@@ -6,6 +6,7 @@ import com.intellij.openapi.progress.ProcessCanceledException
 
 // ── Android Studio internal API (org.jetbrains.android / android-common). Design §3.1 keeps that coupling in
 // render/ only; this file joins RenderModelResolver + LiveRenderer + the picker bridges in that set. ──
+import com.android.tools.idea.gradle.project.model.GradleAndroidModel
 import com.android.tools.idea.util.findAndroidModule
 import org.jetbrains.android.facet.AndroidFacet
 
@@ -85,6 +86,42 @@ object AndroidModuleResolver {
             )
             moduleWithOwnFacet(module)
         }
+    }
+
+    /**
+     * PG22-19: the build variant the IDE has selected for [module]'s Android module (`debug`, `googleDebug`), or
+     * `null` when this IDE build, or this project, cannot answer.
+     *
+     * The calibration injects **one** variant's compiled `screenshotTest` classes into a render whose *main*
+     * classes the platform resolves against whichever variant is selected here ([ScreenshotTestClassLoader] adds
+     * to the classpath, it never replaces it). The variant it injects comes from a reference root's own directory
+     * name, which on a flavoured module can name a different flavour than the one the IDE is on — and the injected
+     * test classes would then link against another flavour's `main`. That is not a render worth measuring, so the
+     * caller compares the two and refuses ([ScreenshotTestClasses.variantMatches]).
+     *
+     * Resolved through [androidModule] first, so a KMP common source set answers with its Android target's
+     * variant rather than with nothing — and so the module read here is the same one
+     * `AndroidFacetRenderModelModule` is built from ([RenderModelResolver.resolveUnderReadAction]).
+     *
+     * Guarded exactly like [androidModule], and degrading to `null` rather than to a guess: "the IDE could not be
+     * asked" and "the IDE is on another variant" are different facts, and only the second is a reason to refuse a
+     * comparison.
+     *
+     * Reads the project model, so callers must hold a read action.
+     */
+    fun selectedVariantName(module: Module): String? = try {
+        androidModule(module)?.let { GradleAndroidModel.get(it)?.selectedVariantName }
+    } catch (e: ProcessCanceledException) {
+        throw e // Never swallow cancellation — the platform relies on it propagating.
+    } catch (e: Exception) {
+        thisLogger().info("Could not read the selected build variant for '${module.name}'", e)
+        null
+    } catch (e: LinkageError) {
+        thisLogger().info(
+            "The selected-variant API is incompatible with this IDE build; the variant check is unavailable",
+            e,
+        )
+        null
     }
 
     /** The pre-PG11-1 behaviour, kept as the fallback for every guarded failure path above. */
