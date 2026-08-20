@@ -138,18 +138,28 @@ class RenderModelResolver {
          * - `small`'s `@Preview` declares `widthDp = 320`; its full-screen golden is 840px wide, so density =
          *   840 / 320 = 2.625, i.e. 160 * 2.625 = **420dpi**.
          * - Dividing the `phone` golden's own pixel size (1080 x 2400) by that same density gives its dp size:
-         *   1080 / 2.625 = **411dp**, 2400 / 2.625 = **914dp** — Android Studio's own *Medium Phone*, the modern
-         *   Compose-preview default (and 420 is literally `Preview.DeviceSpec.DEFAULT_DPI` on this IDE build,
-         *   confirmed via `javap` against `android.jar` — not a coincidence, the constant this derivation lands on
-         *   is the platform's own default density).
+         *   1080 / 2.625 = **411.43dp**, 2400 / 2.625 = **914.29dp** — Android Studio's own *Medium Phone*, the
+         *   modern Compose-preview default (and 420 is literally `Preview.DeviceSpec.DEFAULT_DPI` on this IDE
+         *   build, confirmed via `javap` against `android.jar` — not a coincidence, the constant this derivation
+         *   lands on is the platform's own default density).
          *
-         * The string shape (`spec:width=<n>dp,height=<n>dp,dpi=<n>`) is confirmed the same way: `javap -p
+         * **Written in pixels, not dp, and that is the whole point of PG22-16.** Those dp sizes are not whole
+         * numbers, and a dp spec is converted before it is used: `DeviceUtilsKt.createDeviceInstance` sets
+         * `screen.xDimension = roundToInt(config.width)` after scaling by `dpi / 160`, so `411dp` becomes
+         * `roundToInt(411 * 2.625)` = `roundToInt(1078.875)` = **1079** — one pixel short of the golden, and a
+         * size mismatch measures nothing at all. A px spec skips that conversion entirely:
+         * `MutableDeviceConfig.setDimUnit` returns immediately when the unit is already `px` (an `if_acmpeq` to
+         * the exit, read from the bytecode), so `1080.0f` reaches `roundToInt` untouched and the device is exactly
+         * the golden's canvas. The gate proved this the expensive way: `1079x190 vs 1080x190`, with the height —
+         * which needed no rounding — already matching exactly.
+         *
+         * The string shape (`spec:width=<n>px,height=<n>px,dpi=<n>`) is confirmed the same way: `javap -p
          * -constants` against `com.android.tools.preview.config.Preview$DeviceSpec` in `android.jar` shows
          * `PREFIX = "spec:"`, `SEPARATOR = ','`, `OPERATOR = '='`, `PARAMETER_WIDTH = "width"`,
          * `PARAMETER_HEIGHT = "height"`, `PARAMETER_DPI = "dpi"`; `DimUnit` (same package) has `dp`/`px` as the
          * only dimension suffixes a width/height value takes, and `dpi` takes none — exactly the format used here.
          */
-        internal const val CALIBRATION_DEVICE_SPEC = "spec:width=411dp,height=914dp,dpi=420"
+        internal const val CALIBRATION_DEVICE_SPEC = "spec:width=1080px,height=2400px,dpi=420"
 
         /**
          * D3a: the pure form of the branch both [resolve] and [resolveUnderReadAction] decide with, extracted so

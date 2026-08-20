@@ -255,6 +255,27 @@ device ever changes, the live render's size stops matching the golden's and the 
 not match rather than reporting a percentage. A wrong device can therefore never be absorbed into the number —
 which is the property this whole calibration exists to protect.
 
+**D6a amended at the second gate run (2026-08-19): the device is written in pixels.** Pinning it worked — the render
+drew the composable and the golden side by side, and the height matched exactly — but the widths did not:
+
+```
+live vs golden configurations did not match, nothing measured: 1079x190 vs 1080x190
+```
+
+One pixel, and it was arithmetic, not disagreement. `DeviceUtilsKt.createDeviceInstance` scales a dp spec by
+`dpi / 160` and then rounds: `roundToInt(411 * 2.625)` = `roundToInt(1078.875)` = 1079. The goldens' dp size is
+simply not a whole number — 1080 / 2.625 is 411.43 — so no integer dp value can express it.
+
+Writing the spec in pixels removes the conversion rather than fighting it: `MutableDeviceConfig.setDimUnit` returns
+immediately when the unit is already `px`, so `1080.0f` reaches `roundToInt` untouched. The pinned device is now
+`spec:width=1080px,height=2400px,dpi=420` — the same device, expressed in the same units the goldens are measured
+in, which is what it should have been from the start. The dpi stays 420 because density is what turns `small`'s
+`widthDp = 320` into its 840px golden, and that half was always right.
+
+What this cost is worth recording: the height matching exactly, on the very first pinned run, was the evidence that
+the device was right and only its expression was wrong. A calibration that refuses to measure a size mismatch is
+what made that readable — a percentage would have absorbed the difference and been quietly wrong.
+
 **Upgrade path:** derive the spec from the goldens at runtime — the `small`/`phone` width ratio gives the density
 and the pixel sizes give the rest — instead of carrying the constants. Worth doing only if a second consuming
 project ever wants this, since the derivation needs both variants present.
