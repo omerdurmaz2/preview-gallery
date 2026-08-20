@@ -1,5 +1,7 @@
 package com.devomer.previewgallery.render
 
+import com.intellij.openapi.application.ApplicationManager
+import com.intellij.testFramework.PlatformTestUtil
 import com.intellij.testFramework.fixtures.BasePlatformTestCase
 
 /**
@@ -24,11 +26,31 @@ class BuildServiceCompileTargetTest : BasePlatformTestCase() {
         assertTrue(RenderApiProbe.isCompileTaskFinderAvailable())
     }
 
+    /**
+     * PG24-6: the callback arrives on the EDT and on a later tick than the call — [BuildService.deliver]'s own
+     * contract — so the queue has to be pumped before asserting. Asserting without the pump is what would catch a
+     * regression back to a synchronous callback, which is the shape that broke the manual Render path.
+     */
     fun `test a module that is not part of a Gradle project reports a failed build`() {
         val outcomes = mutableListOf<Boolean>()
 
         BuildService.getInstance(project).build(module) { outcomes += it }
+        assertEquals("the callback must not run synchronously", emptyList<Boolean>(), outcomes)
+        PlatformTestUtil.dispatchAllEventsInIdeEventQueue()
 
         assertEquals(listOf(false), outcomes)
+    }
+
+    /** The contract the manual Render path depends on: whatever thread a build finished on, what it reports
+     *  lands on the EDT, because the only caller publishes render state into Swing from it. */
+    fun `test the build callback runs on the EDT`() {
+        var onEdt: Boolean? = null
+
+        BuildService.getInstance(project).build(module) {
+            onEdt = ApplicationManager.getApplication().isDispatchThread
+        }
+        PlatformTestUtil.dispatchAllEventsInIdeEventQueue()
+
+        assertEquals(true, onEdt)
     }
 }

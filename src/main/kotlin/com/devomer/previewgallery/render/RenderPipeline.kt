@@ -195,6 +195,10 @@ class RenderPipeline(
             return
         }
         build.build(module) { success ->
+            // PG24-6: [BuildService] now delivers this on the EDT, which means it arrives on a later tick than
+            // the build's own completion — so the panel can have been disposed in between, exactly as it can for
+            // the render result below. Same guard, same reason.
+            if (disposalCheck.isDisposed) return@build
             if (gen != generation) return@build
             if (success) {
                 // The build just changed what's on disk under this module's output directory; drop the cached

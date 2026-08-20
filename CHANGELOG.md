@@ -4,6 +4,12 @@
 
 ### Fixed
 
+- The **Render** button could leave the pane on "Rendering…" forever: the build callback it waits on fired on
+  Gradle's own thread, and publishing render state from there threw an EDT-only assertion before the render was
+  ever submitted. Build results are now always delivered on the EDT.
+- A failed render's layoutlib problems are readable in the log and in Details instead of appearing as object
+  identity hashes.
+
 - Previews rendered at the wrong device: a `@Preview` that names no `device` left the render on whatever device
   the module's `ConfigurationManager` had persisted (in one project a large landscape screen), so a phone-shaped
   composable came back page-wide. The render now supplies the same fallback device Android Studio's own preview

@@ -2,6 +2,8 @@ package com.devomer.previewgallery.render
 
 import com.intellij.execution.executors.DefaultRunExecutor
 import com.intellij.openapi.Disposable
+import com.intellij.openapi.application.ApplicationManager
+import com.intellij.openapi.application.ModalityState
 import com.intellij.openapi.application.ReadAction
 import com.intellij.openapi.components.Service
 import com.intellij.openapi.components.service
@@ -74,21 +76,21 @@ class BuildService(private val project: Project) : Disposable {
 
     /**
      * Compiles [module]'s Kotlin compile Gradle task (see [resolveCompileTarget] for which one) and calls
-     * [onDone] with whether it succeeded. Cancels any build this service already has running first
-     * (single-flight, rule B4). A no-op that immediately calls `onDone(false)` while [DumbService.isDumb]
+     * [onDone] with whether it succeeded — **always on the EDT**, see [deliver]. Cancels any build this service
+     * already has running first (single-flight, rule B4). A no-op that calls `onDone(false)` while [DumbService.isDumb]
      * (rule B5), or when [module] is not part of a linked Gradle project.
      */
     fun build(module: Module, onDone: (Boolean) -> Unit) {
         if (DumbService.isDumb(project)) {
             thisLogger().debug("Skipping build for '${module.name}': the project is indexing")
-            onDone(false)
+            deliver(onDone, false)
             return
         }
 
         val target = resolveCompileTarget(module)
         if (target == null) {
             thisLogger().warn("Cannot build module '${module.name}': it is not part of a linked Gradle project")
-            onDone(false)
+            deliver(onDone, false)
             return
         }
 
@@ -129,11 +131,11 @@ class BuildService(private val project: Project) : Disposable {
         } catch (e: Exception) {
             thisLogger().warn("Failed to start a build for module '${module.name}'", e)
             removeListener(notifications, listener)
-            onDone(false)
+            deliver(onDone, false)
         } catch (e: LinkageError) {
             thisLogger().warn("The Gradle build API is incompatible with this IDE build", e)
             removeListener(notifications, listener)
-            onDone(false)
+            deliver(onDone, false)
         }
     }
 
@@ -183,7 +185,30 @@ class BuildService(private val project: Project) : Disposable {
         if (generation.get() == myGeneration) {
             currentTaskId.set(null)
         }
-        onDone(success)
+        deliver(onDone, success)
+    }
+
+    /**
+     * Hands [success] to [onDone] **on the EDT**, whatever thread the build finished on (PG24-6).
+     *
+     * The callback's only caller publishes render state into Swing, and Gradle's own `TaskCallback` fires on a
+     * background thread — so the manual **Render** path (build, then render on success) died on
+     * `Access is allowed from Event Dispatch Thread (EDT) only` thrown out of `ActionManager.createActionToolbar`,
+     * leaving the pane on "Rendering…" forever because the throw happened *before* the render was ever submitted.
+     * A gate run hit exactly that.
+     *
+     * The guarantee belongs here rather than at the call site because this class delivers [onDone] from four
+     * different places on three different threads — the caller's own (dumb mode, no Gradle target, a guarded
+     * failure) and Gradle's task callback — and only one of them was ever wrong. One rule in one place cannot be
+     * half-applied.
+     *
+     * Unconditional [ApplicationManager.invokeLater], not "invoke now if already on the EDT": a callback that is
+     * sometimes synchronous and sometimes not is the harder thing to reason about, and the caller's own
+     * generation check is written to tolerate the delay — that check exists precisely because a build can finish
+     * after the selection moved on.
+     */
+    private fun deliver(onDone: (Boolean) -> Unit, success: Boolean) {
+        ApplicationManager.getApplication().invokeLater({ onDone(success) }, ModalityState.defaultModalityState())
     }
 
     /** Cancels whatever build this service currently has in flight (rule B4). A no-op if nothing is running. */
