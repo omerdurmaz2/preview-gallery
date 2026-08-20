@@ -59,6 +59,30 @@ object PreviewPsiScanner {
         return result
     }
 
+    /**
+     * Whether [function] carries a preview annotation this plugin recognises — the same rule [scan] indexes by,
+     * asked of one function instead of a whole file (PG24-3, for the editor gutter marker).
+     *
+     * Both halves of that rule, deliberately: a direct `@Preview` **or** a bare `@PreviewTest`, because the
+     * reference project marks its snapshot functions through a custom multipreview that no file-local check can
+     * resolve — exactly the case [scan]'s own `matches.isEmpty() && !isSnapshotTest` guard exists for. Sharing
+     * this function is what keeps the gutter from marking a different set of functions than the tree lists.
+     *
+     * Reads the containing file's import list on every call. That is affordable only because the caller filters
+     * down to a function's own name identifier first; called per PSI leaf it would not be.
+     */
+    fun isPreviewFunction(function: KtNamedFunction): Boolean {
+        val imports = function.containingKtFile.importDirectives.mapNotNull { directive ->
+            val fqn = directive.importedFqName?.asString() ?: return@mapNotNull null
+            ImportInfo(fqn, directive.aliasName, directive.isAllUnder)
+        }
+        return function.annotationEntries.any { entry ->
+            val reference = entry.referenceText() ?: return@any false
+            PreviewAnnotationMatcher.matchPreview(reference, imports) != null ||
+                PreviewAnnotationMatcher.isPreviewTest(reference, imports)
+        }
+    }
+
     private fun build(
         function: KtNamedFunction,
         annotation: KtAnnotationEntry?,

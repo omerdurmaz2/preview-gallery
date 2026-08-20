@@ -27,6 +27,14 @@
         <searchEverywhereContributor
             implementation="com.devomer.previewgallery.searcheverywhere.PreviewSearchEverywhereContributorFactory"/>
         <notificationGroup id="Compose Preview Gallery" displayType="BALLOON"/>
+        <!--
+            PG24-3: the gutter route to "Show all previews", beside Android Studio's own run-preview icon.
+            An ordinary line marker rather than a runLineMarkerContributor: the latter would merge into the run
+            gutter group and need a popup opened before either icon could be clicked.
+        -->
+        <codeInsight.lineMarkerProvider
+            language="kotlin"
+            implementationClass="com.devomer.previewgallery.editor.ShowAllPreviewsLineMarkerProvider"/>
         <postStartupActivity implementation="com.devomer.previewgallery.service.McpServerStartup"/>
     </extensions>
 

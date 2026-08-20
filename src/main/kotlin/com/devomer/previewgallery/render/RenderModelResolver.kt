@@ -27,6 +27,7 @@ import com.android.tools.preview.SingleComposePreviewElementInstance
 import com.android.tools.preview.XmlSerializable
 import com.android.tools.preview.applyTo
 import com.android.tools.preview.config.findOrParseFromDefinition
+import com.android.tools.preview.config.getDefaultPreviewDevice
 import com.android.tools.rendering.RenderLogger
 import com.android.tools.rendering.api.RenderModelModule
 
@@ -434,12 +435,34 @@ class RenderModelResolver {
      * catch. Despite the name (kept from PG4-2, its original and still most common caller), this helper is
      * generic in [element] — PG6-10's [applyOverride] reuses it verbatim for an override-derived element, where a
      * throw here falls back to that override's own base element rather than the default-config render.
+     *
+     * ## PG24: the fallback device is not optional, and leaving it out made every plain preview the wrong size
+     *
+     * `applyTo`'s third parameter is a `(Configuration) -> Device` consulted when the preview itself names no
+     * device. Its default — `PreviewConfigurationKt$applyTo$1`, whose `invoke` returns `Void`, i.e. `null`
+     * (`javap -c`) — means "no fallback", and `applyTo` then **skips `setDevice` entirely**: the branch at its
+     * offset 426 is `if (device != null)`. A `@Preview` with no `device =` argument and no `widthDp`/`heightDp`
+     * therefore left [configuration] on whatever device the module's own `ConfigurationManager` had persisted for
+     * that file — in the reference project a large landscape screen (a gate run measured `2152x2076`), which is
+     * why a phone-shaped composable came back looking like a desktop page while Android Studio's own editor
+     * preview beside it was the right shape.
+     *
+     * Android Studio does not use that default. `ComposePreviewElementModelAdapter.applyToConfiguration` — the
+     * one call behind the editor's own preview — is exactly
+     * `previewElement.applyTo(configuration) { it.settings.getDefaultPreviewDevice() }` (`javap -c`, its
+     * `applyToConfiguration$lambda$0`), and [getDefaultPreviewDevice] is
+     * `settings.devices.firstOrNull { it.id == "pixel_5" } ?: settings.defaultDevice`. Passing the same lambda
+     * makes this render pick the same device the editor picks, from the same catalogue, rather than inheriting a
+     * workspace-persisted one.
+     *
+     * The calibration path is unaffected: [applyCalibrationConfiguration] runs *after* this and sets
+     * [CALIBRATION_DEVICE_SPEC] over whatever this chose, which is the device the goldens were drawn on.
      */
     private fun applyConfigAware(
         element: ComposePreviewElementInstance<*>,
         configuration: Configuration,
     ): Boolean = try {
-        element.applyTo(configuration)
+        element.applyTo(configuration) { it.settings.getDefaultPreviewDevice() }
         true
     } catch (e: ProcessCanceledException) {
         throw e // Never swallow cancellation — the platform relies on it propagating.

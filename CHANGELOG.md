@@ -2,7 +2,17 @@
 
 ## [Unreleased]
 
+### Fixed
+
+- Previews rendered at the wrong device: a `@Preview` that names no `device` left the render on whatever device
+  the module's `ConfigurationManager` had persisted (in one project a large landscape screen), so a phone-shaped
+  composable came back page-wide. The render now supplies the same fallback device Android Studio's own preview
+  does.
+
 ### Added
+
+- **Show all previews** in the editor gutter beside every `@Preview` function, next to the run-preview icon, doing
+  what the preview toolbar's button of the same name does.
 
 - `@PreviewParameter` previews render: the provider's values are resolved and the composable is rendered once per
   value, stacked in one strip with each value's label under it (capped at 16 values, and the drop is logged). A
