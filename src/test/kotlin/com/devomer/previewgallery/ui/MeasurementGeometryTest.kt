@@ -89,9 +89,21 @@ class MeasurementGeometryTest {
     }
 
     @Test
-    fun `labels are whole dp when the value is whole and one decimal otherwise`() {
+    fun `a length a whole dp value rounds to is labelled with that whole value`() {
+        assertEquals("6dp", MeasurementGeometry.formatDp(17, 440))
         assertEquals("16dp", MeasurementGeometry.formatDp(44, 440))
-        assertEquals("16.4dp", MeasurementGeometry.formatDp(45, 440))
         assertEquals("16dp", MeasurementGeometry.formatDp(16, 160))
+    }
+
+    @Test
+    fun `without a whole value a half dp value that rounds to the length is used`() {
+        assertEquals("1.5dp", MeasurementGeometry.formatDp(4, 440))
+        assertEquals("0.5dp", MeasurementGeometry.formatDp(1, 440))
+        assertEquals("16.5dp", MeasurementGeometry.formatDp(45, 440))
+    }
+
+    @Test
+    fun `without a whole or half value the label is the plain conversion`() {
+        assertEquals("5.8dp", MeasurementGeometry.formatDp(16, 440))
     }
 }

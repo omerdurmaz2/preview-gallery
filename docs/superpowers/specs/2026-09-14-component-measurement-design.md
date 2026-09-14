@@ -92,9 +92,18 @@ Worked examples (render px, rectangles as `left,top – right,bottom`):
 
 ## Label
 
-- **Value.** `dp = px × 160 / dpi`, using `ZoomMath.contentScale(dpi)` for the conversion.
-- **Format.** When the value is within 0.05 of a whole number it prints as an integer (`16dp`); otherwise it gets one
-  decimal (`16.4dp`). The number is formatted with `Locale.ROOT`, so the separator is always a dot.
+- **Value.** Compose draws a dp value as `round(dp × density)` whole pixels, with `density = dpi / 160`. This is
+  `Density.roundToPx`, which `Arrangement.spacedBy`, `padding` and fixed sizes all use. A measured pixel length
+  therefore stands for every dp value that rounds to it: at 440 dpi, 17 px is anything from 6.0 dp up to 6.36 dp.
+- **Format.** The label shows the simplest of those values, in this order:
+  - a whole dp value that rounds to the length (`6dp`);
+  - otherwise a half (`1.5dp`);
+  - otherwise `px / density` with one decimal (`5.8dp`).
+
+  The number is formatted with `Locale.ROOT`, so the separator is always a dot.
+
+  A gap that is the difference of two separately rounded positions (for example `SpaceBetween`, or the pixels left
+  over from weights) can still be a pixel off.
 - **Look.** A rounded pill in the measurement color, with white small-font text (`JBUI.Fonts.smallFont()`), centered
   on the line's midpoint. The pill and the line thickness are fixed screen sizes and do not grow with zoom. Lines are
   1 px solid and guides are 1 px dashed.
@@ -103,7 +112,16 @@ Worked examples (render px, rectangles as `left,top – right,bottom`):
 Known limitation: when the render's density cannot be read, `LiveRenderer` falls back to 160 dpi. The label then
 shows pixels labelled as dp. Zoom already relies on the same fallback.
 
-Examples: 44 px at 440 dpi → `16dp`; 45 px at 440 dpi → `16.4dp`; 16 px at 160 dpi → `16dp`.
+Examples at 440 dpi:
+
+- 17 px → `6dp`. `Arrangement.spacedBy(6.dp)` asks for 16.5 px and gets 17; the plain conversion would say `6.2dp`.
+- 44 px → `16dp`
+- 4 px → `1.5dp`
+- 1 px → `0.5dp`
+- 45 px → `16.5dp`
+- 16 px → `5.8dp`
+
+At 160 dpi, 16 px → `16dp`.
 
 ## What to build
 
@@ -135,7 +153,7 @@ Nothing changes in `PreviewRenderPanel`, `PreviewGalleryPanel`, the model or `re
 
 Tests are written after the feature works. Each new test must be shown to fail with its production change reverted.
 
-- **`MeasurementGeometryTest`** (plain JUnit): every row of the worked-examples table, `H` inside `S`, and the three
+- **`MeasurementGeometryTest`** (plain JUnit): every row of the worked-examples table, `H` inside `S`, and the
   `formatDp` examples.
 - **`ZoomableRenderViewTest`** (existing, platform fixture):
   - A single click selects and does not navigate; a double click navigates. The existing click-to-source test moves

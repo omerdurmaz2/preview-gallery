@@ -4,6 +4,7 @@ import java.awt.Rectangle
 import java.util.Locale
 import kotlin.math.max
 import kotlin.math.min
+import kotlin.math.roundToInt
 
 object MeasurementGeometry {
 
@@ -29,8 +30,15 @@ object MeasurementGeometry {
         return measurements.filter { it.lengthPx > 0 }
     }
 
-    fun formatDp(lengthPx: Int, dpi: Int): String =
-        String.format(Locale.ROOT, "%.1f", lengthPx * ZoomMath.contentScale(dpi)).removeSuffix(".0") + "dp"
+    fun formatDp(lengthPx: Int, dpi: Int): String {
+        val density = (1 / ZoomMath.contentScale(dpi)).toFloat()
+        val exact = lengthPx / density
+        val value = listOf(1f, 0.5f)
+            .map { step -> (exact / step).roundToInt() * step }
+            .firstOrNull { (it * density).roundToInt() == lengthPx }
+            ?: exact
+        return String.format(Locale.ROOT, "%.1f", value).removeSuffix(".0") + "dp"
+    }
 
     private enum class Axis { X, Y }
 
