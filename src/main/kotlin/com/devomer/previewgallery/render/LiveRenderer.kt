@@ -308,10 +308,8 @@ class LiveRenderer(
             }
 
             // U4: the ImagePool image is recycled on dispose(), so copy the pixels into a detached BufferedImage
-            //     now, inside processImageIfNotDisposed, before the finally block runs.
-            var image: BufferedImage? = null
-            result.processImageIfNotDisposed { pooled -> image = pooled.getCopy() }
-            val copied = image
+            //     now, before the finally block runs.
+            val copied = result.renderedImage.getCopy()
                 ?: return failure("Render produced no image", result)
 
             return verifySomethingWasDrawn(copied, result, renderDpi(task, model))
@@ -319,11 +317,11 @@ class LiveRenderer(
             // MANDATORY (design §5.1): release layoutlib render contexts / class loaders. Guarded so a dispose
             // failure never masks the real outcome.
             try {
-                task.dispose()
+                task.disposeAsync()
             } catch (e: Exception) {
-                thisLogger().warn("RenderTask.dispose() failed", e)
+                thisLogger().warn("RenderTask.disposeAsync() failed", e)
             } catch (e: LinkageError) {
-                thisLogger().warn("RenderTask.dispose() failed", e)
+                thisLogger().warn("RenderTask.disposeAsync() failed", e)
             }
         }
     }

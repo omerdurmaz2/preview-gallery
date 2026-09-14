@@ -14,9 +14,9 @@ object RenderApiProbe {
         "com.android.tools.rendering.RenderService" to listOf("taskBuilder"),
         // executeCallbacks is what lets the Compose runtime run its frame callbacks between the two render
         // passes; without it the captured frame is the uncomposed one (see LiveRenderer's class doc).
-        "com.android.tools.rendering.RenderTask" to listOf("inflate", "render", "executeCallbacks", "dispose"),
+        "com.android.tools.rendering.RenderTask" to listOf("inflate", "render", "executeCallbacks", "disposeAsync"),
         "com.android.tools.rendering.ExecuteCallbacksResult" to listOf("hasMoreCallbacks"),
-        "com.android.tools.rendering.RenderResult" to listOf("processImageIfNotDisposed", "getRootViews", "dispose"),
+        "com.android.tools.rendering.RenderResult" to listOf("getRenderedImage", "getRootViews", "dispose"),
         "com.android.tools.idea.rendering.AndroidFacetRenderModelModule" to emptyList(),
         "com.android.tools.preview.SingleComposePreviewElementInstance" to emptyList(),
     )
