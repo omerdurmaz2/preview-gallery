@@ -58,7 +58,8 @@ reference strips, which carry images without view trees and have no hover outlin
 `S` is the selected node's bounds and `H` is the hovered node's bounds, both in render pixels. On each axis the
 bounds form an interval `[start, end]` with `end = start + size`. An axis is **disjoint** when `S.end <= H.start` or
 `H.end <= S.start`. The rectangles **intersect** when neither axis is disjoint; containment counts as intersecting.
-Every line runs from its lower coordinate to its higher one along its own axis.
+Every measurement line runs from its lower coordinate to its higher one along its own axis; a guide runs from the
+line to `H`.
 
 **R1 — Not intersecting: gap lines.** Every disjoint axis gets one line between the two facing edges:
 
@@ -111,8 +112,8 @@ Examples: 44 px at 440 dpi → `16dp`; 45 px at 440 dpi → `16.4dp`; 16 px at 1
 It has no Swing dependency and no Android Studio types, like `PreviewViewHitTester` and `ZoomMath`.
 
 - `fun measure(selected: Rectangle, hovered: Rectangle): List<Measurement>` implements R1–R3.
-- `data class Measurement(start, end, lengthPx: Int, guide)`. Points are render-pixel doubles, since midpoints can be
-  half pixels. `guide` is a nullable start/end pair.
+- `data class Line(x1, y1, x2, y2)` holds render-pixel doubles, since midpoints can be half pixels.
+  `data class Measurement(line: Line, lengthPx: Int, guide: Line?)` pairs a line with its length and optional guide.
 - `fun formatDp(lengthPx: Int, dpi: Int): String` produces the label text.
 
 ### 2. `ui/ZoomableRenderView.kt` — selection, Alt, painting
