@@ -2,13 +2,21 @@ package com.devomer.previewgallery.ui
 
 import com.devomer.previewgallery.model.PreviewSourceLocation
 import com.devomer.previewgallery.model.PreviewViewNode
+import com.intellij.openapi.actionSystem.ActionUpdateThread
+import com.intellij.openapi.actionSystem.AnAction
+import com.intellij.openapi.actionSystem.AnActionEvent
+import com.intellij.openapi.actionSystem.CommonShortcuts
+import com.intellij.openapi.project.DumbAwareAction
 import com.intellij.ui.JBColor
+import com.intellij.util.ui.JBUI
+import java.awt.BasicStroke
 import java.awt.Color
 import java.awt.Cursor
 import java.awt.Dimension
 import java.awt.Graphics
 import java.awt.Graphics2D
 import java.awt.Point
+import java.awt.Rectangle
 import java.awt.RenderingHints
 import java.awt.event.ComponentAdapter
 import java.awt.event.ComponentEvent
@@ -32,7 +40,7 @@ import kotlin.math.roundToInt
  * Coordinates: a mouse point in this component is in zoomed-image space, so `renderPoint = point / displayScale`
  * (no letterbox — the component's bounds ARE the zoomed image; [displayScale] folds in both the user's zoom
  * percentage and the render's device-pixel-to-dp conversion, PG12-3). When [handToolActive], drag pans the
- * enclosing viewport and the overlay is inert; otherwise hover outlines and click navigates (Phase 4).
+ * enclosing viewport and the overlay is inert; otherwise hover outlines, a click selects and a double click navigates.
  */
 class ZoomableRenderView : JComponent() {
 
@@ -40,6 +48,20 @@ class ZoomableRenderView : JComponent() {
     private var viewTree: List<PreviewViewNode> = emptyList()
 
     @Volatile private var hovered: PreviewViewNode? = null
+
+    private var selected: PreviewViewNode? = null
+
+    internal val selectedNode: PreviewViewNode? get() = selected
+
+    internal val clearSelectionAction: AnAction = object : DumbAwareAction() {
+        override fun getActionUpdateThread(): ActionUpdateThread = ActionUpdateThread.EDT
+
+        override fun update(e: AnActionEvent) {
+            e.presentation.isEnabled = selected != null
+        }
+
+        override fun actionPerformed(e: AnActionEvent) = selectNode(null)
+    }
 
     var onNavigateToSource: (List<PreviewSourceLocation>) -> Unit = {}
 
@@ -124,6 +146,7 @@ class ZoomableRenderView : JComponent() {
 
     init {
         isOpaque = true
+        isFocusable = true
         addMouseMotionListener(object : MouseMotionAdapter() {
             override fun mouseMoved(e: MouseEvent) { if (!handToolActive) updateHover(e.point) }
             override fun mouseDragged(e: MouseEvent) { if (handToolActive) panBy(e) }
@@ -132,10 +155,15 @@ class ZoomableRenderView : JComponent() {
             override fun mousePressed(e: MouseEvent) { if (handToolActive) panStart = e.point }
             override fun mouseReleased(e: MouseEvent) { panStart = null }
             override fun mouseClicked(e: MouseEvent) {
-                if (!handToolActive && SwingUtilities.isLeftMouseButton(e)) navigateAt(e.point)
+                if (handToolActive || !SwingUtilities.isLeftMouseButton(e)) return
+                when (e.clickCount) {
+                    1 -> selectAt(e.point)
+                    2 -> navigateAt(e.point)
+                }
             }
             override fun mouseExited(e: MouseEvent) { if (hovered != null) { hovered = null; repaint() } }
         })
+        clearSelectionAction.registerCustomShortcutSet(CommonShortcuts.ESCAPE, this)
         ViewportGestures.install(this, ZoomBinding())
     }
 
@@ -161,12 +189,13 @@ class ZoomableRenderView : JComponent() {
 
     /**
      * A new render's image + view tree, plus the density it was rendered at ([RenderOutcome.Success.dpi]); resets
-     * zoom to [fitToViewport] and clears any prior hover.
+     * zoom to [fitToViewport] and clears any prior hover and selection.
      */
     fun setContent(image: BufferedImage, viewTree: List<PreviewViewNode>, dpi: Int) {
         this.image = image
         this.viewTree = viewTree
         this.hovered = null
+        this.selected = null
         this.contentScale = ZoomMath.contentScale(dpi)
         this.contentDp = ZoomMath.dpSize(Dimension(image.width, image.height), dpi)
         this.pendingFit = true
@@ -177,6 +206,7 @@ class ZoomableRenderView : JComponent() {
         image = null
         viewTree = emptyList()
         hovered = null
+        selected = null
         contentScale = 1.0
         contentDp = Dimension(0, 0)
         pendingFit = false
@@ -215,19 +245,29 @@ class ZoomableRenderView : JComponent() {
             g2.setRenderingHint(RenderingHints.KEY_RENDERING, RenderingHints.VALUE_RENDER_QUALITY)
             val scale = displayScale
             g2.drawImage(img, 0, 0, (img.width * scale).roundToInt(), (img.height * scale).roundToInt(), null)
-            val node = hovered
-            if (!handToolActive && node != null) {
-                val b = node.bounds
+            val baseStroke = g2.stroke
+            selected?.let {
                 g2.color = HOVER_OUTLINE
-                g2.drawRect(
-                    (b.x * scale).roundToInt(), (b.y * scale).roundToInt(),
-                    (b.width * scale).roundToInt().coerceAtLeast(0),
-                    (b.height * scale).roundToInt().coerceAtLeast(0),
-                )
+                g2.stroke = BasicStroke(JBUI.scale(2f))
+                drawOutline(g2, it.bounds, scale)
+                g2.stroke = baseStroke
+            }
+            val node = hovered
+            if (!handToolActive && node != null && node !== selected) {
+                g2.color = HOVER_OUTLINE
+                drawOutline(g2, node.bounds, scale)
             }
         } finally {
             g2.dispose()
         }
+    }
+
+    private fun drawOutline(g2: Graphics2D, bounds: Rectangle, scale: Double) {
+        g2.drawRect(
+            (bounds.x * scale).roundToInt(), (bounds.y * scale).roundToInt(),
+            (bounds.width * scale).roundToInt().coerceAtLeast(0),
+            (bounds.height * scale).roundToInt().coerceAtLeast(0),
+        )
     }
 
     private fun renderPointOf(p: Point): Point? {
@@ -241,6 +281,18 @@ class ZoomableRenderView : JComponent() {
         val rp = renderPointOf(p)
         val next = if (rp == null) null else PreviewViewHitTester.innermostAt(viewTree, rp)
         if (next !== hovered) { hovered = next; repaint() }
+    }
+
+    private fun selectAt(p: Point) {
+        requestFocusInWindow()
+        val rp = renderPointOf(p)
+        selectNode(if (rp == null) null else PreviewViewHitTester.innermostAt(viewTree, rp))
+    }
+
+    private fun selectNode(node: PreviewViewNode?) {
+        if (node === selected) return
+        selected = node
+        repaint()
     }
 
     private fun navigateAt(p: Point) {

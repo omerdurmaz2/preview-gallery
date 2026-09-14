@@ -39,11 +39,11 @@ class ZoomableRenderViewTest : BasePlatformTestCase() {
     /** Dispatches a synthetic left-button `MOUSE_CLICKED` event directly at [view]. Both the button field and a
      *  BUTTON1_DOWN_MASK modifier are set so `SwingUtilities.isLeftMouseButton` recognizes it regardless of which
      *  of the two it keys off. */
-    private fun clickAt(view: ZoomableRenderView, x: Int, y: Int) {
+    private fun clickAt(view: ZoomableRenderView, x: Int, y: Int, clickCount: Int = 1) {
         view.dispatchEvent(
             MouseEvent(
                 view, MouseEvent.MOUSE_CLICKED, System.currentTimeMillis(),
-                InputEvent.BUTTON1_DOWN_MASK, x, y, 1, false, MouseEvent.BUTTON1,
+                InputEvent.BUTTON1_DOWN_MASK, x, y, clickCount, false, MouseEvent.BUTTON1,
             ),
         )
     }
@@ -159,7 +159,7 @@ class ZoomableRenderViewTest : BasePlatformTestCase() {
     /**
      * PG12-3 regression: `renderPointOf` -- which backs both hover (`updateHover`) and click-to-source
      * (`navigateAt`) -- must invert through `displayScale`, not raw `zoomFactor`. Same non-identity 440 dpi
-     * fixture and geometry as the hover-outline test above, but exercised through a left click instead of a
+     * fixture and geometry as the hover-outline test above, but exercised through a double click instead of a
      * hover, so it specifically discriminates `navigateAt`'s use of `renderPointOf` (painting is not involved).
      */
     fun `test click-to-source hit-tests through displayScale, not raw zoomFactor, at a non-identity density`() {
@@ -175,7 +175,7 @@ class ZoomableRenderViewTest : BasePlatformTestCase() {
         // Same displayScale-derived screen point as the hover test: (320, 320) inverts to render-pixel (880, 880)
         // -- inside the node -- ONLY when divided by displayScale (0.363636...). Divided by raw zoomFactor (1.0)
         // it stays (320, 320), which misses the node's [800..910) x [800..910) bounds entirely.
-        clickAt(view, 320, 320)
+        clickAt(view, 320, 320, clickCount = 2)
 
         assertEquals(listOf(source), received)
     }

@@ -2,6 +2,10 @@
 
 ## [Unreleased]
 
+### Changed
+
+- Opening a composable's source from the render now takes a double click; a single click selects the composable.
+
 ## [0.1.0] - 2026-08-20
 
 First build shared with the team.
