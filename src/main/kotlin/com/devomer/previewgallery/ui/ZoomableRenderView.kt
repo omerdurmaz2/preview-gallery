@@ -8,6 +8,7 @@ import com.intellij.openapi.actionSystem.AnActionEvent
 import com.intellij.openapi.actionSystem.CommonShortcuts
 import com.intellij.openapi.project.DumbAwareAction
 import com.intellij.ui.JBColor
+import com.intellij.util.ui.GraphicsUtil
 import com.intellij.util.ui.JBUI
 import java.awt.BasicStroke
 import java.awt.Color
@@ -20,6 +21,10 @@ import java.awt.Rectangle
 import java.awt.RenderingHints
 import java.awt.event.ComponentAdapter
 import java.awt.event.ComponentEvent
+import java.awt.event.FocusAdapter
+import java.awt.event.FocusEvent
+import java.awt.event.KeyAdapter
+import java.awt.event.KeyEvent
 import java.awt.event.MouseAdapter
 import java.awt.event.MouseEvent
 import java.awt.event.MouseMotionAdapter
@@ -40,7 +45,8 @@ import kotlin.math.roundToInt
  * Coordinates: a mouse point in this component is in zoomed-image space, so `renderPoint = point / displayScale`
  * (no letterbox — the component's bounds ARE the zoomed image; [displayScale] folds in both the user's zoom
  * percentage and the render's device-pixel-to-dp conversion, PG12-3). When [handToolActive], drag pans the
- * enclosing viewport and the overlay is inert; otherwise hover outlines, a click selects and a double click navigates.
+ * enclosing viewport and the overlay is inert; otherwise hover outlines, a click selects, a double click navigates,
+ * and holding Alt measures from the selection to the hovered node.
  */
 class ZoomableRenderView : JComponent() {
 
@@ -52,6 +58,10 @@ class ZoomableRenderView : JComponent() {
     private var selected: PreviewViewNode? = null
 
     internal val selectedNode: PreviewViewNode? get() = selected
+
+    private var altDown: Boolean = false
+
+    private var dpi: Int = 0
 
     internal val clearSelectionAction: AnAction = object : DumbAwareAction() {
         override fun getActionUpdateThread(): ActionUpdateThread = ActionUpdateThread.EDT
@@ -148,8 +158,19 @@ class ZoomableRenderView : JComponent() {
         isOpaque = true
         isFocusable = true
         addMouseMotionListener(object : MouseMotionAdapter() {
-            override fun mouseMoved(e: MouseEvent) { if (!handToolActive) updateHover(e.point) }
+            override fun mouseMoved(e: MouseEvent) {
+                if (handToolActive) return
+                setAltDown(e.isAltDown)
+                updateHover(e.point)
+            }
             override fun mouseDragged(e: MouseEvent) { if (handToolActive) panBy(e) }
+        })
+        addKeyListener(object : KeyAdapter() {
+            override fun keyPressed(e: KeyEvent) { if (e.keyCode == KeyEvent.VK_ALT) setAltDown(true) }
+            override fun keyReleased(e: KeyEvent) { if (e.keyCode == KeyEvent.VK_ALT) setAltDown(false) }
+        })
+        addFocusListener(object : FocusAdapter() {
+            override fun focusLost(e: FocusEvent) = setAltDown(false)
         })
         addMouseListener(object : MouseAdapter() {
             override fun mousePressed(e: MouseEvent) { if (handToolActive) panStart = e.point }
@@ -196,6 +217,7 @@ class ZoomableRenderView : JComponent() {
         this.viewTree = viewTree
         this.hovered = null
         this.selected = null
+        this.dpi = dpi
         this.contentScale = ZoomMath.contentScale(dpi)
         this.contentDp = ZoomMath.dpSize(Dimension(image.width, image.height), dpi)
         this.pendingFit = true
@@ -257,9 +279,75 @@ class ZoomableRenderView : JComponent() {
                 g2.color = HOVER_OUTLINE
                 drawOutline(g2, node.bounds, scale)
             }
+            paintMeasurements(g2, currentMeasurements(), scale)
         } finally {
             g2.dispose()
         }
+    }
+
+    internal fun currentMeasurements(): List<MeasurementGeometry.Measurement> {
+        val from = selected ?: return emptyList()
+        val to = hovered ?: return emptyList()
+        if (!altDown || to === from) return emptyList()
+        return MeasurementGeometry.measure(from.bounds, to.bounds)
+    }
+
+    private fun setAltDown(down: Boolean) {
+        if (altDown == down) return
+        altDown = down
+        repaint()
+    }
+
+    private fun paintMeasurements(g2: Graphics2D, measurements: List<MeasurementGeometry.Measurement>, scale: Double) {
+        if (measurements.isEmpty()) return
+        g2.color = MEASURE_COLOR
+        val solid = BasicStroke(JBUI.scale(1f))
+        val dashed = BasicStroke(
+            JBUI.scale(1f), BasicStroke.CAP_BUTT, BasicStroke.JOIN_MITER, 10f,
+            floatArrayOf(JBUI.scale(3f), JBUI.scale(3f)), 0f,
+        )
+        measurements.forEach { measurement ->
+            measurement.guide?.let {
+                g2.stroke = dashed
+                drawLine(g2, it, scale)
+            }
+            g2.stroke = solid
+            drawLine(g2, measurement.line, scale)
+        }
+        g2.font = JBUI.Fonts.smallFont()
+        GraphicsUtil.setupAAPainting(g2)
+        GraphicsUtil.setupAntialiasing(g2)
+        measurements.forEach { measurement ->
+            val line = measurement.line
+            paintLabel(
+                g2,
+                MeasurementGeometry.formatDp(measurement.lengthPx, dpi),
+                (line.x1 + line.x2) / 2 * scale,
+                (line.y1 + line.y2) / 2 * scale,
+            )
+        }
+    }
+
+    private fun drawLine(g2: Graphics2D, line: MeasurementGeometry.Line, scale: Double) {
+        g2.drawLine(
+            (line.x1 * scale).roundToInt(), (line.y1 * scale).roundToInt(),
+            (line.x2 * scale).roundToInt(), (line.y2 * scale).roundToInt(),
+        )
+    }
+
+    private fun paintLabel(g2: Graphics2D, text: String, centerX: Double, centerY: Double) {
+        val metrics = g2.fontMetrics
+        val padX = JBUI.scale(4)
+        val padY = JBUI.scale(1)
+        val width = metrics.stringWidth(text) + padX * 2
+        val height = metrics.height + padY * 2
+        val x = (centerX - width / 2.0).roundToInt()
+        val y = (centerY - height / 2.0).roundToInt()
+        val arc = JBUI.scale(6)
+        g2.color = MEASURE_COLOR
+        g2.fillRoundRect(x, y, width, height, arc, arc)
+        g2.color = Color.WHITE
+        g2.drawString(text, x + padX, y + padY + metrics.ascent)
     }
 
     private fun drawOutline(g2: Graphics2D, bounds: Rectangle, scale: Double) {
@@ -321,5 +409,6 @@ class ZoomableRenderView : JComponent() {
 
     private companion object {
         private val HOVER_OUTLINE = JBColor(Color(0x3574F0), Color(0x548AF7))
+        private val MEASURE_COLOR = JBColor(Color(0xF24822), Color(0xF24822))
     }
 }

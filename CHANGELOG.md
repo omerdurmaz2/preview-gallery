@@ -2,6 +2,11 @@
 
 ## [Unreleased]
 
+### Added
+
+- Distance measurement on the render: select a composable, hold Alt (Option on macOS) and point at another to see
+  the gap between them in dp, or the four paddings when one contains the other.
+
 ### Changed
 
 - Opening a composable's source from the render now takes a double click; a single click selects the composable.

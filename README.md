@@ -19,6 +19,8 @@ panel.
   target.
 - `@PreviewParameter` previews render once per provider value, stacked with each value labelled.
 - Zoom, pan, save as PNG, copy to clipboard. Double-click any part of a render to open the code that draws it.
+- Measure spacing the way Figma does: click a component, hold Alt (Option on macOS) and point at another to read
+  the distance between them in dp, or the four paddings when one contains the other.
 - Comparison views: several copies of one preview side by side, each with its own configuration, edited
   through Android Studio's own `@Preview` property picker.
 - Reachable from the editor: a gutter icon on every `@Preview` function, a button on the preview toolbar, and
