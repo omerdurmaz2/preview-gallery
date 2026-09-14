@@ -2,11 +2,15 @@ package com.devomer.previewgallery.ui
 
 import com.devomer.previewgallery.model.PreviewSourceLocation
 import com.devomer.previewgallery.model.PreviewViewNode
+import com.intellij.openapi.actionSystem.CommonShortcuts
+import com.intellij.testFramework.TestActionEvent
 import com.intellij.testFramework.fixtures.BasePlatformTestCase
 import com.intellij.ui.components.JBScrollPane
 import java.awt.Color
 import java.awt.Rectangle
+import java.awt.event.FocusEvent
 import java.awt.event.InputEvent
+import java.awt.event.KeyEvent
 import java.awt.event.MouseEvent
 import java.awt.image.BufferedImage
 
@@ -32,9 +36,23 @@ class ZoomableRenderViewTest : BasePlatformTestCase() {
 
     /** Dispatches a synthetic `MOUSE_MOVED` event directly at [view], the same path AWT uses for a live mouse
      *  move, following [ZoomableRenderViewZoomAndPanTest]'s established `dispatchEvent` approach for wheel events. */
-    private fun moveTo(view: ZoomableRenderView, x: Int, y: Int) {
-        view.dispatchEvent(MouseEvent(view, MouseEvent.MOUSE_MOVED, System.currentTimeMillis(), 0, x, y, 0, false))
+    private fun moveTo(view: ZoomableRenderView, x: Int, y: Int, modifiers: Int = 0) {
+        view.dispatchEvent(
+            MouseEvent(view, MouseEvent.MOUSE_MOVED, System.currentTimeMillis(), modifiers, x, y, 0, false),
+        )
     }
+
+    private fun measuredView(): Triple<ZoomableRenderView, PreviewViewNode, PreviewViewNode> {
+        val left = node(40, 40, 100, 60, PreviewSourceLocation("Left.kt", 1, offset = null, packageHash = null))
+        val right = node(200, 40, 100, 60, PreviewSourceLocation("Right.kt", 1, offset = null, packageHash = null))
+        val view = ZoomableRenderView()
+        view.setContent(BufferedImage(400, 400, BufferedImage.TYPE_INT_ARGB), listOf(left, right), dpi = 160)
+        view.zoomFactor = 1.0
+        return Triple(view, left, right)
+    }
+
+    private fun altKey(view: ZoomableRenderView, id: Int): KeyEvent =
+        KeyEvent(view, id, System.currentTimeMillis(), 0, KeyEvent.VK_ALT, KeyEvent.CHAR_UNDEFINED)
 
     /** Dispatches a synthetic left-button `MOUSE_CLICKED` event directly at [view]. Both the button field and a
      *  BUTTON1_DOWN_MASK modifier are set so `SwingUtilities.isLeftMouseButton` recognizes it regardless of which
@@ -220,5 +238,107 @@ class ZoomableRenderViewTest : BasePlatformTestCase() {
         view.retryFitIfPending()
 
         assertEquals(2.0, view.zoomFactor, 1e-9)
+    }
+
+    fun `test a single click selects the innermost node without navigating`() {
+        val (view, left, _) = measuredView()
+        var navigated = false
+        view.onNavigateToSource = { navigated = true }
+
+        clickAt(view, 50, 50)
+
+        assertSame(left, view.selectedNode)
+        assertFalse(navigated)
+    }
+
+    fun `test clicking outside every node clears the selection`() {
+        val (view, _, _) = measuredView()
+        clickAt(view, 50, 50)
+        assertNotNull(view.selectedNode)
+
+        clickAt(view, 10, 10)
+
+        assertNull(view.selectedNode)
+    }
+
+    fun `test the escape action is bound to Escape and clears the selection only when there is one`() {
+        val (view, _, _) = measuredView()
+        val action = view.clearSelectionAction
+        assertSame(CommonShortcuts.ESCAPE, action.shortcutSet)
+
+        val idle = TestActionEvent.createTestEvent(action)
+        action.update(idle)
+        assertFalse(idle.presentation.isEnabled)
+
+        clickAt(view, 50, 50)
+        val armed = TestActionEvent.createTestEvent(action)
+        action.update(armed)
+        assertTrue(armed.presentation.isEnabled)
+
+        action.actionPerformed(armed)
+        assertNull(view.selectedNode)
+    }
+
+    fun `test new content clears the selection`() {
+        val (view, left, right) = measuredView()
+        clickAt(view, 50, 50)
+        assertNotNull(view.selectedNode)
+
+        view.setContent(BufferedImage(400, 400, BufferedImage.TYPE_INT_ARGB), listOf(left, right), dpi = 160)
+
+        assertNull(view.selectedNode)
+    }
+
+    fun `test the hand tool neither selects nor measures`() {
+        val (view, left, _) = measuredView()
+        clickAt(view, 50, 50)
+        view.handToolActive = true
+
+        clickAt(view, 220, 50)
+        moveTo(view, 220, 50, InputEvent.ALT_DOWN_MASK)
+
+        assertSame(left, view.selectedNode)
+        assertTrue(view.currentMeasurements().isEmpty())
+    }
+
+    fun `test a click leaves the selection outline drawn without any hover`() {
+        val view = ZoomableRenderView()
+        view.background = Color.WHITE
+        view.setContent(BufferedImage(1000, 1000, BufferedImage.TYPE_INT_ARGB), listOf(node(800, 800, 110, 110)), dpi = 440)
+        view.zoomFactor = 1.0
+        view.setSize(view.preferredSize)
+        assertEquals(Color.WHITE.rgb, paintToImage(view).getRGB(311, 291))
+
+        clickAt(view, 320, 320)
+
+        assertTrue(paintToImage(view).getRGB(311, 291) != Color.WHITE.rgb)
+    }
+
+    fun `test measurements appear only while the mouse move reports Alt`() {
+        val (view, left, right) = measuredView()
+        clickAt(view, 50, 50)
+
+        moveTo(view, 220, 50)
+        assertTrue(view.currentMeasurements().isEmpty())
+
+        moveTo(view, 220, 50, InputEvent.ALT_DOWN_MASK)
+        assertFalse(view.currentMeasurements().isEmpty())
+        assertEquals(MeasurementGeometry.measure(left.bounds, right.bounds), view.currentMeasurements())
+    }
+
+    fun `test the Alt key toggles measurements without a mouse move and losing focus drops them`() {
+        val (view, _, _) = measuredView()
+        clickAt(view, 50, 50)
+        moveTo(view, 220, 50)
+
+        view.keyListeners.forEach { it.keyPressed(altKey(view, KeyEvent.KEY_PRESSED)) }
+        assertFalse(view.currentMeasurements().isEmpty())
+
+        view.keyListeners.forEach { it.keyReleased(altKey(view, KeyEvent.KEY_RELEASED)) }
+        assertTrue(view.currentMeasurements().isEmpty())
+
+        view.keyListeners.forEach { it.keyPressed(altKey(view, KeyEvent.KEY_PRESSED)) }
+        view.focusListeners.forEach { it.focusLost(FocusEvent(view, FocusEvent.FOCUS_LOST)) }
+        assertTrue(view.currentMeasurements().isEmpty())
     }
 }
