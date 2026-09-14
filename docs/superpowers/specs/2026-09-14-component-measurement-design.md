@@ -21,7 +21,7 @@ exactly as a single click does today. The first click of a double click selects,
 This changes an existing habit: navigating to source used to take one click. It matches Figma, which this feature
 copies, and it keeps selecting from moving the editor and stealing focus while the user measures.
 
-**D2 — Outlines.** The selection outline is 2 px (`JBUI.scale(2)`) in the existing `HOVER_OUTLINE` color. The hover
+**D2 — Outlines.** The selection outline is 2 px (`JBUIScale.scale(2f)`) in the existing `HOVER_OUTLINE` color. The hover
 outline stays 1 px, as today, and is drawn together with the selection. It is skipped when the hovered node is the
 selected node itself.
 

@@ -33,7 +33,9 @@ What you can do with it:
 - **Search** by component name, function name or package, across the whole project.
 - **Filter** to just the module you are working in, or to just the components that have no screenshot test yet.
 - **Zoom and pan** the render — mouse wheel, trackpad pinch, or the toolbar buttons.
-- **Click any part of the rendered component** to jump straight to the code that draws it.
+- **Double-click any part of the rendered component** to jump straight to the code that draws it.
+- **Measure spacing** — click a component, hold Alt (Option on macOS) and point at another to read the distance
+  in dp, or the paddings when one contains the other.
 - **Export** a preview as a PNG, or copy it to the clipboard — useful for a ticket, a design review or a chat
   message.
 - **Find previews from Search Everywhere** (`Shift Shift`), alongside classes and files.

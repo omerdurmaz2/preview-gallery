@@ -28,9 +28,9 @@ pure tests, `BasePlatformTestCase` for Swing tests, Gradle via `./gradlew`.
   `Co-Authored-By: Claude MODEL <noreply@anthropic.com>`. `MODEL` is the executing model's own name (for example
   `Opus 5`), written without angle brackets. Never push; the user pushes.
 - **Visual values from the spec:**
-  - Selection outline is `BasicStroke(JBUI.scale(2f))` in `HOVER_OUTLINE`; the hover outline stays the default 1 px.
-  - Measurement color is `JBColor(Color(0xF24822), Color(0xF24822))`. Lines are `JBUI.scale(1f)` solid; guides are
-    `JBUI.scale(1f)` dashed `3/3`.
+  - Selection outline is `BasicStroke(JBUIScale.scale(2f))` in `HOVER_OUTLINE`; the hover outline stays the default 1 px.
+  - Measurement color is `JBColor(Color(0xF24822), Color(0xF24822))`. Lines are `JBUIScale.scale(1f)` solid; guides are
+    `JBUIScale.scale(1f)` dashed `3/3`.
   - The label is white `JBUI.Fonts.smallFont()` text on a rounded pill of the measurement color, centered on the
     line's midpoint.
   - Label text: `String.format(Locale.ROOT, "%.1f", dp).removeSuffix(".0") + "dp"`, with
@@ -189,6 +189,7 @@ import com.intellij.openapi.actionSystem.AnActionEvent
 import com.intellij.openapi.actionSystem.CommonShortcuts
 import com.intellij.openapi.project.DumbAwareAction
 import com.intellij.ui.JBColor
+import com.intellij.ui.scale.JBUIScale
 import com.intellij.util.ui.JBUI
 import java.awt.BasicStroke
 import java.awt.Color
@@ -364,7 +365,7 @@ with
             val baseStroke = g2.stroke
             selected?.let {
                 g2.color = HOVER_OUTLINE
-                g2.stroke = BasicStroke(JBUI.scale(2f))
+                g2.stroke = BasicStroke(JBUIScale.scale(2f))
                 drawOutline(g2, it.bounds, scale)
                 g2.stroke = baseStroke
             }
@@ -691,10 +692,10 @@ with
     private fun paintMeasurements(g2: Graphics2D, measurements: List<MeasurementGeometry.Measurement>, scale: Double) {
         if (measurements.isEmpty()) return
         g2.color = MEASURE_COLOR
-        val solid = BasicStroke(JBUI.scale(1f))
+        val solid = BasicStroke(JBUIScale.scale(1f))
         val dashed = BasicStroke(
-            JBUI.scale(1f), BasicStroke.CAP_BUTT, BasicStroke.JOIN_MITER, 10f,
-            floatArrayOf(JBUI.scale(3f), JBUI.scale(3f)), 0f,
+            JBUIScale.scale(1f), BasicStroke.CAP_BUTT, BasicStroke.JOIN_MITER, 10f,
+            floatArrayOf(JBUIScale.scale(3f), JBUIScale.scale(3f)), 0f,
         )
         measurements.forEach { measurement ->
             measurement.guide?.let {

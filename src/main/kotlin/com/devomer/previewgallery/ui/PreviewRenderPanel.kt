@@ -77,7 +77,7 @@ class PreviewRenderPanel(private val project: Project) : JBPanel<PreviewRenderPa
     var onEphemeralProperties: (PreviewEntry, ViewOverride, RelativePoint, (String, String) -> Unit) -> Unit =
         { _, _, _, _ -> }
 
-    /** Fires when the user clicks a composable in the rendered image (PG4-5): the hit-tested node's source
+    /** Fires when the user double-clicks a composable in the rendered image (PG4-5): the hit-tested node's source
      *  location. [PreviewGalleryPanel] resolves it to an editor open. Only ever fires for a [RenderState.LIVE]
      *  render whose [RenderOutcome.Success.viewTree] is non-empty (Feature B available); otherwise inert. */
     var onNavigateToSource: (List<PreviewSourceLocation>) -> Unit = {}

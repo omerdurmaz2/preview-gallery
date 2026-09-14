@@ -3,6 +3,7 @@ package com.devomer.previewgallery.ui
 import com.devomer.previewgallery.model.PreviewSourceLocation
 import com.devomer.previewgallery.model.PreviewViewNode
 import com.intellij.openapi.actionSystem.CommonShortcuts
+import com.intellij.openapi.actionSystem.ex.ActionUtil
 import com.intellij.testFramework.TestActionEvent
 import com.intellij.testFramework.fixtures.BasePlatformTestCase
 import com.intellij.ui.components.JBScrollPane
@@ -265,6 +266,7 @@ class ZoomableRenderViewTest : BasePlatformTestCase() {
         val (view, _, _) = measuredView()
         val action = view.clearSelectionAction
         assertSame(CommonShortcuts.ESCAPE, action.shortcutSet)
+        assertTrue(ActionUtil.getActions(view).contains(action))
 
         val idle = TestActionEvent.createTestEvent(action)
         action.update(idle)
@@ -328,6 +330,7 @@ class ZoomableRenderViewTest : BasePlatformTestCase() {
 
     fun `test the Alt key toggles measurements without a mouse move and losing focus drops them`() {
         val (view, _, _) = measuredView()
+        assertTrue(view.isFocusable)
         clickAt(view, 50, 50)
         moveTo(view, 220, 50)
 
